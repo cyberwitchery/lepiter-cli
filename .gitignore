@@ -1,0 +1,19 @@
+# rust workspace build artifacts
+/target/
+
+# cargo lock (keep for binaries/workspaces)
+# keep tracked; do not ignore Cargo.lock
+
+# coverage output
+/target/llvm-cov-target/
+*.profraw
+*.profdata
+
+# editor/os noise
+.DS_Store
+.vscode/
+.idea/
+
+# misc
+*.log
+lepiter/

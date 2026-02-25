@@ -1,0 +1,5 @@
+mode = "caps"
+include_deps = false
+
+[caps]
+default = 0

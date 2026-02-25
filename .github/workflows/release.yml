@@ -1,0 +1,155 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    name: release ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            bin_ext: ""
+            publish_crates: true
+          - os: macos-14
+            target: x86_64-apple-darwin
+            bin_ext: ""
+            publish_crates: false
+          - os: macos-14
+            target: aarch64-apple-darwin
+            bin_ext: ""
+            publish_crates: false
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bin_ext: ".exe"
+            publish_crates: false
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: set up rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-targets: true
+
+      - name: build release binary
+        run: cargo build --release --target ${{ matrix.target }} -p lepiter-cli
+
+      - name: package binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive_base="lepiter-cli-${{ github.ref_name }}-${{ matrix.target }}"
+          stage_dir="${RUNNER_TEMP}/dist/${archive_base}"
+          mkdir -p "${stage_dir}"
+          cp "target/${{ matrix.target }}/release/lepiter-cli${{ matrix.bin_ext }}" "${stage_dir}/"
+          cp README.md LICENSE "${stage_dir}/"
+          tar -czf "${RUNNER_TEMP}/dist/${archive_base}.tar.gz" -C "${RUNNER_TEMP}/dist" "${archive_base}"
+
+      - name: upload packaged binaries
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ runner.temp }}/dist/*.tar.gz
+
+      - name: run tests
+        if: matrix.publish_crates
+        run: cargo test --workspace
+
+      - name: docs
+        if: matrix.publish_crates
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --no-deps
+
+      - name: install sbom tools
+        if: matrix.publish_crates
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-cyclonedx,sbom-diff
+
+      - name: generate sbom
+        if: matrix.publish_crates
+        run: |
+          for manifest in "$GITHUB_WORKSPACE"/lepiter-core/Cargo.toml "$GITHUB_WORKSPACE"/lepiter-tui/Cargo.toml; do
+            crate="$(basename "$(dirname "$manifest")")"
+            (cd /tmp && cargo cyclonedx --manifest-path "$manifest" \
+              --format json \
+              --override-filename "sbom-${{ github.ref_name }}-${crate}.cdx" \
+              --all-features)
+          done
+
+      - name: collect sbom files
+        if: matrix.publish_crates
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/lepiter-cli-sbom
+          find /tmp -maxdepth 1 -type f -name "sbom-${{ github.ref_name }}-*.cdx.json" \
+            -exec mv {} /tmp/lepiter-cli-sbom/ \;
+          find "$GITHUB_WORKSPACE" -type f -name "sbom-${{ github.ref_name }}-*.cdx.json" \
+            -exec mv {} /tmp/lepiter-cli-sbom/ \;
+
+      - name: upload sbom
+        if: matrix.publish_crates
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-${{ github.ref_name }}
+          path: "/tmp/lepiter-cli-sbom/sbom-${{ github.ref_name }}-*.cdx.json"
+          if-no-files-found: error
+
+      - name: attach sbom to release
+        if: matrix.publish_crates
+        uses: softprops/action-gh-release@v2
+        with:
+          files: /tmp/lepiter-cli-sbom/sbom-${{ github.ref_name }}-*.cdx.json
+
+      - name: diff against previous release
+        if: matrix.publish_crates
+        shell: bash
+        run: |
+          set -euo pipefail
+          prev_tag=$(git tag --sort=-v:refname | sed -n '2p')
+          if [ -z "$prev_tag" ]; then
+            echo "no previous release tag found, skipping diff"
+            exit 0
+          fi
+          git worktree add /tmp/last-release "$prev_tag"
+          for crate in lepiter-core lepiter-tui; do
+            current="/tmp/lepiter-cli-sbom/sbom-${{ github.ref_name }}-${crate}.cdx.json"
+            (cd /tmp && cargo cyclonedx --manifest-path "/tmp/last-release/${crate}/Cargo.toml" \
+              --format json \
+              --override-filename "sbom-prev-${crate}.cdx" \
+              --all-features)
+            previous="/tmp/sbom-prev-${crate}.cdx.json"
+            sbom-diff "$previous" "$current" --fail-on added-components
+          done
+
+      - name: publish lepiter-core
+        if: matrix.publish_crates
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish -p lepiter-core --no-verify
+
+      - name: publish lepiter-cli
+        if: matrix.publish_crates
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish -p lepiter-cli --no-verify

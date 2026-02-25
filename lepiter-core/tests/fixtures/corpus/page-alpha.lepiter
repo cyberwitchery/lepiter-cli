@@ -1,0 +1,23 @@
+{
+  "uid": { "uuid": "fixture-page-alpha" },
+  "pageType": { "title": "alpha page" },
+  "editTime": {
+    "time": { "dateAndTimeString": "2026-02-25T10:00:00+00:00" }
+  },
+  "tags": ["fixture", {"name": "alpha"}],
+  "children": {
+    "items": [
+      { "__type": "textSnippet", "string": "# alpha heading" },
+      { "__type": "textSnippet", "string": "alpha paragraph" },
+      {
+        "__type": "listSnippet",
+        "children": {
+          "items": [
+            { "__type": "textSnippet", "string": "first item" },
+            { "__type": "textSnippet", "string": "second item" }
+          ]
+        }
+      }
+    ]
+  }
+}

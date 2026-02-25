@@ -1,0 +1,13 @@
+{
+  "uid": { "uuid": "fixture-page-gamma" },
+  "pageType": { "title": "gamma unknown page" },
+  "children": {
+    "items": [
+      {
+        "__type": "mysterySnippet",
+        "string": "unknown content",
+        "custom": { "nested": true, "value": 42 }
+      }
+    ]
+  }
+}

@@ -42,8 +42,14 @@ fn corpus_parse_does_not_panic_and_preserves_unknown() -> Result<()> {
         }
     }
 
-    assert!(parsed_pages > 0, "expected at least one page in fixture corpus");
-    assert!(saw_unknown, "expected checked-in fixtures to include unknown node types");
+    assert!(
+        parsed_pages > 0,
+        "expected at least one page in fixture corpus"
+    );
+    assert!(
+        saw_unknown,
+        "expected checked-in fixtures to include unknown node types"
+    );
     Ok(())
 }
 

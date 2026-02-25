@@ -1,0 +1,21 @@
+{
+  "uid": { "uuid": "fixture-page-beta" },
+  "pageType": { "title": "beta page" },
+  "children": {
+    "items": [
+      {
+        "__type": "pythonSnippet",
+        "code": "print('hello from beta')"
+      },
+      {
+        "__type": "pharoLinkSnippet",
+        "string": "go alpha",
+        "url": "page:fixture-page-alpha"
+      },
+      {
+        "__type": "quoteSnippet",
+        "string": "quoted beta"
+      }
+    ]
+  }
+}

@@ -54,7 +54,8 @@ jobs:
       - name: build release binary
         run: cargo build --release --target ${{ matrix.target }} -p lepiter-cli
 
-      - name: package binaries
+      - name: package binaries (unix)
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           set -euo pipefail
@@ -65,10 +66,25 @@ jobs:
           cp README.md LICENSE "${stage_dir}/"
           tar -czf "${RUNNER_TEMP}/dist/${archive_base}.tar.gz" -C "${RUNNER_TEMP}/dist" "${archive_base}"
 
+      - name: package binaries (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $archiveBase = "lepiter-cli-${{ github.ref_name }}-${{ matrix.target }}"
+          $distDir = Join-Path $env:RUNNER_TEMP "dist"
+          $stageDir = Join-Path $distDir $archiveBase
+          New-Item -ItemType Directory -Path $stageDir -Force | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/lepiter-cli${{ matrix.bin_ext }}" $stageDir
+          Copy-Item "README.md" $stageDir
+          Copy-Item "LICENSE" $stageDir
+          Compress-Archive -Path (Join-Path $stageDir "*") -DestinationPath (Join-Path $distDir "$archiveBase.zip") -Force
+
       - name: upload packaged binaries
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ runner.temp }}/dist/*.tar.gz
+          files: |
+            ${{ runner.temp }}/dist/*.tar.gz
+            ${{ runner.temp }}/dist/*.zip
 
       - name: run tests
         if: matrix.publish_crates

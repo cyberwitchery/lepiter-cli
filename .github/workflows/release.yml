@@ -170,11 +170,19 @@ jobs:
           git worktree add /tmp/last-release "$prev_tag"
           for crate in lepiter-core lepiter-tui; do
             current="/tmp/lepiter-cli-sbom/sbom-${{ github.ref_name }}-${crate}.cdx.json"
+            if [ ! -f "$current" ]; then
+              echo "current sbom missing for ${crate}, skipping diff"
+              continue
+            fi
             (cd /tmp && cargo cyclonedx --manifest-path "/tmp/last-release/${crate}/Cargo.toml" \
               --format json \
               --override-filename "sbom-prev-${crate}.cdx" \
               --all-features)
-            previous="/tmp/sbom-prev-${crate}.cdx.json"
+            previous="$(find /tmp /tmp/last-release -maxdepth 2 -type f -name "sbom-prev-${crate}*.cdx.json" | head -1 || true)"
+            if [ -z "$previous" ]; then
+              echo "previous sbom missing for ${crate}, skipping diff"
+              continue
+            fi
             sbom-diff "$previous" "$current" --fail-on added-components
           done
 

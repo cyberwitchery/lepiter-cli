@@ -54,6 +54,24 @@ jobs:
       - name: build release binary
         run: cargo build --release --target ${{ matrix.target }} -p lepiter-cli
 
+      - name: prepare release notes from changelog
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          out="${RUNNER_TEMP}/release-notes.md"
+          awk -v version="$version" '
+            BEGIN { in_section = 0 }
+            $0 ~ "^## "version"([[:space:]]|$|-)" { in_section = 1; print; next }
+            $0 ~ "^## " && in_section { exit }
+            in_section { print }
+          ' CHANGELOG.md > "$out"
+
+          if [ ! -s "$out" ]; then
+            echo "release notes for version $version not found in CHANGELOG.md" >&2
+            exit 1
+          fi
+
       - name: package binaries (unix)
         if: runner.os != 'Windows'
         shell: bash
@@ -82,6 +100,7 @@ jobs:
       - name: upload packaged binaries
         uses: softprops/action-gh-release@v2
         with:
+          body_path: ${{ runner.temp }}/release-notes.md
           files: |
             ${{ runner.temp }}/dist/*.tar.gz
             ${{ runner.temp }}/dist/*.zip
@@ -135,6 +154,7 @@ jobs:
         if: matrix.publish_crates
         uses: softprops/action-gh-release@v2
         with:
+          body_path: ${{ runner.temp }}/release-notes.md
           files: /tmp/lepiter-cli-sbom/sbom-${{ github.ref_name }}-*.cdx.json
 
       - name: diff against previous release

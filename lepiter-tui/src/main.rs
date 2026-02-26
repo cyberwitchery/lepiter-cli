@@ -1,11 +1,12 @@
 use std::collections::HashMap;
 use std::fs;
+use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
-use lepiter_core::{KnowledgeBase, KnowledgeBaseIndex, Node, Page, PageId};
+use lepiter_core::{KnowledgeBase, KnowledgeBaseIndex, Node, Page, PageId, render_page_to_text};
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
@@ -237,6 +238,25 @@ fn main() -> Result<()> {
                 .unwrap_or_else(|| PathBuf::from("./lepiter"));
             print_kb_info(kb_path)
         }
+        "list" => {
+            let rest = args.collect::<Vec<_>>();
+            run_list(rest)
+        }
+        "ids" => {
+            let kb_path = args
+                .next()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("./lepiter"));
+            print_page_ids(kb_path)
+        }
+        "search" => {
+            let rest = args.collect::<Vec<_>>();
+            run_search(rest)
+        }
+        "show" => {
+            let rest = args.collect::<Vec<_>>();
+            run_show(rest)
+        }
         "-h" | "--help" | "help" => {
             print_usage();
             Ok(())
@@ -266,7 +286,7 @@ fn run_tui(kb_path: PathBuf) -> Result<()> {
 
 fn print_usage() {
     eprintln!(
-        "lepiter-cli <subcommand|kb-path> [args]\n\nsubcommands:\n  tui [kb-path]    launch the terminal reader (default path: ./lepiter)\n  info [kb-path]   print knowledge base metadata summary\n\nIf the first argument is a directory path, `info` mode is used implicitly."
+        "lepiter-cli <subcommand|kb-path> [args]\n\nsubcommands:\n  tui [kb-path]                                      launch the terminal reader (default path: ./lepiter)\n  info [kb-path]                                     print knowledge base metadata summary\n  list [--tsv] [kb-path]                             list pages (pretty columns by default)\n  ids [kb-path]                                      print page ids only (sorted by title)\n  search [--full-text] [--tsv] <query> [kb-path]     search by title/id/tags, optionally page content\n  show [--id|--by-title] <value> [kb-path]           render one page (default: title lookup)\n\nIf the first argument is a directory path, `info` mode is used implicitly."
     );
 }
 
@@ -345,6 +365,536 @@ fn print_kb_info(kb_path: PathBuf) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn print_page(kb_path: PathBuf, page_id: &str) -> Result<()> {
+    let index = KnowledgeBase::open(&kb_path)
+        .with_context(|| format!("failed to open knowledge base at {}", kb_path.display()))?;
+    let page = index
+        .load_page(page_id)
+        .with_context(|| format!("failed to load page id `{page_id}`"))?;
+    let colored = std::io::stdout().is_terminal();
+    print!("{}", render_page_pretty(&page, colored));
+    Ok(())
+}
+
+fn run_list(args: Vec<String>) -> Result<()> {
+    let mut tsv = false;
+    let mut positional = Vec::new();
+    for arg in args {
+        match arg.as_str() {
+            "--tsv" => tsv = true,
+            _ => positional.push(arg),
+        }
+    }
+    let kb_path = positional
+        .first()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("./lepiter"));
+    print_page_list(kb_path, tsv)
+}
+
+fn print_page_list(kb_path: PathBuf, tsv: bool) -> Result<()> {
+    let index = KnowledgeBase::open(&kb_path)
+        .with_context(|| format!("failed to open knowledge base at {}", kb_path.display()))?;
+    if tsv {
+        for meta in index.sorted_pages_by_title() {
+            println!("{}\t{}", meta.title, meta.id);
+        }
+        return Ok(());
+    }
+
+    let title_width = index
+        .sorted_pages_by_title()
+        .iter()
+        .map(|m| m.title.chars().count())
+        .max()
+        .unwrap_or(5)
+        .clamp(5, 64);
+
+    println!("{:<width$}  id", "title", width = title_width);
+    println!("{:-<width$}  {:-<36}", "", "", width = title_width);
+    for meta in index.sorted_pages_by_title() {
+        println!(
+            "{:<width$}  {}",
+            truncate_chars(&meta.title, title_width),
+            meta.id,
+            width = title_width
+        );
+    }
+    Ok(())
+}
+
+fn print_page_ids(kb_path: PathBuf) -> Result<()> {
+    let index = KnowledgeBase::open(&kb_path)
+        .with_context(|| format!("failed to open knowledge base at {}", kb_path.display()))?;
+    for meta in index.sorted_pages_by_title() {
+        println!("{}", meta.id);
+    }
+    Ok(())
+}
+
+fn run_search(args: Vec<String>) -> Result<()> {
+    let mut full_text = false;
+    let mut tsv = false;
+    let mut positional = Vec::new();
+    for arg in args {
+        match arg.as_str() {
+            "--full-text" => full_text = true,
+            "--tsv" => tsv = true,
+            _ => positional.push(arg),
+        }
+    }
+
+    if positional.is_empty() {
+        bail!("missing required argument: <query>");
+    }
+
+    let query = positional[0].trim().to_string();
+    if query.is_empty() {
+        bail!("query must not be empty");
+    }
+
+    let kb_path = positional
+        .get(1)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("./lepiter"));
+    let index = KnowledgeBase::open(&kb_path)
+        .with_context(|| format!("failed to open knowledge base at {}", kb_path.display()))?;
+
+    let needle = query.to_lowercase();
+    let mut hit_by_id = std::collections::HashMap::<String, &'static str>::new();
+
+    for meta in index.sorted_pages_by_title() {
+        let is_meta_hit = meta.title.to_lowercase().contains(&needle)
+            || meta.id.to_lowercase().contains(&needle)
+            || meta.tags.iter().any(|t| t.to_lowercase().contains(&needle));
+        if is_meta_hit {
+            hit_by_id.insert(meta.id.clone(), "meta");
+        }
+    }
+
+    if full_text {
+        for meta in index.sorted_pages_by_title() {
+            if hit_by_id.contains_key(&meta.id) {
+                continue;
+            }
+            let Ok(page) = index.load_page(&meta.id) else {
+                continue;
+            };
+            if render_page_to_text(&page).to_lowercase().contains(&needle) {
+                hit_by_id.insert(meta.id.clone(), "content");
+            }
+        }
+    }
+
+    if tsv {
+        for meta in index.sorted_pages_by_title() {
+            if let Some(kind) = hit_by_id.get(&meta.id) {
+                println!("{}\t{}\t{}", meta.title, meta.id, kind);
+            }
+        }
+        return Ok(());
+    }
+
+    let title_width = index
+        .sorted_pages_by_title()
+        .iter()
+        .map(|m| m.title.chars().count())
+        .max()
+        .unwrap_or(5)
+        .clamp(5, 64);
+
+    println!(
+        "{:<width$}  {:<36}  match",
+        "title",
+        "id",
+        width = title_width
+    );
+    println!(
+        "{:-<width$}  {:-<36}  {:-<7}",
+        "",
+        "",
+        "",
+        width = title_width
+    );
+    for meta in index.sorted_pages_by_title() {
+        if let Some(kind) = hit_by_id.get(&meta.id) {
+            println!(
+                "{:<width$}  {:<36}  {}",
+                truncate_chars(&meta.title, title_width),
+                meta.id,
+                kind,
+                width = title_width
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn run_show(args: Vec<String>) -> Result<()> {
+    let mut by_id = false;
+    let mut by_title = false;
+    let mut positional = Vec::new();
+
+    for arg in args {
+        match arg.as_str() {
+            "--id" | "-i" => by_id = true,
+            "--by-title" => by_title = true,
+            _ => positional.push(arg),
+        }
+    }
+
+    if by_id && by_title {
+        bail!("--id and --by-title are mutually exclusive");
+    }
+    if positional.is_empty() {
+        bail!("missing required argument: <value>");
+    }
+
+    let value = positional[0].trim();
+    if value.is_empty() {
+        bail!("value must not be empty");
+    }
+    let kb_path = positional
+        .get(1)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("./lepiter"));
+    let index = KnowledgeBase::open(&kb_path)
+        .with_context(|| format!("failed to open knowledge base at {}", kb_path.display()))?;
+
+    let page_id = if by_id {
+        value.to_string()
+    } else {
+        resolve_page_id_by_title(&index, value)?
+    };
+    print_page(kb_path, &page_id)
+}
+
+fn resolve_page_id_by_title(index: &KnowledgeBaseIndex, title: &str) -> Result<String> {
+    let needle = title.trim().to_lowercase();
+
+    let exact = index
+        .sorted_pages_by_title()
+        .into_iter()
+        .filter(|m| m.title.to_lowercase() == needle)
+        .collect::<Vec<_>>();
+    if exact.len() == 1 {
+        return Ok(exact[0].id.clone());
+    }
+    if exact.len() > 1 {
+        let sample = exact
+            .iter()
+            .take(5)
+            .map(|m| format!("{} ({})", m.title, m.id))
+            .collect::<Vec<_>>()
+            .join(", ");
+        bail!("title is ambiguous: {sample}");
+    }
+
+    let partial = index
+        .sorted_pages_by_title()
+        .into_iter()
+        .filter(|m| m.title.to_lowercase().contains(&needle))
+        .collect::<Vec<_>>();
+    if partial.len() == 1 {
+        return Ok(partial[0].id.clone());
+    }
+    if partial.is_empty() {
+        bail!("no page found with title matching `{title}`");
+    }
+
+    let sample = partial
+        .iter()
+        .take(10)
+        .map(|m| format!("{} ({})", m.title, m.id))
+        .collect::<Vec<_>>()
+        .join(", ");
+    bail!(
+        "title match is ambiguous ({} matches): {sample}",
+        partial.len()
+    )
+}
+
+fn truncate_chars(input: &str, max_chars: usize) -> String {
+    let mut chars = input.chars();
+    let mut out = String::new();
+    for _ in 0..max_chars {
+        let Some(c) = chars.next() else {
+            return out;
+        };
+        out.push(c);
+    }
+    if chars.next().is_some() && max_chars >= 1 {
+        out.pop();
+        out.push('…');
+    }
+    out
+}
+
+fn render_page_pretty(page: &Page, colored: bool) -> String {
+    let mut out = String::new();
+    if colored {
+        out.push_str(&format!(
+            "{}\n\n",
+            ansi("1;36", &format!("# {}", page.title))
+        ));
+    } else {
+        out.push_str(&format!("# {}\n\n", page.title));
+    }
+    if !page.tags.is_empty() {
+        let line = format!("tags: {}\n", page.tags.join(", "));
+        if colored {
+            out.push_str(&ansi("2", line.trim_end()));
+            out.push('\n');
+        } else {
+            out.push_str(&line);
+        }
+    }
+    if let Some(updated_at) = page.updated_at {
+        let line = format!("updated: {}\n", updated_at.to_rfc3339());
+        if colored {
+            out.push_str(&ansi("2", line.trim_end()));
+            out.push('\n');
+        } else {
+            out.push_str(&line);
+        }
+    }
+    if colored {
+        out.push_str(&format!("{}\n\n", ansi("2", &format!("id: {}", page.id))));
+        out.push_str(&format!("{}\n\n", ansi("2", "---")));
+    } else {
+        out.push_str(&format!("id: {}\n\n", page.id));
+        out.push_str("---\n\n");
+    }
+
+    let body = render_page_to_text(page);
+    if colored {
+        out.push_str(&render_markdown_with_ansi(body.trim()));
+        out.push('\n');
+    } else {
+        out.push_str(body.trim());
+        out.push('\n');
+    }
+    out
+}
+
+fn render_markdown_with_ansi(markdown: &str) -> String {
+    let mut out = String::new();
+    let mut in_code = false;
+    let mut language: Option<String> = None;
+
+    for line in markdown.lines() {
+        if let Some(rest) = line.strip_prefix("```") {
+            if in_code {
+                out.push_str(&ansi("90", "```"));
+                out.push('\n');
+                in_code = false;
+                language = None;
+            } else {
+                language = if rest.trim().is_empty() {
+                    None
+                } else {
+                    Some(rest.trim().to_lowercase())
+                };
+                out.push_str(&ansi("90", line));
+                out.push('\n');
+                in_code = true;
+            }
+            continue;
+        }
+
+        if in_code {
+            out.push_str(&highlight_code_line_ansi(line, language.as_deref()));
+            out.push('\n');
+            continue;
+        }
+
+        if line.starts_with('#') {
+            out.push_str(&ansi("1;36", line));
+        } else if line.starts_with("> ") {
+            out.push_str(&ansi("3;90", line));
+        } else if let Some(stripped) = line.strip_prefix("- ") {
+            out.push_str("- ");
+            out.push_str(&style_inline_markdown_ansi(stripped));
+        } else if line.starts_with("[[unknown: ") {
+            out.push_str(&ansi("33", line));
+        } else {
+            out.push_str(&style_inline_markdown_ansi(line));
+        }
+        out.push('\n');
+    }
+
+    out
+}
+
+fn style_inline_markdown_ansi(text: &str) -> String {
+    let chars = text.chars().collect::<Vec<_>>();
+    let mut i = 0usize;
+    let mut out = String::new();
+    let mut buf = String::new();
+    let mut bold = false;
+    let mut italic = false;
+    let mut code = false;
+
+    let push_buf = |out: &mut String, buf: &mut String, bold: bool, italic: bool, code: bool| {
+        if buf.is_empty() {
+            return;
+        }
+        let s = std::mem::take(buf);
+        if code {
+            out.push_str(&ansi("33", &s));
+            return;
+        }
+        let style = match (bold, italic) {
+            (true, true) => Some("1;3"),
+            (true, false) => Some("1"),
+            (false, true) => Some("3"),
+            (false, false) => None,
+        };
+        if let Some(style) = style {
+            out.push_str(&ansi(style, &s));
+        } else {
+            out.push_str(&s);
+        }
+    };
+
+    while i < chars.len() {
+        if i + 1 < chars.len() && chars[i] == '*' && chars[i + 1] == '*' {
+            push_buf(&mut out, &mut buf, bold, italic, code);
+            bold = !bold;
+            i += 2;
+            continue;
+        }
+        if chars[i] == '*' {
+            push_buf(&mut out, &mut buf, bold, italic, code);
+            italic = !italic;
+            i += 1;
+            continue;
+        }
+        if chars[i] == '`' {
+            push_buf(&mut out, &mut buf, bold, italic, code);
+            code = !code;
+            i += 1;
+            continue;
+        }
+        if chars[i] == '[' {
+            let mut j = i + 1;
+            while j < chars.len() && chars[j] != ']' {
+                j += 1;
+            }
+            if j + 1 < chars.len() && chars[j] == ']' && chars[j + 1] == '(' {
+                let mut k = j + 2;
+                while k < chars.len() && chars[k] != ')' {
+                    k += 1;
+                }
+                if k < chars.len() {
+                    push_buf(&mut out, &mut buf, bold, italic, code);
+                    let label = chars[i + 1..j].iter().collect::<String>();
+                    let target = chars[j + 2..k].iter().collect::<String>();
+                    out.push_str(&ansi("4;94", &label));
+                    out.push_str(&ansi("90", &format!(" ({target})")));
+                    i = k + 1;
+                    continue;
+                }
+            }
+        }
+        buf.push(chars[i]);
+        i += 1;
+    }
+
+    push_buf(&mut out, &mut buf, bold, italic, code);
+    out
+}
+
+fn ansi(style: &str, text: &str) -> String {
+    format!("\x1b[{style}m{text}\x1b[0m")
+}
+
+fn highlight_code_line_ansi(line: &str, language: Option<&str>) -> String {
+    let keywords = keywords_for_language(language.unwrap_or_default());
+    let mut out = String::new();
+    let mut i = 0usize;
+    let chars = line.chars().collect::<Vec<_>>();
+
+    while i < chars.len() {
+        let c = chars[i];
+
+        if (language == Some("python") || language == Some("shell") || language == Some("bash"))
+            && c == '#'
+        {
+            let rest = chars[i..].iter().collect::<String>();
+            out.push_str(&ansi("90", &rest));
+            break;
+        }
+        if language == Some("javascript") && i + 1 < chars.len() && c == '/' && chars[i + 1] == '/'
+        {
+            let rest = chars[i..].iter().collect::<String>();
+            out.push_str(&ansi("90", &rest));
+            break;
+        }
+        if c == '"' || c == '\'' {
+            let quote = c;
+            let start = i;
+            i += 1;
+            while i < chars.len() {
+                if chars[i] == quote && chars[i.saturating_sub(1)] != '\\' {
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            let s = chars[start..i].iter().collect::<String>();
+            out.push_str(&ansi("32", &s));
+            continue;
+        }
+        if c.is_ascii_digit() {
+            let start = i;
+            i += 1;
+            while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '.') {
+                i += 1;
+            }
+            let s = chars[start..i].iter().collect::<String>();
+            out.push_str(&ansi("33", &s));
+            continue;
+        }
+        if c.is_ascii_alphabetic() || c == '_' {
+            let start = i;
+            i += 1;
+            while i < chars.len() && (chars[i].is_ascii_alphanumeric() || chars[i] == '_') {
+                i += 1;
+            }
+            let word = chars[start..i].iter().collect::<String>();
+            if keywords.contains(&word.as_str()) {
+                out.push_str(&ansi("1;35", &word));
+            } else {
+                out.push_str(&word);
+            }
+            continue;
+        }
+
+        out.push(c);
+        i += 1;
+    }
+
+    out
+}
+
+fn keywords_for_language(language: &str) -> &'static [&'static str] {
+    match language {
+        "python" => &[
+            "def", "class", "if", "else", "elif", "for", "while", "return", "import", "from", "as",
+            "try", "except", "with", "lambda",
+        ],
+        "javascript" => &[
+            "function", "const", "let", "var", "if", "else", "for", "while", "return", "class",
+            "import", "from", "export", "new", "async", "await",
+        ],
+        "pharo" | "smalltalk" => &["self", "super", "true", "false", "nil", "^"],
+        "shell" | "shellcommand" | "bash" => &["if", "then", "fi", "for", "do", "done", "echo"],
+        _ => &[],
+    }
 }
 
 fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> Result<()> {
@@ -848,19 +1398,7 @@ fn parse_inline_markdown(text: &str, links: &mut Vec<LinkTarget>) -> Line<'stati
 }
 
 fn highlight_code_line(line: &str, language: Option<&str>) -> Line<'static> {
-    let keywords: &[&str] = match language.unwrap_or_default() {
-        "python" => &[
-            "def", "class", "if", "else", "elif", "for", "while", "return", "import", "from", "as",
-            "try", "except", "with", "lambda",
-        ],
-        "javascript" => &[
-            "function", "const", "let", "var", "if", "else", "for", "while", "return", "class",
-            "import", "from", "export", "new", "async", "await",
-        ],
-        "pharo" | "smalltalk" => &["self", "super", "true", "false", "nil", "^"],
-        "shell" | "shellcommand" | "bash" => &["if", "then", "fi", "for", "do", "done", "echo"],
-        _ => &[],
-    };
+    let keywords = keywords_for_language(language.unwrap_or_default());
 
     let mut spans = Vec::new();
     let mut i = 0usize;

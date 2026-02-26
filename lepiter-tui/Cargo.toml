@@ -13,4 +13,4 @@ ratatui.workspace = true
 serde_json.workspace = true
 textwrap.workspace = true
 unicode-width.workspace = true
-lepiter-core = { path = "../lepiter-core" }
+lepiter-core.workspace = true

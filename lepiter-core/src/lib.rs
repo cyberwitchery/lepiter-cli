@@ -326,7 +326,12 @@ fn parse_tags(value: Option<&Value>) -> Vec<String> {
 }
 
 fn parse_item_recursive(item: &Value, out: &mut Vec<Node>) {
+    let typ = extract_type(item);
     out.push(parse_node(item));
+    if matches!(typ.as_deref(), Some("listSnippet")) {
+        // list snippets already materialize children into Node::List items.
+        return;
+    }
     if let Some(children) = item
         .get("children")
         .and_then(|v| v.get("items"))

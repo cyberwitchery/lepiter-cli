@@ -1,0 +1,13 @@
+{
+  "uid": { "uuid": "fixture-page-word" },
+  "pageType": { "title": "word page" },
+  "children": {
+    "items": [
+      {
+        "__type": "wordSnippet",
+        "wordString": "refactoring",
+        "explanationAttachmentNameString": "attachments/fixture/explanation.json"
+      }
+    ]
+  }
+}

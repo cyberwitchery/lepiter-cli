@@ -1,0 +1,31 @@
+name: snippet-matrix-refresh
+
+on:
+  workflow_dispatch:
+    inputs:
+      kb_path:
+        description: "knowledge base path (defaults to checked-in fixture corpus)"
+        required: false
+        default: "lepiter-core/tests/fixtures/corpus"
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: set up rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: refresh matrix
+        run: ./scripts/refresh_snippet_matrix.sh "${{ github.event.inputs.kb_path }}"
+
+      - name: upload matrix artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: snippet-support-matrix
+          path: docs/snippet-support-matrix.md

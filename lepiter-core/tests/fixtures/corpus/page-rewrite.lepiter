@@ -1,0 +1,15 @@
+{
+  "uid": { "uuid": "fixture-page-rewrite" },
+  "pageType": { "title": "rewrite page" },
+  "children": {
+    "items": [
+      {
+        "__type": "pharoRewrite",
+        "search": "children isNil ifTrue: [ ^ self ].",
+        "replace": "children ifNil: [ ^ self ].",
+        "isMethodPattern": false,
+        "scope": "#(#('searchMethods' '') )"
+      }
+    ]
+  }
+}

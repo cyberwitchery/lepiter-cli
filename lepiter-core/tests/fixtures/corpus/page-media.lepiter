@@ -1,0 +1,21 @@
+{
+  "uid": { "uuid": "fixture-page-media" },
+  "pageType": { "title": "media page" },
+  "children": {
+    "items": [
+      {
+        "__type": "pictureSnippet",
+        "url": "attachments/sample.png",
+        "caption": "sample image"
+      },
+      {
+        "__type": "youtubeSnippet",
+        "youtubeUrl": "https://youtu.be/N0XSImxyszM"
+      },
+      {
+        "__type": "elementSnippet",
+        "code": "GtInspector newOn: 42"
+      }
+    ]
+  }
+}

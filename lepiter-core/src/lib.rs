@@ -83,6 +83,14 @@ pub enum Node {
     Link { text: String, url: String },
     /// Quote block.
     Quote { text: String },
+    /// Rewrite block (search/replace transformation).
+    Rewrite {
+        language: Option<String>,
+        search: String,
+        replace: String,
+        scope: Option<String>,
+        is_method_pattern: Option<bool>,
+    },
     /// Unknown/unsupported source node type preserved losslessly.
     Unknown { typ: String, raw: Value },
 }
@@ -94,6 +102,48 @@ pub struct ParseIssue {
     pub path: PathBuf,
     /// Human-readable error description.
     pub message: String,
+}
+
+/// Match category for search results.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchMatchKind {
+    /// Match came from page metadata (title/id/tags).
+    Meta,
+    /// Match came from rendered page content.
+    Content,
+}
+
+/// Search result entry for one page.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchHit {
+    /// Canonical page id.
+    pub id: PageId,
+    /// How this page matched.
+    pub kind: SearchMatchKind,
+}
+
+/// Classification of a raw link target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LinkTargetKind {
+    /// Resolved to an internal page id.
+    InternalPage(PageId),
+    /// Resolved to an attachment file path in the knowledge base.
+    AttachmentPath(PathBuf),
+    /// Resolved to an external URL/scheme target.
+    ExternalUrl(String),
+    /// Could not classify target.
+    Unknown(String),
+}
+
+/// Result of resolving a page by title.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TitleResolution {
+    /// A unique page id was resolved.
+    Unique(PageId),
+    /// No matching title found.
+    NotFound,
+    /// Multiple candidate page ids matched.
+    Ambiguous(Vec<PageId>),
 }
 
 /// Indexed knowledge base metadata with lazy page loading.
@@ -203,10 +253,186 @@ impl KnowledgeBaseIndex {
         pages
     }
 
+    /// Returns page ids filtered by metadata query (title/id/tags), sorted by title.
+    pub fn filter_page_ids(&self, query: &str) -> Vec<PageId> {
+        let needle = query.trim().to_lowercase();
+        let mut metas = self.sorted_pages_by_title();
+        if !needle.is_empty() {
+            metas.retain(|m| page_meta_matches(m, &needle));
+        }
+        metas.into_iter().map(|m| m.id.clone()).collect()
+    }
+
+    /// Searches pages by metadata and optionally content, returning sorted hits.
+    pub fn search_hits(&self, query: &str, include_content: bool) -> Vec<SearchHit> {
+        let needle = query.trim().to_lowercase();
+        if needle.is_empty() {
+            return Vec::new();
+        }
+
+        let mut by_id: HashMap<PageId, SearchMatchKind> = HashMap::new();
+        let metas = self.sorted_pages_by_title();
+
+        for meta in &metas {
+            if page_meta_matches(meta, &needle) {
+                by_id.insert(meta.id.clone(), SearchMatchKind::Meta);
+            }
+        }
+
+        if include_content {
+            for meta in &metas {
+                if by_id.contains_key(&meta.id) {
+                    continue;
+                }
+                let Ok(page) = self.load_page(&meta.id) else {
+                    continue;
+                };
+                if render_page_to_text(&page).to_lowercase().contains(&needle) {
+                    by_id.insert(meta.id.clone(), SearchMatchKind::Content);
+                }
+            }
+        }
+
+        let mut hits = Vec::new();
+        for meta in metas {
+            if let Some(kind) = by_id.get(&meta.id) {
+                hits.push(SearchHit {
+                    id: meta.id.clone(),
+                    kind: *kind,
+                });
+            }
+        }
+        hits
+    }
+
+    /// Resolves a page id from title using case-insensitive exact match, then partial match.
+    pub fn resolve_page_id_by_title(&self, title: &str) -> TitleResolution {
+        let needle = title.trim().to_lowercase();
+        if needle.is_empty() {
+            return TitleResolution::NotFound;
+        }
+
+        let exact = self
+            .sorted_pages_by_title()
+            .into_iter()
+            .filter(|m| m.title.to_lowercase() == needle)
+            .map(|m| m.id.clone())
+            .collect::<Vec<_>>();
+        match exact.len() {
+            1 => return TitleResolution::Unique(exact[0].clone()),
+            n if n > 1 => return TitleResolution::Ambiguous(exact),
+            _ => {}
+        }
+
+        let partial = self
+            .sorted_pages_by_title()
+            .into_iter()
+            .filter(|m| m.title.to_lowercase().contains(&needle))
+            .map(|m| m.id.clone())
+            .collect::<Vec<_>>();
+        match partial.len() {
+            1 => TitleResolution::Unique(partial[0].clone()),
+            0 => TitleResolution::NotFound,
+            _ => TitleResolution::Ambiguous(partial),
+        }
+    }
+
+    /// Classifies a raw link target for navigation/open behavior.
+    pub fn classify_link_target(&self, raw: &str) -> LinkTargetKind {
+        let target = raw.trim();
+        if target.is_empty() {
+            return LinkTargetKind::Unknown(raw.to_string());
+        }
+
+        if self.pages.contains_key(target) {
+            return LinkTargetKind::InternalPage(target.to_string());
+        }
+
+        if let Some(rest) = target.strip_prefix("page:") {
+            let id = rest.trim();
+            if self.pages.contains_key(id) {
+                return LinkTargetKind::InternalPage(id.to_string());
+            }
+        }
+        if let Some(rest) = target.strip_prefix("title:") {
+            return match self.resolve_page_id_by_title(rest.trim()) {
+                TitleResolution::Unique(id) => LinkTargetKind::InternalPage(id),
+                _ => LinkTargetKind::Unknown(target.to_string()),
+            };
+        }
+
+        if let Some(uuid) = extract_uuid_like(target)
+            && self.pages.contains_key(uuid)
+        {
+            return LinkTargetKind::InternalPage(uuid.to_string());
+        }
+
+        if is_external_target(target) {
+            return LinkTargetKind::ExternalUrl(target.to_string());
+        }
+
+        if let Some(rel) = attachment_relative_path(target) {
+            return LinkTargetKind::AttachmentPath(self.root.join(rel));
+        }
+
+        match self.resolve_page_id_by_title(target) {
+            TitleResolution::Unique(id) => LinkTargetKind::InternalPage(id),
+            _ => LinkTargetKind::Unknown(target.to_string()),
+        }
+    }
+
     /// Returns the root path used to build this index.
     pub fn root(&self) -> &Path {
         &self.root
     }
+}
+
+fn page_meta_matches(meta: &PageMeta, needle: &str) -> bool {
+    meta.title.to_lowercase().contains(needle)
+        || meta.id.to_lowercase().contains(needle)
+        || meta.tags.iter().any(|t| t.to_lowercase().contains(needle))
+}
+
+fn is_external_target(target: &str) -> bool {
+    let lower = target.to_lowercase();
+    lower.starts_with("http://")
+        || lower.starts_with("https://")
+        || lower.starts_with("mailto:")
+        || lower.starts_with("file://")
+        || lower.contains("://")
+}
+
+fn attachment_relative_path(target: &str) -> Option<&str> {
+    if let Some(rest) = target.strip_prefix("attachments/") {
+        return Some(rest).map(|_| target);
+    }
+    if let Some(pos) = target.find("/attachments/") {
+        let start = pos + 1;
+        return target.get(start..);
+    }
+    if let Some(pos) = target.find("attachments/") {
+        return target.get(pos..);
+    }
+    None
+}
+
+fn extract_uuid_like(input: &str) -> Option<&str> {
+    let bytes = input.as_bytes();
+    if bytes.len() < 36 {
+        return None;
+    }
+
+    for i in 0..=bytes.len() - 36 {
+        let cand = &input[i..i + 36];
+        let ok = cand.chars().enumerate().all(|(idx, c)| match idx {
+            8 | 13 | 18 | 23 => c == '-',
+            _ => c.is_ascii_hexdigit(),
+        });
+        if ok {
+            return Some(cand);
+        }
+    }
+    None
 }
 
 #[derive(Debug, Deserialize)]
@@ -352,6 +578,11 @@ fn parse_node(item: &Value) -> Node {
             text: extract_text(item).unwrap_or_default(),
         },
         Some("listSnippet") => parse_list_node(item),
+        Some("pictureSnippet") => parse_picture_node(item),
+        Some("youtubeSnippet") => parse_youtube_node(item),
+        Some("elementSnippet") => parse_element_node(item),
+        Some("pharoRewrite") => parse_rewrite_node(item),
+        Some("wordSnippet") => parse_word_node(item),
         Some(
             t @ ("pharoSnippet"
             | "pythonSnippet"
@@ -416,6 +647,186 @@ fn parse_list_node(item: &Value) -> Node {
         }
     }
     Node::List { items }
+}
+
+fn parse_picture_node(item: &Value) -> Node {
+    let url = item
+        .get("url")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+        .or_else(|| extract_link(item))
+        .unwrap_or_default();
+    let text = item
+        .get("caption")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+        .or_else(|| extract_text(item))
+        .unwrap_or_else(|| "picture".to_string());
+
+    if url.is_empty() {
+        Node::Unknown {
+            typ: "pictureSnippet".to_string(),
+            raw: item.clone(),
+        }
+    } else {
+        Node::Link { text, url }
+    }
+}
+
+fn parse_youtube_node(item: &Value) -> Node {
+    let url = item
+        .get("youtubeUrl")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+        .or_else(|| extract_link(item))
+        .unwrap_or_default();
+    let text = extract_text(item).unwrap_or_else(|| "youtube".to_string());
+
+    if url.is_empty() {
+        Node::Unknown {
+            typ: "youtubeSnippet".to_string(),
+            raw: item.clone(),
+        }
+    } else {
+        Node::Link { text, url }
+    }
+}
+
+fn parse_element_node(item: &Value) -> Node {
+    let code = extract_code(item).or_else(|| extract_text(item));
+    if let Some(code) = code.filter(|c| !c.trim().is_empty()) {
+        Node::Code {
+            language: Some("element".to_string()),
+            code,
+        }
+    } else {
+        Node::Unknown {
+            typ: "elementSnippet".to_string(),
+            raw: item.clone(),
+        }
+    }
+}
+
+fn parse_rewrite_node(item: &Value) -> Node {
+    let search = item
+        .get("search")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+        .unwrap_or_default();
+    let replace = item
+        .get("replace")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+        .unwrap_or_default();
+    let scope = item
+        .get("scope")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned);
+    let is_method_pattern = item.get("isMethodPattern").and_then(Value::as_bool);
+
+    if search.is_empty() && replace.is_empty() {
+        Node::Unknown {
+            typ: "pharoRewrite".to_string(),
+            raw: item.clone(),
+        }
+    } else {
+        Node::Rewrite {
+            language: Some("pharo".to_string()),
+            search,
+            replace,
+            scope,
+            is_method_pattern,
+        }
+    }
+}
+
+fn parse_word_node(item: &Value) -> Node {
+    let mut lines = Vec::new();
+
+    if let Some(word) = item
+        .get("wordString")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        lines.push(word.to_string());
+    }
+
+    if let Some(explanation) = item
+        .get("explanationAttachmentNameString")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        lines.push(format!("explanation: {explanation}"));
+    }
+
+    if lines.is_empty() {
+        collect_text_fragments(item, &mut lines, 0, 12);
+    }
+
+    lines.retain(|s| !s.trim().is_empty());
+    lines.truncate(8);
+
+    if lines.is_empty() {
+        return Node::Unknown {
+            typ: "wordSnippet".to_string(),
+            raw: item.clone(),
+        };
+    }
+
+    let mut text = lines.join("\n");
+    if text.chars().count() > 1200 {
+        text = text.chars().take(1199).collect::<String>();
+        text.push('…');
+    }
+
+    Node::Paragraph { text }
+}
+
+fn collect_text_fragments(value: &Value, out: &mut Vec<String>, depth: usize, remaining: usize) {
+    if remaining == 0 || out.len() >= remaining || depth > 4 {
+        return;
+    }
+
+    match value {
+        Value::String(s) => {
+            let trimmed = s.trim();
+            if !trimmed.is_empty() {
+                out.push(trimmed.to_string());
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                if out.len() >= remaining {
+                    break;
+                }
+                collect_text_fragments(item, out, depth + 1, remaining);
+            }
+        }
+        Value::Object(map) => {
+            for (key, item) in map {
+                if matches!(
+                    key.as_str(),
+                    "__type"
+                        | "children"
+                        | "uid"
+                        | "createEmail"
+                        | "createTime"
+                        | "editEmail"
+                        | "editTime"
+                        | "paragraphStyle"
+                ) {
+                    continue;
+                }
+                if out.len() >= remaining {
+                    break;
+                }
+                collect_text_fragments(item, out, depth + 1, remaining);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn parse_heading(input: &str) -> Option<(u8, String)> {
@@ -550,12 +961,43 @@ pub fn render_nodes_to_text(nodes: &[Node]) -> String {
             Node::Quote { text } => {
                 out.push_str(&format!("> {text}\n\n"));
             }
+            Node::Rewrite {
+                language,
+                search,
+                replace,
+                scope,
+                is_method_pattern,
+            } => {
+                let lang = language.clone().unwrap_or_else(|| "rewrite".to_string());
+                out.push_str(&format!("```diff {lang}\n"));
+                if let Some(scope) = scope {
+                    out.push_str(&format!("# scope: {scope}\n"));
+                }
+                if let Some(is_method_pattern) = is_method_pattern {
+                    out.push_str(&format!("# method_pattern: {is_method_pattern}\n"));
+                }
+                for line in normalize_text(search).lines() {
+                    out.push('-');
+                    out.push_str(line);
+                    out.push('\n');
+                }
+                for line in normalize_text(replace).lines() {
+                    out.push('+');
+                    out.push_str(line);
+                    out.push('\n');
+                }
+                out.push_str("```\n\n");
+            }
             Node::Unknown { typ, .. } => {
                 out.push_str(&format!("[[unknown: {typ}]]\n\n"));
             }
         }
     }
     out
+}
+
+fn normalize_text(input: &str) -> String {
+    input.replace("\r\n", "\n").replace('\r', "\n")
 }
 
 /// Collects all observed `type`/`__type` values and their counts in one page file.
@@ -639,6 +1081,22 @@ mod tests {
         let link = json!({"__type":"pharoLinkSnippet","string":"link","url":"page:abc"});
         assert!(matches!(parse_node(&link), Node::Link { .. }));
 
+        let picture = json!({"__type":"pictureSnippet","url":"attachments/x.png","caption":"img"});
+        assert!(matches!(parse_node(&picture), Node::Link { .. }));
+
+        let youtube = json!({"__type":"youtubeSnippet","youtubeUrl":"https://youtu.be/abc"});
+        assert!(matches!(parse_node(&youtube), Node::Link { .. }));
+
+        let element = json!({"__type":"elementSnippet","code":"GtInspector newOn: 42"});
+        assert!(matches!(parse_node(&element), Node::Code { .. }));
+
+        let rewrite =
+            json!({"__type":"pharoRewrite","search":"a","replace":"b","isMethodPattern":true});
+        assert!(matches!(parse_node(&rewrite), Node::Rewrite { .. }));
+
+        let word = json!({"__type":"wordSnippet","wordString":"refactoring"});
+        assert!(matches!(parse_node(&word), Node::Paragraph { .. }));
+
         let list = json!({
             "__type":"listSnippet",
             "children":{"items":[{"__type":"textSnippet","string":"item"}]}
@@ -679,12 +1137,22 @@ mod tests {
             Node::Paragraph {
                 text: "para".to_string(),
             },
+            Node::Rewrite {
+                language: Some("pharo".to_string()),
+                search: "a".to_string(),
+                replace: "b".to_string(),
+                scope: None,
+                is_method_pattern: Some(true),
+            },
             Node::Unknown {
                 typ: "weird".to_string(),
                 raw: json!({"a":1}),
             },
         ]);
         assert!(text.contains("para"));
+        assert!(text.contains("```diff pharo"));
+        assert!(text.contains("-a"));
+        assert!(text.contains("+b"));
         assert!(text.contains("[[unknown: weird]]"));
     }
 
@@ -740,5 +1208,148 @@ mod tests {
         let mut out = Vec::new();
         parse_item_recursive(&root, &mut out);
         assert_eq!(out.len(), 2);
+    }
+
+    #[test]
+    fn filter_page_ids_matches_title_id_and_tags() {
+        let mut pages = HashMap::new();
+        pages.insert(
+            "id-1".to_string(),
+            PageMeta {
+                id: "id-1".to_string(),
+                title: "Alpha".to_string(),
+                path: PathBuf::from("/tmp/a"),
+                updated_at: None,
+                tags: vec!["rust".to_string()],
+            },
+        );
+        pages.insert(
+            "id-2".to_string(),
+            PageMeta {
+                id: "id-2".to_string(),
+                title: "Beta".to_string(),
+                path: PathBuf::from("/tmp/b"),
+                updated_at: None,
+                tags: vec!["pharo".to_string()],
+            },
+        );
+        let index = KnowledgeBaseIndex {
+            root: PathBuf::from("/tmp"),
+            pages,
+            index_issues: Vec::new(),
+        };
+
+        assert_eq!(index.filter_page_ids("alpha"), vec!["id-1".to_string()]);
+        assert_eq!(index.filter_page_ids("id-2"), vec!["id-2".to_string()]);
+        assert_eq!(index.filter_page_ids("pharo"), vec!["id-2".to_string()]);
+        assert_eq!(
+            index.filter_page_ids(""),
+            vec!["id-1".to_string(), "id-2".to_string()]
+        );
+    }
+
+    #[test]
+    fn resolve_page_id_by_title_handles_unique_ambiguous_and_missing() {
+        let mut pages = HashMap::new();
+        pages.insert(
+            "id-1".to_string(),
+            PageMeta {
+                id: "id-1".to_string(),
+                title: "Alpha".to_string(),
+                path: PathBuf::from("/tmp/a"),
+                updated_at: None,
+                tags: Vec::new(),
+            },
+        );
+        pages.insert(
+            "id-2".to_string(),
+            PageMeta {
+                id: "id-2".to_string(),
+                title: "Alphabet".to_string(),
+                path: PathBuf::from("/tmp/b"),
+                updated_at: None,
+                tags: Vec::new(),
+            },
+        );
+        let index = KnowledgeBaseIndex {
+            root: PathBuf::from("/tmp"),
+            pages,
+            index_issues: Vec::new(),
+        };
+
+        assert_eq!(
+            index.resolve_page_id_by_title("Alpha"),
+            TitleResolution::Unique("id-1".to_string())
+        );
+        assert!(matches!(
+            index.resolve_page_id_by_title("alp"),
+            TitleResolution::Ambiguous(_)
+        ));
+        assert_eq!(
+            index.resolve_page_id_by_title("zzz"),
+            TitleResolution::NotFound
+        );
+    }
+
+    #[test]
+    fn classify_link_target_covers_internal_attachment_external_unknown() {
+        let mut pages = HashMap::new();
+        pages.insert(
+            "8a505fa0-2222-3333-4444-555555555555".to_string(),
+            PageMeta {
+                id: "8a505fa0-2222-3333-4444-555555555555".to_string(),
+                title: "Alpha".to_string(),
+                path: PathBuf::from("/tmp/a"),
+                updated_at: None,
+                tags: Vec::new(),
+            },
+        );
+        let index = KnowledgeBaseIndex {
+            root: PathBuf::from("/kb"),
+            pages,
+            index_issues: Vec::new(),
+        };
+
+        assert!(matches!(
+            index.classify_link_target("8a505fa0-2222-3333-4444-555555555555"),
+            LinkTargetKind::InternalPage(_)
+        ));
+        assert!(matches!(
+            index.classify_link_target("title:alpha"),
+            LinkTargetKind::InternalPage(_)
+        ));
+        assert!(matches!(
+            index.classify_link_target("go to 8a505fa0-2222-3333-4444-555555555555 now"),
+            LinkTargetKind::InternalPage(_)
+        ));
+        assert!(matches!(
+            index.classify_link_target("attachments/image.png"),
+            LinkTargetKind::AttachmentPath(_)
+        ));
+        assert!(matches!(
+            index.classify_link_target("https://example.com"),
+            LinkTargetKind::ExternalUrl(_)
+        ));
+        assert!(matches!(
+            index.classify_link_target("not a thing"),
+            LinkTargetKind::Unknown(_)
+        ));
+    }
+
+    #[test]
+    fn parse_word_node_extracts_primary_fields() {
+        let item = json!({
+            "__type":"wordSnippet",
+            "wordString":"refactoring",
+            "explanationAttachmentNameString":"attachments/x/explanation.json"
+        });
+        let node = parse_node(&item);
+        match node {
+            Node::Paragraph { text } => {
+                assert!(text.contains("refactoring"));
+                assert!(text.contains("attachments/x/explanation.json"));
+            }
+            other => panic!("expected paragraph, got {other:?}"),
+        }
     }
 }

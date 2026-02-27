@@ -6,7 +6,10 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
-use lepiter_core::{KnowledgeBase, KnowledgeBaseIndex, Node, Page, PageId, render_page_to_text};
+use lepiter_core::{
+    KnowledgeBase, KnowledgeBaseIndex, LinkTargetKind, Node, Page, PageId, SearchMatchKind,
+    TitleResolution, render_page_to_text,
+};
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
@@ -68,16 +71,7 @@ impl App {
     }
 
     fn rebuild_visible_ids(&mut self) {
-        let needle = self.search.to_lowercase();
-        let mut metas = self.index.sorted_pages_by_title();
-        if !needle.is_empty() {
-            metas.retain(|m| {
-                m.title.to_lowercase().contains(&needle)
-                    || m.id.to_lowercase().contains(&needle)
-                    || m.tags.iter().any(|t| t.to_lowercase().contains(&needle))
-            });
-        }
-        self.visible_ids = metas.into_iter().map(|m| m.id.clone()).collect();
+        self.visible_ids = self.index.filter_page_ids(&self.search);
         if self.selected >= self.visible_ids.len() {
             self.selected = self.visible_ids.len().saturating_sub(1);
         }
@@ -173,46 +167,25 @@ impl App {
             return;
         };
 
-        if let Some(target_id) = self.resolve_internal_target(&link.target) {
-            self.open_page(&target_id, true);
-        } else {
-            self.status = format!("external link not supported in TUI: {}", link.target);
-        }
-    }
-
-    fn resolve_internal_target(&self, raw: &str) -> Option<PageId> {
-        let target = raw.trim();
-
-        if self.index.pages.contains_key(target) {
-            return Some(target.to_string());
-        }
-
-        if let Some(rest) = target.strip_prefix("page:") {
-            let id = rest.trim();
-            if self.index.pages.contains_key(id) {
-                return Some(id.to_string());
+        match self.index.classify_link_target(&link.target) {
+            LinkTargetKind::InternalPage(target_id) => {
+                self.open_page(&target_id, true);
+            }
+            LinkTargetKind::AttachmentPath(path) => {
+                let display = path.display().to_string();
+                match open_with_system(&display) {
+                    Ok(()) => self.status = format!("opened attachment: {display}"),
+                    Err(err) => self.status = format!("failed to open attachment: {err:#}"),
+                }
+            }
+            LinkTargetKind::ExternalUrl(url) => match open_with_system(&url) {
+                Ok(()) => self.status = format!("opened external link: {url}"),
+                Err(err) => self.status = format!("failed to open external link: {err:#}"),
+            },
+            LinkTargetKind::Unknown(raw) => {
+                self.status = format!("unresolved link target: {raw}");
             }
         }
-        if let Some(rest) = target.strip_prefix("title:") {
-            return self.resolve_page_by_title(rest.trim());
-        }
-
-        if let Some(uuid) = extract_uuid_like(target)
-            && self.index.pages.contains_key(uuid)
-        {
-            return Some(uuid.to_string());
-        }
-
-        self.resolve_page_by_title(target)
-    }
-
-    fn resolve_page_by_title(&self, title: &str) -> Option<PageId> {
-        let target = title.trim().to_lowercase();
-        self.index
-            .pages
-            .values()
-            .find(|m| m.title.to_lowercase() == target)
-            .map(|m| m.id.clone())
     }
 }
 
@@ -286,7 +259,7 @@ fn run_tui(kb_path: PathBuf) -> Result<()> {
 
 fn print_usage() {
     eprintln!(
-        "lepiter-cli <subcommand|kb-path> [args]\n\nsubcommands:\n  tui [kb-path]                                      launch the terminal reader (default path: ./lepiter)\n  info [kb-path]                                     print knowledge base metadata summary\n  list [--tsv] [kb-path]                             list pages (pretty columns by default)\n  ids [kb-path]                                      print page ids only (sorted by title)\n  search [--full-text] [--tsv] <query> [kb-path]     search by title/id/tags, optionally page content\n  show [--id|--by-title] <value> [kb-path]           render one page (default: title lookup)\n\nIf the first argument is a directory path, `info` mode is used implicitly."
+        "lepiter-cli <subcommand|kb-path> [args]\n\nsubcommands:\n  tui [kb-path]                                      launch the terminal reader (default path: ./lepiter)\n  info [kb-path]                                     print knowledge base metadata summary\n  list [--tsv] [kb-path]                             list pages (pretty columns by default)\n  ids [kb-path]                                      print page ids only (sorted by title)\n  search [--full-text] [--tsv] <query> [kb-path]     search by title/id/tags, optionally page content\n  show [--id|--by-title] [--open-links] <value> [kb-path]  render one page (default: title lookup)\n\nIf the first argument is a directory path, `info` mode is used implicitly."
     );
 }
 
@@ -367,7 +340,7 @@ fn print_kb_info(kb_path: PathBuf) -> Result<()> {
     Ok(())
 }
 
-fn print_page(kb_path: PathBuf, page_id: &str) -> Result<()> {
+fn print_page(kb_path: PathBuf, page_id: &str, show_links: bool) -> Result<()> {
     let index = KnowledgeBase::open(&kb_path)
         .with_context(|| format!("failed to open knowledge base at {}", kb_path.display()))?;
     let page = index
@@ -375,6 +348,26 @@ fn print_page(kb_path: PathBuf, page_id: &str) -> Result<()> {
         .with_context(|| format!("failed to load page id `{page_id}`"))?;
     let colored = std::io::stdout().is_terminal();
     print!("{}", render_page_pretty(&page, colored));
+    if show_links {
+        let links = collect_page_links(&page.content);
+        println!();
+        println!("resolved links:");
+        if links.is_empty() {
+            println!("  <none>");
+        } else {
+            for (idx, (label, target)) in links.iter().enumerate() {
+                let kind = match index.classify_link_target(target) {
+                    LinkTargetKind::InternalPage(id) => format!("internal:{id}"),
+                    LinkTargetKind::AttachmentPath(path) => {
+                        format!("attachment:{}", path.display())
+                    }
+                    LinkTargetKind::ExternalUrl(url) => format!("external:{url}"),
+                    LinkTargetKind::Unknown(raw) => format!("unknown:{raw}"),
+                };
+                println!("  [{}] {} -> {}", idx + 1, label, kind);
+            }
+        }
+    }
     Ok(())
 }
 
@@ -461,32 +454,17 @@ fn run_search(args: Vec<String>) -> Result<()> {
         .unwrap_or_else(|| PathBuf::from("./lepiter"));
     let index = KnowledgeBase::open(&kb_path)
         .with_context(|| format!("failed to open knowledge base at {}", kb_path.display()))?;
-
-    let needle = query.to_lowercase();
-    let mut hit_by_id = std::collections::HashMap::<String, &'static str>::new();
-
-    for meta in index.sorted_pages_by_title() {
-        let is_meta_hit = meta.title.to_lowercase().contains(&needle)
-            || meta.id.to_lowercase().contains(&needle)
-            || meta.tags.iter().any(|t| t.to_lowercase().contains(&needle));
-        if is_meta_hit {
-            hit_by_id.insert(meta.id.clone(), "meta");
-        }
-    }
-
-    if full_text {
-        for meta in index.sorted_pages_by_title() {
-            if hit_by_id.contains_key(&meta.id) {
-                continue;
-            }
-            let Ok(page) = index.load_page(&meta.id) else {
-                continue;
+    let hits = index.search_hits(&query, full_text);
+    let hit_by_id = hits
+        .into_iter()
+        .map(|hit| {
+            let kind = match hit.kind {
+                SearchMatchKind::Meta => "meta",
+                SearchMatchKind::Content => "content",
             };
-            if render_page_to_text(&page).to_lowercase().contains(&needle) {
-                hit_by_id.insert(meta.id.clone(), "content");
-            }
-        }
-    }
+            (hit.id, kind)
+        })
+        .collect::<std::collections::HashMap<_, _>>();
 
     if tsv {
         for meta in index.sorted_pages_by_title() {
@@ -536,12 +514,14 @@ fn run_search(args: Vec<String>) -> Result<()> {
 fn run_show(args: Vec<String>) -> Result<()> {
     let mut by_id = false;
     let mut by_title = false;
+    let mut open_links = false;
     let mut positional = Vec::new();
 
     for arg in args {
         match arg.as_str() {
             "--id" | "-i" => by_id = true,
             "--by-title" => by_title = true,
+            "--open-links" => open_links = true,
             _ => positional.push(arg),
         }
     }
@@ -569,52 +549,29 @@ fn run_show(args: Vec<String>) -> Result<()> {
     } else {
         resolve_page_id_by_title(&index, value)?
     };
-    print_page(kb_path, &page_id)
+    print_page(kb_path, &page_id, open_links)
 }
 
 fn resolve_page_id_by_title(index: &KnowledgeBaseIndex, title: &str) -> Result<String> {
-    let needle = title.trim().to_lowercase();
-
-    let exact = index
-        .sorted_pages_by_title()
-        .into_iter()
-        .filter(|m| m.title.to_lowercase() == needle)
-        .collect::<Vec<_>>();
-    if exact.len() == 1 {
-        return Ok(exact[0].id.clone());
+    match index.resolve_page_id_by_title(title) {
+        TitleResolution::Unique(id) => Ok(id),
+        TitleResolution::NotFound => bail!("no page found with title matching `{title}`"),
+        TitleResolution::Ambiguous(ids) => {
+            let sample = ids
+                .iter()
+                .take(10)
+                .map(|id| {
+                    if let Some(meta) = index.pages.get(id) {
+                        format!("{} ({})", meta.title, meta.id)
+                    } else {
+                        id.clone()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            bail!("title match is ambiguous ({} matches): {sample}", ids.len())
+        }
     }
-    if exact.len() > 1 {
-        let sample = exact
-            .iter()
-            .take(5)
-            .map(|m| format!("{} ({})", m.title, m.id))
-            .collect::<Vec<_>>()
-            .join(", ");
-        bail!("title is ambiguous: {sample}");
-    }
-
-    let partial = index
-        .sorted_pages_by_title()
-        .into_iter()
-        .filter(|m| m.title.to_lowercase().contains(&needle))
-        .collect::<Vec<_>>();
-    if partial.len() == 1 {
-        return Ok(partial[0].id.clone());
-    }
-    if partial.is_empty() {
-        bail!("no page found with title matching `{title}`");
-    }
-
-    let sample = partial
-        .iter()
-        .take(10)
-        .map(|m| format!("{} ({})", m.title, m.id))
-        .collect::<Vec<_>>()
-        .join(", ");
-    bail!(
-        "title match is ambiguous ({} matches): {sample}",
-        partial.len()
-    )
 }
 
 fn truncate_chars(input: &str, max_chars: usize) -> String {
@@ -1222,6 +1179,49 @@ fn render_node(node: &Node, out: &mut Vec<Line<'static>>, links: &mut Vec<LinkTa
             )));
             out.push(Line::raw(""));
         }
+        Node::Rewrite {
+            language,
+            search,
+            replace,
+            scope,
+            is_method_pattern,
+        } => {
+            let lang = language.clone().unwrap_or_else(|| "rewrite".to_string());
+            out.push(Line::from(Span::styled(
+                format!("rewrite ({lang})"),
+                Style::default()
+                    .fg(Color::LightMagenta)
+                    .add_modifier(Modifier::BOLD),
+            )));
+            if let Some(scope) = scope {
+                out.push(Line::from(Span::styled(
+                    format!("scope: {}", sanitize_for_terminal(scope)),
+                    Style::default().fg(Color::DarkGray),
+                )));
+            }
+            if let Some(is_method_pattern) = is_method_pattern {
+                out.push(Line::from(Span::styled(
+                    format!("method_pattern: {is_method_pattern}"),
+                    Style::default().fg(Color::DarkGray),
+                )));
+            }
+            for line in normalize_text(search).lines() {
+                out.push(Line::from(vec![
+                    Span::styled("- ", Style::default().fg(Color::Red)),
+                    Span::styled(sanitize_for_terminal(line), Style::default().fg(Color::Red)),
+                ]));
+            }
+            for line in normalize_text(replace).lines() {
+                out.push(Line::from(vec![
+                    Span::styled("+ ", Style::default().fg(Color::Green)),
+                    Span::styled(
+                        sanitize_for_terminal(line),
+                        Style::default().fg(Color::Green),
+                    ),
+                ]));
+            }
+            out.push(Line::raw(""));
+        }
         Node::List { items } => {
             for item in items {
                 let mut rendered = Vec::new();
@@ -1546,21 +1546,23 @@ fn highlight_selected_link_markers(
     out
 }
 
-fn extract_uuid_like(input: &str) -> Option<&str> {
-    let bytes = input.as_bytes();
-    if bytes.len() < 36 {
-        return None;
-    }
-
-    for i in 0..=bytes.len() - 36 {
-        let cand = &input[i..i + 36];
-        let ok = cand.chars().enumerate().all(|(idx, c)| match idx {
-            8 | 13 | 18 | 23 => c == '-',
-            _ => c.is_ascii_hexdigit(),
-        });
-        if ok {
-            return Some(cand);
+fn collect_page_links(nodes: &[Node]) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for node in nodes {
+        match node {
+            Node::Link { text, url } => out.push((text.clone(), url.clone())),
+            Node::List { items } => {
+                for item in items {
+                    out.extend(collect_page_links(item));
+                }
+            }
+            _ => {}
         }
     }
-    None
+    out
+}
+
+fn open_with_system(target: &str) -> Result<()> {
+    open::that(target).with_context(|| format!("failed to open target `{target}`"))?;
+    Ok(())
 }

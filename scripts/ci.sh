@@ -18,6 +18,10 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 echo "==> docs (warnings denied)"
 RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps
 
+echo "==> snippet matrix docs"
+./scripts/refresh_snippet_matrix.sh
+git diff --exit-code -- docs/snippet-support-matrix.md
+
 echo "==> tests"
 cargo test --workspace
 

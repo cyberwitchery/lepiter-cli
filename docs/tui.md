@@ -9,7 +9,11 @@
 ## search
 
 - trigger with `/` from any mode
-- matches title, id, and tags
+- always-on full-text matching:
+  - title, id, tags
+  - page content (incrementally indexed in background)
+- content matches show snippet previews in the list
+- opening a content-hit result attempts to jump to first visible match
 - `esc` returns to list view
 
 ## rendering
@@ -39,3 +43,22 @@ internal targets resolve by:
 - `page:<id>`
 - uuid-like target text
 - exact page-title match
+
+external targets:
+
+- attachment paths and urls are opened via the system opener (`open` crate)
+- failures are reported in the tui status line
+
+## caching
+
+tui keeps bounded lru caches:
+
+- parsed pages
+- rendered pages
+
+configure limits with env vars:
+
+- `LEPITER_TUI_PARSED_CACHE` (default `128`)
+- `LEPITER_TUI_RENDERED_CACHE` (default `128`)
+
+the list footer shows cache occupancy and full-text index progress.

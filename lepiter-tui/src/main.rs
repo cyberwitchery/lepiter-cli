@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::fs;
 use std::io::IsTerminal;
 use std::path::PathBuf;
@@ -37,15 +38,29 @@ struct RenderedPage {
     links: Vec<LinkTarget>,
 }
 
+#[derive(Debug, Clone)]
+struct IndexedPageText {
+    raw: String,
+    lower: String,
+}
+
 struct App {
     index: KnowledgeBaseIndex,
     visible_ids: Vec<PageId>,
     selected: usize,
     opened: Option<PageId>,
+    parsed_cache: HashMap<PageId, Page>,
     rendered_cache: HashMap<PageId, RenderedPage>,
+    parsed_lru: VecDeque<PageId>,
+    rendered_lru: VecDeque<PageId>,
+    max_parsed_cache: usize,
+    max_rendered_cache: usize,
     page_scroll: usize,
     selected_link: usize,
     search: String,
+    search_hit_kind: HashMap<PageId, SearchMatchKind>,
+    text_index: HashMap<PageId, IndexedPageText>,
+    text_index_queue: VecDeque<PageId>,
     history: Vec<PageId>,
     mode: Mode,
     status: String,
@@ -53,25 +68,69 @@ struct App {
 
 impl App {
     fn new(index: KnowledgeBaseIndex) -> Self {
+        let max_parsed_cache = cache_limit_from_env("LEPITER_TUI_PARSED_CACHE", 128);
+        let max_rendered_cache = cache_limit_from_env("LEPITER_TUI_RENDERED_CACHE", 128);
         let mut app = Self {
             index,
             visible_ids: Vec::new(),
             selected: 0,
             opened: None,
+            parsed_cache: HashMap::new(),
             rendered_cache: HashMap::new(),
+            parsed_lru: VecDeque::new(),
+            rendered_lru: VecDeque::new(),
+            max_parsed_cache,
+            max_rendered_cache,
             page_scroll: 0,
             selected_link: 0,
             search: String::new(),
+            search_hit_kind: HashMap::new(),
+            text_index: HashMap::new(),
+            text_index_queue: VecDeque::new(),
             history: Vec::new(),
             mode: Mode::List,
             status: String::new(),
         };
+        app.reset_text_index_queue();
         app.rebuild_visible_ids();
         app
     }
 
     fn rebuild_visible_ids(&mut self) {
-        self.visible_ids = self.index.filter_page_ids(&self.search);
+        let query = self.search.trim();
+        if query.is_empty() {
+            self.visible_ids = self
+                .index
+                .sorted_pages_by_title()
+                .into_iter()
+                .map(|m| m.id.clone())
+                .collect();
+            self.search_hit_kind.clear();
+            self.reset_text_index_queue();
+        } else {
+            let needle = query.to_lowercase();
+            let mut hit_kind = HashMap::new();
+            for id in self.index.filter_page_ids(query) {
+                hit_kind.insert(id, SearchMatchKind::Meta);
+            }
+            for (id, text) in &self.text_index {
+                if hit_kind.contains_key(id) {
+                    continue;
+                }
+                if text.lower.contains(&needle) {
+                    hit_kind.insert(id.clone(), SearchMatchKind::Content);
+                }
+            }
+
+            let mut ids = Vec::new();
+            for meta in self.index.sorted_pages_by_title() {
+                if hit_kind.contains_key(&meta.id) {
+                    ids.push(meta.id.clone());
+                }
+            }
+            self.visible_ids = ids;
+            self.search_hit_kind = hit_kind;
+        }
         if self.selected >= self.visible_ids.len() {
             self.selected = self.visible_ids.len().saturating_sub(1);
         }
@@ -96,20 +155,30 @@ impl App {
             return;
         };
         self.open_page(&id, false);
+        if self.search_hit_kind.get(&id) == Some(&SearchMatchKind::Content) {
+            self.jump_to_search_match(&id);
+        }
     }
 
     fn open_page(&mut self, id: &str, from_link: bool) {
-        if !self.rendered_cache.contains_key(id) {
-            match self.index.load_page(id) {
-                Ok(page) => {
-                    let rendered = render_page(&page);
-                    self.rendered_cache.insert(id.to_string(), rendered);
-                }
+        if self.rendered_cache.contains_key(id) {
+            touch_lru(&mut self.rendered_lru, id);
+        } else {
+            let page = match self.get_or_load_page(id) {
+                Ok(page) => page,
                 Err(err) => {
                     self.status = format!("failed to load page: {err:#}");
                     return;
                 }
-            }
+            };
+            let rendered = render_page(&page);
+            insert_lru(
+                &mut self.rendered_cache,
+                &mut self.rendered_lru,
+                id.to_string(),
+                rendered,
+                self.max_rendered_cache,
+            );
         }
 
         if from_link && let Some(current) = self.opened.as_ref() {
@@ -121,6 +190,34 @@ impl App {
         self.selected_link = 0;
         self.mode = Mode::Page;
         self.status.clear();
+    }
+
+    fn get_or_load_page(&mut self, id: &str) -> Result<Page> {
+        if self.parsed_cache.contains_key(id) {
+            touch_lru(&mut self.parsed_lru, id);
+            if let Some(page) = self.parsed_cache.get(id) {
+                return Ok(page.clone());
+            }
+        }
+
+        let page = self.index.load_page(id)?;
+        insert_lru(
+            &mut self.parsed_cache,
+            &mut self.parsed_lru,
+            id.to_string(),
+            page.clone(),
+            self.max_parsed_cache,
+        );
+        Ok(page)
+    }
+
+    fn reset_text_index_queue(&mut self) {
+        self.text_index_queue = self
+            .index
+            .sorted_pages_by_title()
+            .into_iter()
+            .map(|m| m.id.clone())
+            .collect();
     }
 
     fn back_to_list(&mut self) {
@@ -186,6 +283,81 @@ impl App {
                 self.status = format!("unresolved link target: {raw}");
             }
         }
+    }
+
+    fn advance_full_text_index(&mut self, batch_size: usize) {
+        let query = self.search.trim();
+        if query.is_empty() {
+            return;
+        }
+
+        let needle = query.to_lowercase();
+        let mut changed = false;
+
+        for _ in 0..batch_size {
+            let Some(id) = self.text_index_queue.pop_front() else {
+                break;
+            };
+            if self.text_index.contains_key(&id) {
+                continue;
+            }
+
+            let Ok(page) = self.get_or_load_page(&id) else {
+                continue;
+            };
+            let raw = render_page_to_text(&page);
+            let lower = raw.to_lowercase();
+            if lower.contains(&needle) {
+                changed = true;
+            }
+            self.text_index.insert(id, IndexedPageText { raw, lower });
+        }
+
+        if changed {
+            self.rebuild_visible_ids();
+        }
+    }
+
+    fn snippet_for(&self, id: &str, query: &str) -> Option<String> {
+        let text = self.text_index.get(id)?;
+        let needle = query.trim().to_lowercase();
+        if needle.is_empty() {
+            return None;
+        }
+        let idx = text.lower.find(&needle)?;
+        let start = idx.saturating_sub(40);
+        let end = (idx + needle.len() + 80).min(text.raw.len());
+        let fragment = text.raw.get(start..end).unwrap_or("").replace('\n', " ");
+        let fragment = fragment.trim();
+        if fragment.is_empty() {
+            None
+        } else {
+            Some(truncate_chars(fragment, 120))
+        }
+    }
+
+    fn jump_to_search_match(&mut self, id: &str) {
+        let query = self.search.trim().to_lowercase();
+        if query.is_empty() {
+            return;
+        }
+        let Some(page) = self.rendered_cache.get(id) else {
+            return;
+        };
+        let mut line_idx = 0usize;
+        for (idx, line) in page.lines.iter().enumerate() {
+            let text = line
+                .spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<String>()
+                .to_lowercase();
+            if text.contains(&query) {
+                line_idx = idx;
+                break;
+            }
+        }
+        self.page_scroll = line_idx;
     }
 }
 
@@ -854,11 +1026,51 @@ fn keywords_for_language(language: &str) -> &'static [&'static str] {
     }
 }
 
+fn cache_limit_from_env(var: &str, default: usize) -> usize {
+    std::env::var(var)
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(default)
+}
+
+fn touch_lru(order: &mut VecDeque<PageId>, id: &str) {
+    if let Some(pos) = order.iter().position(|x| x == id) {
+        order.remove(pos);
+    }
+    order.push_back(id.to_string());
+}
+
+fn insert_lru<T>(
+    map: &mut HashMap<PageId, T>,
+    order: &mut VecDeque<PageId>,
+    id: PageId,
+    value: T,
+    max_entries: usize,
+) {
+    if map.contains_key(&id) {
+        map.insert(id.clone(), value);
+        touch_lru(order, &id);
+        return;
+    }
+
+    if max_entries > 0
+        && map.len() >= max_entries
+        && let Some(oldest) = order.pop_front()
+    {
+        map.remove(&oldest);
+    }
+
+    order.push_back(id.clone());
+    map.insert(id, value);
+}
+
 fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> Result<()> {
     loop {
         terminal.draw(|f| ui(f, &app))?;
 
         if !event::poll(Duration::from_millis(100))? {
+            app.advance_full_text_index(4);
             continue;
         }
 
@@ -888,6 +1100,7 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> Result<()> {
                 }
                 _ => {}
             }
+            app.advance_full_text_index(4);
             continue;
         }
 
@@ -947,6 +1160,8 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> Result<()> {
             }
             _ => {}
         }
+
+        app.advance_full_text_index(4);
     }
 
     Ok(())
@@ -997,6 +1212,13 @@ fn render_list_view(frame: &mut Frame, app: &App) {
         .map(|id| {
             let meta = &app.index.pages[id];
             let mut text = format!("{}  [{}]", meta.title, meta.id);
+            if let Some(kind) = app.search_hit_kind.get(id)
+                && *kind == SearchMatchKind::Content
+                && let Some(snippet) = app.snippet_for(id, &app.search)
+            {
+                text.push_str("  :: ");
+                text.push_str(&snippet);
+            }
             if !meta.tags.is_empty() {
                 text.push_str("  #");
                 text.push_str(&meta.tags.join(" #"));
@@ -1030,8 +1252,12 @@ fn render_list_view(frame: &mut Frame, app: &App) {
     frame.render_stateful_widget(list, chunks[1], &mut state);
 
     let mut status = format!(
-        "matches: {} | j/k or up/down move | enter open | / search | q quit",
-        app.visible_ids.len()
+        "matches: {} | index: {}/{} | cache p/r: {}/{} | j/k or up/down move | enter open | / search | q quit",
+        app.visible_ids.len(),
+        app.text_index.len(),
+        app.index.pages.len(),
+        app.parsed_cache.len(),
+        app.rendered_cache.len()
     );
     if !app.status.is_empty() {
         status.push_str(" | ");

@@ -372,7 +372,7 @@ dependencies = [
 
 [[package]]
 name = "lepiter-cli"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "crossterm 0.29.0",
@@ -386,7 +386,7 @@ dependencies = [
 
 [[package]]
 name = "lepiter-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "chrono",

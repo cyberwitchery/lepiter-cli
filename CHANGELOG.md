@@ -2,6 +2,24 @@
 
 all notable changes to this project are documented in this file.
 
+## 0.4.0 - 2026-02-28
+
+### added
+- bounded tui caches for large knowledge bases:
+  - parsed page lru cache
+  - rendered page lru cache
+  - env configuration:
+    - `LEPITER_TUI_PARSED_CACHE` (default `128`)
+    - `LEPITER_TUI_RENDERED_CACHE` (default `128`)
+
+### changed
+- tui search now behaves as always-on full-text:
+  - title/id/tags + content matches
+  - incremental background indexing during typing and idle frames
+  - content-hit snippet previews in list results
+  - opening a content-hit result jumps to the first visible match when possible
+- tui list footer now shows full-text index progress and cache occupancy
+
 ## 0.3.0 - 2026-02-26
 
 ### added

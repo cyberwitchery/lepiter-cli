@@ -321,10 +321,10 @@ impl PluginManager {
         if self.max_cache == 0 {
             return;
         }
-        if self.cache.len() >= self.max_cache {
-            if let Some(first_key) = self.cache.keys().next().cloned() {
-                self.cache.remove(&first_key);
-            }
+        if self.cache.len() >= self.max_cache
+            && let Some(first_key) = self.cache.keys().next().cloned()
+        {
+            self.cache.remove(&first_key);
         }
         self.cache.insert(key, value);
     }

@@ -1,12 +1,13 @@
-//! Core data model and parser for Lepiter knowledge bases stored as page JSON files.
+//! core data model and parser for lepiter knowledge bases stored as page json files.
 //!
-//! # Scope
-//! - Scans a Lepiter directory and builds a metadata index keyed by page id.
-//! - Loads and parses individual pages lazily by id.
-//! - Converts page snippet trees into a stable block-oriented node model.
-//! - Preserves unknown node types as [`Node::Unknown`] to keep consumers resilient.
+//! # scope
+//! - scans a lepiter directory and builds a metadata index keyed by page id.
+//! - loads and parses individual pages lazily by id.
+//! - converts page snippet trees into a stable block-oriented node model.
+//! - preserves unknown node types as [`Node::Unknown`] to keep consumers resilient.
+//! - provides a plugin sdk for external snippet renderers (`plugin` module).
 //!
-//! # Example
+//! # example
 //! ```no_run
 //! use lepiter_core::KnowledgeBase;
 //!
@@ -18,17 +19,44 @@
 //! # Ok(())
 //! # }
 //! ```
+//!
+//! # plugin sdk
+//! ```no_run
+//! use lepiter_core::plugin::{PluginRequest, PluginResponse};
+//! use lepiter_core::lepiter_plugin_main;
+//!
+//! fn handle(req: PluginRequest) -> PluginResponse {
+//!     if req.typ != "wardleyMap" {
+//!         return PluginResponse::error("unsupported type");
+//!     }
+//!     PluginResponse::ok(vec!["example".to_string()])
+//! }
+//!
+//! lepiter_plugin_main!(handle);
+//! ```
 
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, FixedOffset};
 use serde::Deserialize;
 use serde_json::Value;
+use thiserror::Error;
 use walkdir::WalkDir;
+
+pub mod plugin;
+
+#[macro_export]
+macro_rules! lepiter_plugin_main {
+    ($handler:path) => {
+        fn main() -> std::io::Result<()> {
+            $crate::plugin::plugin_loop($handler)
+        }
+    };
+}
 
 /// Canonical page identifier used throughout the API.
 pub type PageId = String;
@@ -133,6 +161,79 @@ pub enum LinkTargetKind {
     ExternalUrl(String),
     /// Could not classify target.
     Unknown(String),
+}
+
+/// Resolved attachment target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedAttachment {
+    /// Full path to the attachment.
+    pub path: PathBuf,
+    /// Whether the attachment exists on disk.
+    pub exists: bool,
+}
+
+/// Attachment resolution failures.
+#[derive(Debug, Error)]
+pub enum AttachmentError {
+    #[error("attachment target was empty")]
+    Empty,
+    #[error("attachment target not recognized: {0}")]
+    NotAttachment(String),
+    #[error("attachment path escapes knowledge base root: {0}")]
+    EscapesRoot(String),
+    #[error("attachment not found: {0}")]
+    Missing(PathBuf),
+}
+
+type AttachmentResult<T> = std::result::Result<T, AttachmentError>;
+
+/// Resolves attachment targets relative to the knowledge base root.
+#[derive(Debug, Clone)]
+pub struct AttachmentResolver {
+    root: PathBuf,
+}
+
+impl AttachmentResolver {
+    /// Creates a resolver rooted at the knowledge base path.
+    pub fn new(root: impl AsRef<Path>) -> Self {
+        Self {
+            root: root.as_ref().to_path_buf(),
+        }
+    }
+
+    /// Resolves an attachment target to a path and existence flag.
+    pub fn resolve(&self, raw: &str) -> AttachmentResult<ResolvedAttachment> {
+        let target = raw.trim();
+        if target.is_empty() {
+            return Err(AttachmentError::Empty);
+        }
+        let rel = extract_attachment_relative(target)
+            .ok_or_else(|| AttachmentError::NotAttachment(target.to_string()))?;
+        let rel = sanitize_relative_path(rel)?;
+        let path = self.root.join(rel);
+        let exists = path.exists();
+        Ok(ResolvedAttachment { path, exists })
+    }
+
+    /// Resolves an attachment target to a path only (ignores missing).
+    pub fn resolve_path(&self, raw: &str) -> Option<PathBuf> {
+        self.resolve(raw).ok().map(|resolved| resolved.path)
+    }
+
+    /// Resolves an attachment target and ensures the file exists.
+    pub fn resolve_existing(&self, raw: &str) -> AttachmentResult<PathBuf> {
+        let resolved = self.resolve(raw)?;
+        if resolved.exists {
+            Ok(resolved.path)
+        } else {
+            Err(AttachmentError::Missing(resolved.path))
+        }
+    }
+
+    /// Returns the resolver root.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
 }
 
 /// Result of resolving a page by title.
@@ -371,8 +472,8 @@ impl KnowledgeBaseIndex {
             return LinkTargetKind::ExternalUrl(target.to_string());
         }
 
-        if let Some(rel) = attachment_relative_path(target) {
-            return LinkTargetKind::AttachmentPath(self.root.join(rel));
+        if let Some(path) = self.attachment_resolver().resolve_path(target) {
+            return LinkTargetKind::AttachmentPath(path);
         }
 
         match self.resolve_page_id_by_title(target) {
@@ -384,6 +485,11 @@ impl KnowledgeBaseIndex {
     /// Returns the root path used to build this index.
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// Returns an attachment resolver rooted at this knowledge base.
+    pub fn attachment_resolver(&self) -> AttachmentResolver {
+        AttachmentResolver::new(&self.root)
     }
 }
 
@@ -402,7 +508,7 @@ fn is_external_target(target: &str) -> bool {
         || lower.contains("://")
 }
 
-fn attachment_relative_path(target: &str) -> Option<&str> {
+fn extract_attachment_relative(target: &str) -> Option<&str> {
     if let Some(rest) = target.strip_prefix("attachments/") {
         return Some(rest).map(|_| target);
     }
@@ -414,6 +520,26 @@ fn attachment_relative_path(target: &str) -> Option<&str> {
         return target.get(pos..);
     }
     None
+}
+
+fn sanitize_relative_path(rel: &str) -> AttachmentResult<PathBuf> {
+    let rel = rel.trim();
+    if rel.is_empty() {
+        return Err(AttachmentError::Empty);
+    }
+    let path = Path::new(rel);
+    if path.is_absolute() {
+        return Err(AttachmentError::EscapesRoot(rel.to_string()));
+    }
+    for comp in path.components() {
+        match comp {
+            Component::Prefix(_) | Component::RootDir | Component::ParentDir => {
+                return Err(AttachmentError::EscapesRoot(rel.to_string()));
+            }
+            _ => {}
+        }
+    }
+    Ok(path.to_path_buf())
 }
 
 fn extract_uuid_like(input: &str) -> Option<&str> {
@@ -1049,6 +1175,14 @@ mod tests {
         std::env::temp_dir().join(format!("lepiter-core-{name}-{ts}.lepiter"))
     }
 
+    fn temp_dir_path(name: &str) -> PathBuf {
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time")
+            .as_nanos();
+        std::env::temp_dir().join(format!("lepiter-core-{name}-{ts}"))
+    }
+
     #[test]
     fn parse_heading_detects_markdown_style() {
         assert_eq!(
@@ -1334,6 +1468,24 @@ mod tests {
             index.classify_link_target("not a thing"),
             LinkTargetKind::Unknown(_)
         ));
+    }
+
+    #[test]
+    fn attachment_resolver_reports_missing_files() -> Result<()> {
+        let root = temp_dir_path("attachments");
+        let attachments = root.join("attachments");
+        fs::create_dir_all(&attachments)?;
+        fs::write(attachments.join("ok.txt"), b"ok")?;
+
+        let resolver = AttachmentResolver::new(&root);
+        let resolved = resolver.resolve("attachments/ok.txt")?;
+        assert!(resolved.exists);
+
+        let missing = resolver.resolve_existing("attachments/missing.txt");
+        assert!(matches!(missing, Err(AttachmentError::Missing(_))));
+
+        fs::remove_dir_all(&root)?;
+        Ok(())
     }
 
     #[test]

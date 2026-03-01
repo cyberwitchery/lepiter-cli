@@ -10,6 +10,8 @@ the project separates parsing/modeling concerns from terminal rendering.
 - builds `KnowledgeBaseIndex` (`HashMap<PageId, PageMeta>`)
 - lazily parses page content to `Page`
 - normalizes recursive source json into a stable block model (`Node`)
+- resolves attachment paths relative to kb root (`AttachmentResolver`)
+- optional external renderers handle unknown snippet types via ipc
 
 `lepiter-cli` (package in `lepiter-tui/`):
 

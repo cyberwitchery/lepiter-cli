@@ -16,6 +16,7 @@ this repository is a cargo workspace with two crates:
 - resilient parsing: unknown source node types are preserved as `Node::Unknown`.
 - probe example to inspect corpus shape and parse issues.
 - tui with full-screen list/search, full-screen page reading, markdown-like rendering, and internal link navigation.
+- optional external snippet plugins via ipc (see `docs/plugins.md`).
 
 ## quick start
 
@@ -65,6 +66,7 @@ page view:
 
 - architecture: [`docs/architecture.md`](docs/architecture.md)
 - core api guide: [`docs/core-api.md`](docs/core-api.md)
+- plugin system: [`docs/plugins.md`](docs/plugins.md)
 - tui behavior: [`docs/tui.md`](docs/tui.md)
 - snippet support matrix: [`docs/snippet-support-matrix.md`](docs/snippet-support-matrix.md)
 

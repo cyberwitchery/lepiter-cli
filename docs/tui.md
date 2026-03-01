@@ -22,6 +22,7 @@
   - `**bold**`, `*italic*`, `` `inline code` ``, links
 - basic language-aware code highlighting for common snippet languages
 - control characters are sanitized for terminal safety
+- unknown snippet types can be rendered by external plugins (see `docs/plugins.md`)
 
 ## link navigation
 
@@ -46,7 +47,8 @@ internal targets resolve by:
 
 external targets:
 
-- attachment paths and urls are opened via the system opener (`open` crate)
+- attachment paths are resolved relative to the kb root before opening
+- urls are opened via the system opener (`open` crate)
 - failures are reported in the tui status line
 
 ## caching

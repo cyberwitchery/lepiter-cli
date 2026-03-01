@@ -2,6 +2,14 @@
 
 all notable changes to this project are documented in this file.
 
+## 0.5.0 - 2026-03-01
+
+### added
+- `AttachmentResolver` for attachment path resolution and missing-file reporting
+- external snippet renderers via ipc (`LEPITER_PLUGIN_CONFIG`)
+- plugin sdk types + `lepiter_plugin_main!` macro
+- tui external snippet renderer hook via `LEPITER_PLUGIN_CONFIG` (experimental)
+
 ## 0.4.0 - 2026-02-28
 
 ### added

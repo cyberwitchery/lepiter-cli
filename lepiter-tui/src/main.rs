@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use lepiter_core::plugin::{PluginRequest, PluginResponse};
 use lepiter_core::{
     KnowledgeBase, KnowledgeBaseIndex, LinkTargetKind, Node, Page, PageId, SearchMatchKind,
     TitleResolution, render_page_to_text,
@@ -16,6 +17,13 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::{DefaultTerminal, Frame};
+use serde::Deserialize;
+use serde_json::Value;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::time::Instant;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mode {
@@ -28,6 +36,335 @@ enum Mode {
 struct LinkTarget {
     label: String,
     target: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct PluginConfig {
+    #[serde(default)]
+    plugins: Vec<PluginSpec>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PluginSpec {
+    name: String,
+    #[serde(default)]
+    binary: Option<String>,
+    #[serde(default)]
+    args: Vec<String>,
+    types: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+enum PluginRender {
+    Lines(Vec<String>),
+    Error(String),
+}
+
+struct PluginProcess {
+    child: Child,
+    stdin: BufWriter<ChildStdin>,
+    stdout: BufReader<ChildStdout>,
+}
+
+impl PluginProcess {
+    fn spawn(binary: &str, args: &[String]) -> Result<Self> {
+        let mut cmd = Command::new(binary);
+        cmd.args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        let mut child = cmd.spawn().with_context(|| format!("spawn {binary}"))?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("missing plugin stdin"))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("missing plugin stdout"))?;
+        Ok(Self {
+            child,
+            stdin: BufWriter::new(stdin),
+            stdout: BufReader::new(stdout),
+        })
+    }
+
+    fn request_with_timeout(
+        &mut self,
+        req: &PluginRequest,
+        timeout: Duration,
+    ) -> Result<PluginResponse> {
+        if let Some(status) = self.child.try_wait()? {
+            bail!("plugin exited: {status}");
+        }
+        let mut payload = serde_json::to_string(req)?;
+        payload.push('\n');
+        self.stdin.write_all(payload.as_bytes())?;
+        self.stdin.flush()?;
+
+        let start = Instant::now();
+        loop {
+            if start.elapsed() >= timeout {
+                bail!("plugin timeout after {}ms", timeout.as_millis());
+            }
+            if let Some(status) = self.child.try_wait()? {
+                bail!("plugin exited: {status}");
+            }
+            let mut line = String::new();
+            let n = self.stdout.read_line(&mut line)?;
+            if n == 0 {
+                continue;
+            }
+            let resp: PluginResponse = serde_json::from_str(&line)?;
+            return Ok(resp);
+        }
+    }
+}
+
+struct PluginManager {
+    processes: Vec<PluginHandle>,
+    by_type: HashMap<String, usize>,
+    cache: HashMap<(String, u64), PluginRender>,
+    max_cache: usize,
+    timeout: Duration,
+    retries: usize,
+    notes: Vec<String>,
+}
+
+struct PluginHandle {
+    name: String,
+    process: PluginProcess,
+}
+
+impl PluginManager {
+    fn empty() -> Self {
+        Self {
+            processes: Vec::new(),
+            by_type: HashMap::new(),
+            cache: HashMap::new(),
+            max_cache: cache_limit_from_env("LEPITER_PLUGIN_CACHE", 128),
+            timeout: Duration::from_millis(
+                std::env::var("LEPITER_PLUGIN_TIMEOUT_MS")
+                    .ok()
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .unwrap_or(250),
+            ),
+            retries: std::env::var("LEPITER_PLUGIN_RETRIES")
+                .ok()
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(1),
+            notes: Vec::new(),
+        }
+    }
+
+    fn from_env() -> Self {
+        let Ok(path) = std::env::var("LEPITER_PLUGIN_CONFIG") else {
+            return Self::empty();
+        };
+        let bytes = match fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                return Self {
+                    processes: Vec::new(),
+                    by_type: HashMap::new(),
+                    cache: HashMap::new(),
+                    max_cache: cache_limit_from_env("LEPITER_PLUGIN_CACHE", 128),
+                    timeout: Duration::from_millis(
+                        std::env::var("LEPITER_PLUGIN_TIMEOUT_MS")
+                            .ok()
+                            .and_then(|v| v.parse::<u64>().ok())
+                            .unwrap_or(250),
+                    ),
+                    retries: std::env::var("LEPITER_PLUGIN_RETRIES")
+                        .ok()
+                        .and_then(|v| v.parse::<usize>().ok())
+                        .unwrap_or(1),
+                    notes: vec![format!("plugin config read failed: {err}")],
+                };
+            }
+        };
+        let config: PluginConfig = match serde_json::from_slice(&bytes) {
+            Ok(config) => config,
+            Err(err) => {
+                return Self {
+                    processes: Vec::new(),
+                    by_type: HashMap::new(),
+                    cache: HashMap::new(),
+                    max_cache: cache_limit_from_env("LEPITER_PLUGIN_CACHE", 128),
+                    timeout: Duration::from_millis(
+                        std::env::var("LEPITER_PLUGIN_TIMEOUT_MS")
+                            .ok()
+                            .and_then(|v| v.parse::<u64>().ok())
+                            .unwrap_or(250),
+                    ),
+                    retries: std::env::var("LEPITER_PLUGIN_RETRIES")
+                        .ok()
+                        .and_then(|v| v.parse::<usize>().ok())
+                        .unwrap_or(1),
+                    notes: vec![format!("plugin config parse failed: {err}")],
+                };
+            }
+        };
+
+        let mut processes = Vec::new();
+        let mut by_type = HashMap::new();
+        let mut notes = Vec::new();
+        for plugin in config.plugins {
+            let process = match spawn_plugin_process(&plugin) {
+                Ok(process) => process,
+                Err(err) => {
+                    notes.push(format!("plugin {} failed to start: {err}", plugin.name));
+                    continue;
+                }
+            };
+            let idx = processes.len();
+            processes.push(PluginHandle {
+                name: plugin.name.clone(),
+                process,
+            });
+            for typ in plugin.types {
+                if by_type.contains_key(&typ) {
+                    notes.push(format!("plugin type already registered: {typ}"));
+                    continue;
+                }
+                by_type.insert(typ, idx);
+            }
+        }
+
+        Self {
+            processes,
+            by_type,
+            cache: HashMap::new(),
+            max_cache: cache_limit_from_env("LEPITER_PLUGIN_CACHE", 128),
+            timeout: Duration::from_millis(
+                std::env::var("LEPITER_PLUGIN_TIMEOUT_MS")
+                    .ok()
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .unwrap_or(250),
+            ),
+            retries: std::env::var("LEPITER_PLUGIN_RETRIES")
+                .ok()
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(1),
+            notes,
+        }
+    }
+
+    fn apply_status(&mut self, status: &mut String) {
+        if !self.notes.is_empty() && status.is_empty() {
+            *status = self.notes.join(" | ");
+        }
+    }
+
+    fn render(&mut self, typ: &str, raw: &Value) -> Option<PluginRender> {
+        let idx = *self.by_type.get(typ)?;
+        let handle = self.processes.get_mut(idx)?;
+
+        let key = (typ.to_string(), hash_value(raw));
+        if let Some(hit) = self.cache.get(&key).cloned() {
+            return Some(hit);
+        }
+
+        let req = PluginRequest {
+            typ: typ.to_string(),
+            snippet: raw.clone(),
+        };
+        let mut last_err = None;
+        for _ in 0..=self.retries {
+            match handle.process.request_with_timeout(&req, self.timeout) {
+                Ok(resp) => {
+                    let rendered = if resp.ok {
+                        PluginRender::Lines(resp.lines)
+                    } else {
+                        let msg = resp
+                            .error
+                            .unwrap_or_else(|| "plugin returned error".to_string());
+                        PluginRender::Error(format!("{}: {}", handle.name, msg))
+                    };
+                    self.insert_cache(key.clone(), rendered.clone());
+                    return Some(rendered);
+                }
+                Err(err) => {
+                    last_err = Some(err);
+                }
+            }
+        }
+        let err = last_err.unwrap_or_else(|| anyhow::anyhow!("plugin failed"));
+        let rendered = PluginRender::Error(format!("{}: {err}", handle.name));
+        self.insert_cache(key, rendered.clone());
+        Some(rendered)
+    }
+
+    fn status_line(&self) -> String {
+        let mut out = format!(
+            "plugins: {} | cache: {}/{} | timeout: {}ms | retries: {}",
+            self.processes.len(),
+            self.cache.len(),
+            self.max_cache,
+            self.timeout.as_millis(),
+            self.retries
+        );
+        if !self.by_type.is_empty() {
+            out.push_str(" | types: ");
+            let mut types = self.by_type.keys().cloned().collect::<Vec<_>>();
+            types.sort();
+            out.push_str(&types.join(", "));
+        }
+        if !self.notes.is_empty() {
+            out.push_str(" | ");
+            out.push_str(&self.notes.join(" | "));
+        }
+        out
+    }
+
+    fn insert_cache(&mut self, key: (String, u64), value: PluginRender) {
+        if self.max_cache == 0 {
+            return;
+        }
+        if self.cache.len() >= self.max_cache {
+            if let Some(first_key) = self.cache.keys().next().cloned() {
+                self.cache.remove(&first_key);
+            }
+        }
+        self.cache.insert(key, value);
+    }
+}
+
+fn hash_value(value: &Value) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    match serde_json::to_string(value) {
+        Ok(json) => json.hash(&mut hasher),
+        Err(_) => "<invalid>".hash(&mut hasher),
+    }
+    hasher.finish()
+}
+
+fn spawn_plugin_process(plugin: &PluginSpec) -> Result<PluginProcess> {
+    let mut candidates = Vec::new();
+    if let Some(binary) = plugin.binary.as_ref() {
+        candidates.push(binary.clone());
+    } else {
+        candidates.push(format!("lepiter-plugin-{}", plugin.name));
+        candidates.push(format!("lepiter-{}", plugin.name));
+        candidates.push(plugin.name.clone());
+    }
+
+    let mut last_err = None;
+    for candidate in candidates {
+        match PluginProcess::spawn(&candidate, &plugin.args) {
+            Ok(process) => return Ok(process),
+            Err(err) => {
+                last_err = Some((candidate, err));
+                continue;
+            }
+        }
+    }
+
+    if let Some((candidate, err)) = last_err {
+        bail!("no plugin binary found (last tried `{candidate}`): {err}");
+    }
+
+    bail!("no plugin binary candidates")
 }
 
 #[derive(Debug, Clone)]
@@ -46,6 +383,7 @@ struct IndexedPageText {
 
 struct App {
     index: KnowledgeBaseIndex,
+    plugins: PluginManager,
     visible_ids: Vec<PageId>,
     selected: usize,
     opened: Option<PageId>,
@@ -68,10 +406,12 @@ struct App {
 
 impl App {
     fn new(index: KnowledgeBaseIndex) -> Self {
+        let plugins = PluginManager::from_env();
         let max_parsed_cache = cache_limit_from_env("LEPITER_TUI_PARSED_CACHE", 128);
         let max_rendered_cache = cache_limit_from_env("LEPITER_TUI_RENDERED_CACHE", 128);
         let mut app = Self {
             index,
+            plugins,
             visible_ids: Vec::new(),
             selected: 0,
             opened: None,
@@ -91,6 +431,7 @@ impl App {
             mode: Mode::List,
             status: String::new(),
         };
+        app.plugins.apply_status(&mut app.status);
         app.reset_text_index_queue();
         app.rebuild_visible_ids();
         app
@@ -171,7 +512,7 @@ impl App {
                     return;
                 }
             };
-            let rendered = render_page(&page);
+            let rendered = render_page(&page, &mut self.plugins);
             insert_lru(
                 &mut self.rendered_cache,
                 &mut self.rendered_lru,
@@ -268,11 +609,17 @@ impl App {
             LinkTargetKind::InternalPage(target_id) => {
                 self.open_page(&target_id, true);
             }
-            LinkTargetKind::AttachmentPath(path) => {
-                let display = path.display().to_string();
-                match open_with_system(&display) {
-                    Ok(()) => self.status = format!("opened attachment: {display}"),
-                    Err(err) => self.status = format!("failed to open attachment: {err:#}"),
+            LinkTargetKind::AttachmentPath(_path) => {
+                let resolver = self.index.attachment_resolver();
+                match resolver.resolve_existing(&link.target) {
+                    Ok(path) => {
+                        let display = path.display().to_string();
+                        match open_with_system(&display) {
+                            Ok(()) => self.status = format!("opened attachment: {display}"),
+                            Err(err) => self.status = format!("failed to open attachment: {err:#}"),
+                        }
+                    }
+                    Err(err) => self.status = format!("attachment error: {err}"),
                 }
             }
             LinkTargetKind::ExternalUrl(url) => match open_with_system(&url) {
@@ -518,6 +865,7 @@ fn print_page(kb_path: PathBuf, page_id: &str, show_links: bool) -> Result<()> {
     let page = index
         .load_page(page_id)
         .with_context(|| format!("failed to load page id `{page_id}`"))?;
+    let attachment_resolver = index.attachment_resolver();
     let colored = std::io::stdout().is_terminal();
     print!("{}", render_page_pretty(&page, colored));
     if show_links {
@@ -530,8 +878,17 @@ fn print_page(kb_path: PathBuf, page_id: &str, show_links: bool) -> Result<()> {
             for (idx, (label, target)) in links.iter().enumerate() {
                 let kind = match index.classify_link_target(target) {
                     LinkTargetKind::InternalPage(id) => format!("internal:{id}"),
-                    LinkTargetKind::AttachmentPath(path) => {
-                        format!("attachment:{}", path.display())
+                    LinkTargetKind::AttachmentPath(_) => {
+                        match attachment_resolver.resolve(target) {
+                            Ok(resolved) => {
+                                let mut out = format!("attachment:{}", resolved.path.display());
+                                if !resolved.exists {
+                                    out.push_str(" (missing)");
+                                }
+                                out
+                            }
+                            Err(err) => format!("attachment-error:{err}"),
+                        }
                     }
                     LinkTargetKind::ExternalUrl(url) => format!("external:{url}"),
                     LinkTargetKind::Unknown(raw) => format!("unknown:{raw}"),
@@ -1180,7 +1537,7 @@ fn render_list_view(frame: &mut Frame, app: &App) {
         .constraints([
             Constraint::Length(3),
             Constraint::Min(1),
-            Constraint::Length(1),
+            Constraint::Length(2),
         ])
         .split(frame.area());
 
@@ -1263,8 +1620,9 @@ fn render_list_view(frame: &mut Frame, app: &App) {
         status.push_str(" | ");
         status.push_str(&app.status);
     }
+    let dashboard = format!("{}\n{}", app.plugins.status_line(), status);
     frame.render_widget(
-        Paragraph::new(status).style(Style::default().fg(Color::Gray)),
+        Paragraph::new(dashboard).style(Style::default().fg(Color::Gray)),
         chunks[2],
     );
 }
@@ -1275,7 +1633,7 @@ fn render_page_view(frame: &mut Frame, app: &App) {
         .constraints([
             Constraint::Length(1),
             Constraint::Min(1),
-            Constraint::Length(2),
+            Constraint::Length(3),
         ])
         .split(frame.area());
 
@@ -1328,15 +1686,16 @@ fn render_page_view(frame: &mut Frame, app: &App) {
             footer.push_str("\nno links on page");
         }
     }
-    frame.render_widget(Paragraph::new(footer), chunks[2]);
+    let dashboard = format!("{}\n{}", app.plugins.status_line(), footer);
+    frame.render_widget(Paragraph::new(dashboard), chunks[2]);
 }
 
-fn render_page(page: &Page) -> RenderedPage {
+fn render_page(page: &Page, plugins: &mut PluginManager) -> RenderedPage {
     let mut lines = Vec::new();
     let mut links = Vec::new();
 
     for node in &page.content {
-        render_node(node, &mut lines, &mut links);
+        render_node(node, &mut lines, &mut links, plugins);
     }
 
     RenderedPage {
@@ -1347,7 +1706,12 @@ fn render_page(page: &Page) -> RenderedPage {
     }
 }
 
-fn render_node(node: &Node, out: &mut Vec<Line<'static>>, links: &mut Vec<LinkTarget>) {
+fn render_node(
+    node: &Node,
+    out: &mut Vec<Line<'static>>,
+    links: &mut Vec<LinkTarget>,
+    plugins: &mut PluginManager,
+) {
     match node {
         Node::Heading { level, text } => {
             let style = match *level {
@@ -1452,7 +1816,7 @@ fn render_node(node: &Node, out: &mut Vec<Line<'static>>, links: &mut Vec<LinkTa
             for item in items {
                 let mut rendered = Vec::new();
                 for n in item {
-                    render_node(n, &mut rendered, links);
+                    render_node(n, &mut rendered, links, plugins);
                 }
                 if let Some(first) = rendered.first() {
                     let mut spans = vec![Span::styled(
@@ -1494,7 +1858,26 @@ fn render_node(node: &Node, out: &mut Vec<Line<'static>>, links: &mut Vec<LinkTa
             ]));
             out.push(Line::raw(""));
         }
-        Node::Unknown { typ, .. } => {
+        Node::Unknown { typ, raw } => {
+            if let Some(rendered) = plugins.render(typ, raw) {
+                match rendered {
+                    PluginRender::Lines(lines) => {
+                        for line in lines {
+                            out.push(Line::from(Span::raw(line)));
+                        }
+                        out.push(Line::raw(""));
+                        return;
+                    }
+                    PluginRender::Error(err) => {
+                        out.push(Line::from(Span::styled(
+                            format!("[[plugin error: {err}]]"),
+                            Style::default().fg(Color::Red),
+                        )));
+                        out.push(Line::raw(""));
+                        return;
+                    }
+                }
+            }
             out.push(Line::from(Span::styled(
                 format!("[[unknown: {}]]", sanitize_for_terminal(typ)),
                 Style::default().fg(Color::Yellow),

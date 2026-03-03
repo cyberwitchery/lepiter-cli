@@ -1,4 +1,7 @@
-//! page rendering to tui lines, including inline markdown, annotations, and\n+//! code highlighting.\n+\n+use lepiter_core::{Node, Page, PageId};
+//! page rendering to tui lines, including inline markdown, annotations, and
+//! code highlighting.
+
+use lepiter_core::{Node, Page, PageId};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 

@@ -1,3 +1,37 @@
+//! terminal cli and tui for browsing and editing lepiter knowledge bases.
+//!
+//! the binary is `lepiter-cli` and supports both command-line subcommands and
+//! an interactive tui. the tui uses lazy loading for pages and renders snippets
+//! with a markdown-like style.
+//!
+//! # quick start
+//!
+//! ```bash
+//! lepiter-cli ./lepiter
+//! lepiter-cli tui ./lepiter
+//! ```
+//!
+//! # subcommands
+//!
+//! - `tui`: full-screen list, page reader, and snippet editor
+//! - `list`, `ids`, `search`, `show`, `info`: non-interactive output
+//!
+//! # configuration
+//!
+//! - `LEPITER_TUI_PARSED_CACHE` / `LEPITER_TUI_RENDERED_CACHE`: cache sizes
+//! - `LEPITER_EDIT_AUTOSAVE_MS`: edit autosave delay
+//! - `LEPITER_PLUGIN_CONFIG`: external snippet renderer config
+//!
+//! # docs
+//!
+//! - tui behavior: `docs/tui.md`
+//! - editor: `docs/editor.md`
+//! - plugins: `docs/plugins.md`
+mod edit;
+mod plugins;
+mod render;
+mod util;
+
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::fs;
@@ -5,9 +39,19 @@ use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crate::edit::{
+    EditState, apply_cursor_marker, collect_snippets, delete_char_at, delete_char_before,
+    ensure_scroll, insert_char_at, load_raw_page, move_cursor_vertical, render_edit_page,
+    wrap_lines_with_cursor_and_highlight,
+};
+use crate::plugins::PluginManager;
+use crate::render::{
+    RenderedPage, highlight_selected_link_markers, keywords_for_language, render_page,
+    sanitize_for_terminal,
+};
+use crate::util::cache_limit_from_env;
 use anyhow::{Context, Result, bail};
-use crossterm::event::{self, Event, KeyCode, KeyEventKind};
-use lepiter_core::plugin::{PluginRequest, PluginResponse};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use lepiter_core::{
     KnowledgeBase, KnowledgeBaseIndex, LinkTargetKind, Node, Page, PageId, SearchMatchKind,
     TitleResolution, render_page_to_text,
@@ -17,362 +61,13 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::{DefaultTerminal, Frame};
-use serde::Deserialize;
-use serde_json::Value;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
-use std::io::{BufRead, BufReader, BufWriter, Write};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::time::Instant;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mode {
     List,
     Search,
     Page,
-}
-
-#[derive(Debug, Clone)]
-struct LinkTarget {
-    label: String,
-    target: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct PluginConfig {
-    #[serde(default)]
-    plugins: Vec<PluginSpec>,
-}
-
-#[derive(Debug, Deserialize)]
-struct PluginSpec {
-    name: String,
-    #[serde(default)]
-    binary: Option<String>,
-    #[serde(default)]
-    args: Vec<String>,
-    types: Vec<String>,
-}
-
-#[derive(Debug, Clone)]
-enum PluginRender {
-    Lines(Vec<String>),
-    Error(String),
-}
-
-struct PluginProcess {
-    child: Child,
-    stdin: BufWriter<ChildStdin>,
-    stdout: BufReader<ChildStdout>,
-}
-
-impl PluginProcess {
-    fn spawn(binary: &str, args: &[String]) -> Result<Self> {
-        let mut cmd = Command::new(binary);
-        cmd.args(args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null());
-        let mut child = cmd.spawn().with_context(|| format!("spawn {binary}"))?;
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| anyhow::anyhow!("missing plugin stdin"))?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| anyhow::anyhow!("missing plugin stdout"))?;
-        Ok(Self {
-            child,
-            stdin: BufWriter::new(stdin),
-            stdout: BufReader::new(stdout),
-        })
-    }
-
-    fn request_with_timeout(
-        &mut self,
-        req: &PluginRequest,
-        timeout: Duration,
-    ) -> Result<PluginResponse> {
-        if let Some(status) = self.child.try_wait()? {
-            bail!("plugin exited: {status}");
-        }
-        let mut payload = serde_json::to_string(req)?;
-        payload.push('\n');
-        self.stdin.write_all(payload.as_bytes())?;
-        self.stdin.flush()?;
-
-        let start = Instant::now();
-        loop {
-            if start.elapsed() >= timeout {
-                bail!("plugin timeout after {}ms", timeout.as_millis());
-            }
-            if let Some(status) = self.child.try_wait()? {
-                bail!("plugin exited: {status}");
-            }
-            let mut line = String::new();
-            let n = self.stdout.read_line(&mut line)?;
-            if n == 0 {
-                continue;
-            }
-            let resp: PluginResponse = serde_json::from_str(&line)?;
-            return Ok(resp);
-        }
-    }
-}
-
-struct PluginManager {
-    processes: Vec<PluginHandle>,
-    by_type: HashMap<String, usize>,
-    cache: HashMap<(String, u64), PluginRender>,
-    max_cache: usize,
-    timeout: Duration,
-    retries: usize,
-    notes: Vec<String>,
-}
-
-struct PluginHandle {
-    name: String,
-    process: PluginProcess,
-}
-
-impl PluginManager {
-    fn empty() -> Self {
-        Self {
-            processes: Vec::new(),
-            by_type: HashMap::new(),
-            cache: HashMap::new(),
-            max_cache: cache_limit_from_env("LEPITER_PLUGIN_CACHE", 128),
-            timeout: Duration::from_millis(
-                std::env::var("LEPITER_PLUGIN_TIMEOUT_MS")
-                    .ok()
-                    .and_then(|v| v.parse::<u64>().ok())
-                    .unwrap_or(250),
-            ),
-            retries: std::env::var("LEPITER_PLUGIN_RETRIES")
-                .ok()
-                .and_then(|v| v.parse::<usize>().ok())
-                .unwrap_or(1),
-            notes: Vec::new(),
-        }
-    }
-
-    fn from_env() -> Self {
-        let Ok(path) = std::env::var("LEPITER_PLUGIN_CONFIG") else {
-            return Self::empty();
-        };
-        let bytes = match fs::read(&path) {
-            Ok(bytes) => bytes,
-            Err(err) => {
-                return Self {
-                    processes: Vec::new(),
-                    by_type: HashMap::new(),
-                    cache: HashMap::new(),
-                    max_cache: cache_limit_from_env("LEPITER_PLUGIN_CACHE", 128),
-                    timeout: Duration::from_millis(
-                        std::env::var("LEPITER_PLUGIN_TIMEOUT_MS")
-                            .ok()
-                            .and_then(|v| v.parse::<u64>().ok())
-                            .unwrap_or(250),
-                    ),
-                    retries: std::env::var("LEPITER_PLUGIN_RETRIES")
-                        .ok()
-                        .and_then(|v| v.parse::<usize>().ok())
-                        .unwrap_or(1),
-                    notes: vec![format!("plugin config read failed: {err}")],
-                };
-            }
-        };
-        let config: PluginConfig = match serde_json::from_slice(&bytes) {
-            Ok(config) => config,
-            Err(err) => {
-                return Self {
-                    processes: Vec::new(),
-                    by_type: HashMap::new(),
-                    cache: HashMap::new(),
-                    max_cache: cache_limit_from_env("LEPITER_PLUGIN_CACHE", 128),
-                    timeout: Duration::from_millis(
-                        std::env::var("LEPITER_PLUGIN_TIMEOUT_MS")
-                            .ok()
-                            .and_then(|v| v.parse::<u64>().ok())
-                            .unwrap_or(250),
-                    ),
-                    retries: std::env::var("LEPITER_PLUGIN_RETRIES")
-                        .ok()
-                        .and_then(|v| v.parse::<usize>().ok())
-                        .unwrap_or(1),
-                    notes: vec![format!("plugin config parse failed: {err}")],
-                };
-            }
-        };
-
-        let mut processes = Vec::new();
-        let mut by_type = HashMap::new();
-        let mut notes = Vec::new();
-        for plugin in config.plugins {
-            let process = match spawn_plugin_process(&plugin) {
-                Ok(process) => process,
-                Err(err) => {
-                    notes.push(format!("plugin {} failed to start: {err}", plugin.name));
-                    continue;
-                }
-            };
-            let idx = processes.len();
-            processes.push(PluginHandle {
-                name: plugin.name.clone(),
-                process,
-            });
-            for typ in plugin.types {
-                if by_type.contains_key(&typ) {
-                    notes.push(format!("plugin type already registered: {typ}"));
-                    continue;
-                }
-                by_type.insert(typ, idx);
-            }
-        }
-
-        Self {
-            processes,
-            by_type,
-            cache: HashMap::new(),
-            max_cache: cache_limit_from_env("LEPITER_PLUGIN_CACHE", 128),
-            timeout: Duration::from_millis(
-                std::env::var("LEPITER_PLUGIN_TIMEOUT_MS")
-                    .ok()
-                    .and_then(|v| v.parse::<u64>().ok())
-                    .unwrap_or(250),
-            ),
-            retries: std::env::var("LEPITER_PLUGIN_RETRIES")
-                .ok()
-                .and_then(|v| v.parse::<usize>().ok())
-                .unwrap_or(1),
-            notes,
-        }
-    }
-
-    fn apply_status(&mut self, status: &mut String) {
-        if !self.notes.is_empty() && status.is_empty() {
-            *status = self.notes.join(" | ");
-        }
-    }
-
-    fn render(&mut self, typ: &str, raw: &Value) -> Option<PluginRender> {
-        let idx = *self.by_type.get(typ)?;
-        let handle = self.processes.get_mut(idx)?;
-
-        let key = (typ.to_string(), hash_value(raw));
-        if let Some(hit) = self.cache.get(&key).cloned() {
-            return Some(hit);
-        }
-
-        let req = PluginRequest {
-            typ: typ.to_string(),
-            snippet: raw.clone(),
-        };
-        let mut last_err = None;
-        for _ in 0..=self.retries {
-            match handle.process.request_with_timeout(&req, self.timeout) {
-                Ok(resp) => {
-                    let rendered = if resp.ok {
-                        PluginRender::Lines(resp.lines)
-                    } else {
-                        let msg = resp
-                            .error
-                            .unwrap_or_else(|| "plugin returned error".to_string());
-                        PluginRender::Error(format!("{}: {}", handle.name, msg))
-                    };
-                    self.insert_cache(key.clone(), rendered.clone());
-                    return Some(rendered);
-                }
-                Err(err) => {
-                    last_err = Some(err);
-                }
-            }
-        }
-        let err = last_err.unwrap_or_else(|| anyhow::anyhow!("plugin failed"));
-        let rendered = PluginRender::Error(format!("{}: {err}", handle.name));
-        self.insert_cache(key, rendered.clone());
-        Some(rendered)
-    }
-
-    fn status_line(&self) -> String {
-        let mut out = format!(
-            "plugins: {} | cache: {}/{} | timeout: {}ms | retries: {}",
-            self.processes.len(),
-            self.cache.len(),
-            self.max_cache,
-            self.timeout.as_millis(),
-            self.retries
-        );
-        if !self.by_type.is_empty() {
-            out.push_str(" | types: ");
-            let mut types = self.by_type.keys().cloned().collect::<Vec<_>>();
-            types.sort();
-            out.push_str(&types.join(", "));
-        }
-        if !self.notes.is_empty() {
-            out.push_str(" | ");
-            out.push_str(&self.notes.join(" | "));
-        }
-        out
-    }
-
-    fn insert_cache(&mut self, key: (String, u64), value: PluginRender) {
-        if self.max_cache == 0 {
-            return;
-        }
-        if self.cache.len() >= self.max_cache
-            && let Some(first_key) = self.cache.keys().next().cloned()
-        {
-            self.cache.remove(&first_key);
-        }
-        self.cache.insert(key, value);
-    }
-}
-
-fn hash_value(value: &Value) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    match serde_json::to_string(value) {
-        Ok(json) => json.hash(&mut hasher),
-        Err(_) => "<invalid>".hash(&mut hasher),
-    }
-    hasher.finish()
-}
-
-fn spawn_plugin_process(plugin: &PluginSpec) -> Result<PluginProcess> {
-    let mut candidates = Vec::new();
-    if let Some(binary) = plugin.binary.as_ref() {
-        candidates.push(binary.clone());
-    } else {
-        candidates.push(format!("lepiter-plugin-{}", plugin.name));
-        candidates.push(format!("lepiter-{}", plugin.name));
-        candidates.push(plugin.name.clone());
-    }
-
-    let mut last_err = None;
-    for candidate in candidates {
-        match PluginProcess::spawn(&candidate, &plugin.args) {
-            Ok(process) => return Ok(process),
-            Err(err) => {
-                last_err = Some((candidate, err));
-                continue;
-            }
-        }
-    }
-
-    if let Some((candidate, err)) = last_err {
-        bail!("no plugin binary found (last tried `{candidate}`): {err}");
-    }
-
-    bail!("no plugin binary candidates")
-}
-
-#[derive(Debug, Clone)]
-struct RenderedPage {
-    id: PageId,
-    title: String,
-    lines: Vec<Line<'static>>,
-    links: Vec<LinkTarget>,
+    Edit,
 }
 
 #[derive(Debug, Clone)]
@@ -384,6 +79,7 @@ struct IndexedPageText {
 struct App {
     index: KnowledgeBaseIndex,
     plugins: PluginManager,
+    edit: Option<EditState>,
     visible_ids: Vec<PageId>,
     selected: usize,
     opened: Option<PageId>,
@@ -412,6 +108,7 @@ impl App {
         let mut app = Self {
             index,
             plugins,
+            edit: None,
             visible_ids: Vec::new(),
             selected: 0,
             opened: None,
@@ -435,6 +132,25 @@ impl App {
         app.reset_text_index_queue();
         app.rebuild_visible_ids();
         app
+    }
+
+    fn tick(&mut self) {
+        self.advance_full_text_index(4);
+        if self.mode == Mode::Edit {
+            let mut saved_page = None;
+            if let Some(edit) = self.edit.as_mut()
+                && edit.maybe_autosave()
+            {
+                if let Err(err) = edit.save_to_disk() {
+                    self.status = format!("edit save failed: {err:#}");
+                } else {
+                    saved_page = Some(edit.page_id.clone());
+                }
+            }
+            if let Some(id) = saved_page {
+                self.refresh_after_edit(&id);
+            }
+        }
     }
 
     fn rebuild_visible_ids(&mut self) {
@@ -531,6 +247,76 @@ impl App {
         self.selected_link = 0;
         self.mode = Mode::Page;
         self.status.clear();
+    }
+
+    fn enter_edit_mode(&mut self) {
+        let Some(page_id) = self.opened.clone() else {
+            self.status = "no page loaded".to_string();
+            return;
+        };
+        let Some(meta) = self.index.pages.get(&page_id) else {
+            self.status = "page not found".to_string();
+            return;
+        };
+        match load_raw_page(&meta.path) {
+            Ok(raw) => {
+                let mut snippets = Vec::new();
+                collect_snippets(&raw, Vec::new(), &mut snippets);
+                if snippets.is_empty() {
+                    self.status = "no editable snippets".to_string();
+                    return;
+                }
+                let buffer = snippets[0].text.clone();
+                let edit = EditState::new(page_id, meta.path.clone(), raw, snippets, buffer);
+                self.edit = Some(edit);
+                self.mode = Mode::Edit;
+                self.status.clear();
+            }
+            Err(err) => {
+                self.status = format!("failed to load page json: {err:#}");
+            }
+        }
+    }
+
+    fn exit_edit_mode(&mut self) {
+        if let Some(mut edit) = self.edit.take()
+            && edit.dirty
+        {
+            if let Err(err) = edit.save_to_disk() {
+                self.status = format!("edit save failed: {err:#}");
+            } else {
+                self.refresh_after_edit(&edit.page_id);
+            }
+        }
+        self.mode = Mode::Page;
+    }
+
+    fn refresh_after_edit(&mut self, id: &str) {
+        if let Ok(page) = self.index.load_page(id) {
+            insert_lru(
+                &mut self.parsed_cache,
+                &mut self.parsed_lru,
+                id.to_string(),
+                page.clone(),
+                self.max_parsed_cache,
+            );
+            let rendered = render_page(&page, &mut self.plugins);
+            insert_lru(
+                &mut self.rendered_cache,
+                &mut self.rendered_lru,
+                id.to_string(),
+                rendered,
+                self.max_rendered_cache,
+            );
+            let raw = render_page_to_text(&page);
+            self.text_index.insert(
+                id.to_string(),
+                IndexedPageText {
+                    raw: raw.clone(),
+                    lower: raw.to_lowercase(),
+                },
+            );
+        }
     }
 
     fn get_or_load_page(&mut self, id: &str) -> Result<Page> {
@@ -705,6 +491,148 @@ impl App {
             }
         }
         self.page_scroll = line_idx;
+    }
+
+    fn handle_edit_key(&mut self, key: KeyEvent) {
+        let Some(edit) = self.edit.as_mut() else {
+            return;
+        };
+
+        match key.code {
+            KeyCode::Esc => {
+                self.exit_edit_mode();
+                return;
+            }
+            KeyCode::PageUp => {
+                edit.preview_scroll = edit.preview_scroll.saturating_sub(10);
+                edit.follow_cursor = false;
+                edit.snapshot_pending = true;
+                return;
+            }
+            KeyCode::PageDown => {
+                edit.preview_scroll = edit.preview_scroll.saturating_add(10);
+                edit.follow_cursor = false;
+                edit.snapshot_pending = true;
+                return;
+            }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                let mut saved_page = None;
+                if edit.undo() {
+                    if let Err(err) = edit.save_to_disk() {
+                        self.status = format!("edit save failed: {err:#}");
+                    } else {
+                        saved_page = Some(edit.page_id.clone());
+                    }
+                }
+                if let Some(id) = saved_page {
+                    self.refresh_after_edit(&id);
+                }
+                return;
+            }
+            KeyCode::Tab => {
+                self.switch_edit_snippet(1);
+                return;
+            }
+            KeyCode::BackTab => {
+                self.switch_edit_snippet(-1);
+                return;
+            }
+            _ => {}
+        }
+
+        if !edit.is_editable() {
+            return;
+        }
+
+        match key.code {
+            KeyCode::Left => {
+                edit.cursor = edit.cursor.saturating_sub(1);
+                edit.snapshot_pending = true;
+            }
+            KeyCode::Right => {
+                let len = edit.buffer.chars().count();
+                if edit.cursor < len {
+                    edit.cursor += 1;
+                }
+                edit.snapshot_pending = true;
+            }
+            KeyCode::Up => {
+                move_cursor_vertical(edit, -1);
+                edit.snapshot_pending = true;
+            }
+            KeyCode::Down => {
+                move_cursor_vertical(edit, 1);
+                edit.snapshot_pending = true;
+            }
+            KeyCode::Home => {
+                edit.cursor = 0;
+                edit.snapshot_pending = true;
+            }
+            KeyCode::End => {
+                edit.cursor = edit.buffer.chars().count();
+                edit.snapshot_pending = true;
+            }
+            KeyCode::Backspace => {
+                if edit.cursor > 0 {
+                    edit.maybe_push_undo_snapshot();
+                }
+                if delete_char_before(&mut edit.buffer, &mut edit.cursor) {
+                    edit.commit_buffer();
+                }
+            }
+            KeyCode::Delete => {
+                let len = edit.buffer.chars().count();
+                if edit.cursor < len {
+                    edit.maybe_push_undo_snapshot();
+                }
+                if delete_char_at(&mut edit.buffer, &mut edit.cursor) {
+                    edit.commit_buffer();
+                }
+            }
+            KeyCode::Enter => {
+                edit.maybe_push_undo_snapshot();
+                insert_char_at(&mut edit.buffer, &mut edit.cursor, '\n');
+                edit.commit_buffer();
+            }
+            KeyCode::Char(c) => {
+                if key.modifiers.contains(KeyModifiers::CONTROL) {
+                    return;
+                }
+                edit.maybe_push_undo_snapshot();
+                insert_char_at(&mut edit.buffer, &mut edit.cursor, c);
+                edit.commit_buffer();
+            }
+            _ => {}
+        }
+    }
+
+    fn switch_edit_snippet(&mut self, delta: isize) {
+        let Some(edit) = self.edit.as_mut() else {
+            return;
+        };
+        edit.commit_buffer();
+        let mut saved_page = None;
+        if edit.dirty {
+            if let Err(err) = edit.save_to_disk() {
+                self.status = format!("edit save failed: {err:#}");
+            } else {
+                saved_page = Some(edit.page_id.clone());
+            }
+        }
+
+        let total = edit.snippets.len() as isize;
+        if total == 0 {
+            return;
+        }
+        let next = (edit.selected as isize + delta).clamp(0, total - 1) as usize;
+        edit.selected = next;
+        if let Some(entry) = edit.current() {
+            edit.set_buffer(entry.text.clone());
+        }
+        edit.follow_cursor = true;
+        if let Some(id) = saved_page {
+            self.refresh_after_edit(&id);
+        }
     }
 }
 
@@ -1119,6 +1047,43 @@ fn truncate_chars(input: &str, max_chars: usize) -> String {
     out
 }
 
+fn highlight_search_match(text: &str, query: &str) -> Line<'static> {
+    let needle = query.trim();
+    if needle.is_empty() {
+        return Line::raw(text.to_string());
+    }
+    let lower_text = text.to_lowercase();
+    let lower_needle = needle.to_lowercase();
+    let Some(pos) = lower_text.find(&lower_needle) else {
+        return Line::raw(text.to_string());
+    };
+    let start_char = lower_text[..pos].chars().count();
+    let match_chars = lower_needle.chars().count();
+    let end_char = start_char + match_chars;
+    let start_byte = text
+        .char_indices()
+        .nth(start_char)
+        .map(|(i, _)| i)
+        .unwrap_or(text.len());
+    let end_byte = text
+        .char_indices()
+        .nth(end_char)
+        .map(|(i, _)| i)
+        .unwrap_or(text.len());
+    let before = &text[..start_byte];
+    let matched = &text[start_byte..end_byte];
+    let after = &text[end_byte..];
+    let style = Style::default()
+        .bg(Color::Yellow)
+        .fg(Color::Black)
+        .add_modifier(Modifier::BOLD);
+    Line::from(vec![
+        Span::raw(before.to_string()),
+        Span::styled(matched.to_string(), style),
+        Span::raw(after.to_string()),
+    ])
+}
+
 fn render_page_pretty(page: &Page, colored: bool) -> String {
     let mut out = String::new();
     if colored {
@@ -1367,30 +1332,6 @@ fn highlight_code_line_ansi(line: &str, language: Option<&str>) -> String {
     out
 }
 
-fn keywords_for_language(language: &str) -> &'static [&'static str] {
-    match language {
-        "python" => &[
-            "def", "class", "if", "else", "elif", "for", "while", "return", "import", "from", "as",
-            "try", "except", "with", "lambda",
-        ],
-        "javascript" => &[
-            "function", "const", "let", "var", "if", "else", "for", "while", "return", "class",
-            "import", "from", "export", "new", "async", "await",
-        ],
-        "pharo" | "smalltalk" => &["self", "super", "true", "false", "nil", "^"],
-        "shell" | "shellcommand" | "bash" => &["if", "then", "fi", "for", "do", "done", "echo"],
-        _ => &[],
-    }
-}
-
-fn cache_limit_from_env(var: &str, default: usize) -> usize {
-    std::env::var(var)
-        .ok()
-        .and_then(|v| v.parse::<usize>().ok())
-        .filter(|&n| n > 0)
-        .unwrap_or(default)
-}
-
 fn touch_lru(order: &mut VecDeque<PageId>, id: &str) {
     if let Some(pos) = order.iter().position(|x| x == id) {
         order.remove(pos);
@@ -1424,10 +1365,10 @@ fn insert_lru<T>(
 
 fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> Result<()> {
     loop {
-        terminal.draw(|f| ui(f, &app))?;
+        terminal.draw(|f| ui(f, &mut app))?;
 
         if !event::poll(Duration::from_millis(100))? {
-            app.advance_full_text_index(4);
+            app.tick();
             continue;
         }
 
@@ -1461,6 +1402,12 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> Result<()> {
             continue;
         }
 
+        if app.mode == Mode::Edit {
+            app.handle_edit_key(key);
+            app.tick();
+            continue;
+        }
+
         match key.code {
             KeyCode::Char('q') => break,
             KeyCode::Char('/') => {
@@ -1475,29 +1422,34 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> Result<()> {
                     app.open_selected_page();
                 }
                 Mode::Page => app.follow_selected_link(),
-                Mode::Search => {}
+                Mode::Search | Mode::Edit => {}
             },
             KeyCode::Up | KeyCode::Char('k') => match app.mode {
                 Mode::List => app.move_selection(-1),
                 Mode::Page => app.scroll_page(-1),
-                Mode::Search => {}
+                Mode::Search | Mode::Edit => {}
             },
             KeyCode::Down | KeyCode::Char('j') => match app.mode {
                 Mode::List => app.move_selection(1),
                 Mode::Page => app.scroll_page(1),
-                Mode::Search => {}
+                Mode::Search | Mode::Edit => {}
             },
             KeyCode::Char('g') => match app.mode {
                 Mode::Page => app.page_scroll = 0,
-                Mode::List | Mode::Search => {}
+                Mode::List | Mode::Search | Mode::Edit => {}
             },
             KeyCode::Char('G') => match app.mode {
                 Mode::Page => app.page_scroll = usize::MAX / 2,
-                Mode::List | Mode::Search => {}
+                Mode::List | Mode::Search | Mode::Edit => {}
             },
             KeyCode::Char('b') => {
                 if app.mode == Mode::Page {
                     app.back_to_list();
+                }
+            }
+            KeyCode::Char('e') => {
+                if app.mode == Mode::Page {
+                    app.enter_edit_mode();
                 }
             }
             KeyCode::Char('h') => {
@@ -1518,16 +1470,17 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> Result<()> {
             _ => {}
         }
 
-        app.advance_full_text_index(4);
+        app.tick();
     }
 
     Ok(())
 }
 
-fn ui(frame: &mut Frame, app: &App) {
+fn ui(frame: &mut Frame, app: &mut App) {
     match app.mode {
         Mode::List | Mode::Search => render_list_view(frame, app),
         Mode::Page => render_page_view(frame, app),
+        Mode::Edit => render_edit_view(frame, app),
     }
 }
 
@@ -1690,469 +1643,91 @@ fn render_page_view(frame: &mut Frame, app: &App) {
     frame.render_widget(Paragraph::new(dashboard), chunks[2]);
 }
 
-fn render_page(page: &Page, plugins: &mut PluginManager) -> RenderedPage {
-    let mut lines = Vec::new();
-    let mut links = Vec::new();
+fn render_edit_view(frame: &mut Frame, app: &mut App) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(2),
+            Constraint::Min(1),
+            Constraint::Length(3),
+        ])
+        .split(frame.area());
 
-    for node in &page.content {
-        render_node(node, &mut lines, &mut links, plugins);
-    }
-
-    RenderedPage {
-        id: page.id.clone(),
-        title: page.title.clone(),
-        lines,
-        links,
-    }
-}
-
-fn render_node(
-    node: &Node,
-    out: &mut Vec<Line<'static>>,
-    links: &mut Vec<LinkTarget>,
-    plugins: &mut PluginManager,
-) {
-    match node {
-        Node::Heading { level, text } => {
-            let style = match *level {
-                1 => Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-                2 => Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD),
-                _ => Style::default()
-                    .fg(Color::Blue)
-                    .add_modifier(Modifier::BOLD),
-            };
-            out.push(Line::from(Span::styled(
-                format!(
-                    "{} {}",
-                    "#".repeat((*level).max(1) as usize),
-                    sanitize_for_terminal(text)
-                ),
-                style,
-            )));
-            out.push(Line::raw(""));
-        }
-        Node::Paragraph { text } | Node::Text { text } => {
-            out.push(parse_inline_markdown(&sanitize_for_terminal(text), links));
-            out.push(Line::raw(""));
-        }
-        Node::Quote { text } => {
-            out.push(Line::from(vec![
-                Span::styled("> ", Style::default().fg(Color::DarkGray)),
-                Span::styled(
-                    sanitize_for_terminal(text),
-                    Style::default()
-                        .fg(Color::Gray)
-                        .add_modifier(Modifier::ITALIC),
-                ),
-            ]));
-            out.push(Line::raw(""));
-        }
-        Node::Code { language, code } => {
-            let title = language.clone().unwrap_or_else(|| "code".to_string());
-            out.push(Line::from(Span::styled(
-                format!("```{title}"),
-                Style::default().fg(Color::DarkGray),
-            )));
-            for line in normalize_text(code).lines() {
-                out.push(highlight_code_line(
-                    &sanitize_for_terminal(line),
-                    language.as_deref(),
-                ));
-            }
-            out.push(Line::from(Span::styled(
-                "```".to_string(),
-                Style::default().fg(Color::DarkGray),
-            )));
-            out.push(Line::raw(""));
-        }
-        Node::Rewrite {
-            language,
-            search,
-            replace,
-            scope,
-            is_method_pattern,
-        } => {
-            let lang = language.clone().unwrap_or_else(|| "rewrite".to_string());
-            out.push(Line::from(Span::styled(
-                format!("rewrite ({lang})"),
-                Style::default()
-                    .fg(Color::LightMagenta)
-                    .add_modifier(Modifier::BOLD),
-            )));
-            if let Some(scope) = scope {
-                out.push(Line::from(Span::styled(
-                    format!("scope: {}", sanitize_for_terminal(scope)),
-                    Style::default().fg(Color::DarkGray),
-                )));
-            }
-            if let Some(is_method_pattern) = is_method_pattern {
-                out.push(Line::from(Span::styled(
-                    format!("method_pattern: {is_method_pattern}"),
-                    Style::default().fg(Color::DarkGray),
-                )));
-            }
-            for line in normalize_text(search).lines() {
-                out.push(Line::from(vec![
-                    Span::styled("- ", Style::default().fg(Color::Red)),
-                    Span::styled(sanitize_for_terminal(line), Style::default().fg(Color::Red)),
-                ]));
-            }
-            for line in normalize_text(replace).lines() {
-                out.push(Line::from(vec![
-                    Span::styled("+ ", Style::default().fg(Color::Green)),
-                    Span::styled(
-                        sanitize_for_terminal(line),
-                        Style::default().fg(Color::Green),
-                    ),
-                ]));
-            }
-            out.push(Line::raw(""));
-        }
-        Node::List { items } => {
-            for item in items {
-                let mut rendered = Vec::new();
-                for n in item {
-                    render_node(n, &mut rendered, links, plugins);
-                }
-                if let Some(first) = rendered.first() {
-                    let mut spans = vec![Span::styled(
-                        "- ".to_string(),
-                        Style::default().fg(Color::DarkGray),
-                    )];
-                    spans.extend(first.spans.iter().cloned());
-                    out.push(Line::from(spans));
-                } else {
-                    out.push(Line::from(Span::raw("-")));
-                }
-            }
-            out.push(Line::raw(""));
-        }
-        Node::Link { text, url } => {
-            links.push(LinkTarget {
-                label: sanitize_for_terminal(text),
-                target: sanitize_for_terminal(url),
-            });
-            let idx = links.len();
-            out.push(Line::from(vec![
-                Span::styled(
-                    format!("[{idx}] "),
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    sanitize_for_terminal(text),
-                    Style::default()
-                        .fg(Color::LightBlue)
-                        .add_modifier(Modifier::UNDERLINED),
-                ),
-                Span::raw(" "),
-                Span::styled(
-                    format!("({})", sanitize_for_terminal(url)),
-                    Style::default().fg(Color::DarkGray),
-                ),
-            ]));
-            out.push(Line::raw(""));
-        }
-        Node::Unknown { typ, raw } => {
-            if let Some(rendered) = plugins.render(typ, raw) {
-                match rendered {
-                    PluginRender::Lines(lines) => {
-                        for line in lines {
-                            out.push(Line::from(Span::raw(line)));
-                        }
-                        out.push(Line::raw(""));
-                        return;
-                    }
-                    PluginRender::Error(err) => {
-                        out.push(Line::from(Span::styled(
-                            format!("[[plugin error: {err}]]"),
-                            Style::default().fg(Color::Red),
-                        )));
-                        out.push(Line::raw(""));
-                        return;
-                    }
-                }
-            }
-            out.push(Line::from(Span::styled(
-                format!("[[unknown: {}]]", sanitize_for_terminal(typ)),
-                Style::default().fg(Color::Yellow),
-            )));
-            out.push(Line::raw(""));
-        }
-    }
-}
-
-fn parse_inline_markdown(text: &str, links: &mut Vec<LinkTarget>) -> Line<'static> {
-    let mut spans = Vec::new();
-    let chars = text.chars().collect::<Vec<_>>();
-    let mut i = 0usize;
-    let mut buf = String::new();
-    let mut bold = false;
-    let mut italic = false;
-    let mut code = false;
-
-    let push_buf =
-        |spans: &mut Vec<Span<'static>>, buf: &mut String, bold: bool, italic: bool, code: bool| {
-            if buf.is_empty() {
-                return;
-            }
-            let mut style = Style::default();
-            if bold {
-                style = style.add_modifier(Modifier::BOLD);
-            }
-            if italic {
-                style = style.add_modifier(Modifier::ITALIC);
-            }
-            if code {
-                style = style.fg(Color::Yellow).bg(Color::Black);
-            }
-            spans.push(Span::styled(std::mem::take(buf), style));
+    let (header_text, mut page_lines, mut cursor, mut highlight_line, scroll) =
+        if let Some(edit) = app.edit.as_mut() {
+            let total = edit.snippets.len();
+            let (typ, editable) = edit
+                .current()
+                .map(|s| (s.typ.clone(), s.editable))
+                .unwrap_or_else(|| ("<unknown>".to_string(), false));
+            let status = if editable { "editable" } else { "read-only" };
+            let header = format!(
+                "edit {} ({}/{}) [{}] {}",
+                edit.page_id,
+                edit.selected + 1,
+                total,
+                typ,
+                status
+            );
+            let (lines, cursor, highlight_start) = render_edit_page(edit, &mut app.plugins);
+            let scroll = edit.preview_scroll;
+            (header, lines, cursor, highlight_start, scroll)
+        } else {
+            ("edit".to_string(), Vec::new(), None, None, 0usize)
         };
 
-    while i < chars.len() {
-        if i + 1 < chars.len() && chars[i] == '*' && chars[i + 1] == '*' {
-            push_buf(&mut spans, &mut buf, bold, italic, code);
-            bold = !bold;
-            i += 2;
-            continue;
-        }
-        if chars[i] == '*' {
-            push_buf(&mut spans, &mut buf, bold, italic, code);
-            italic = !italic;
-            i += 1;
-            continue;
-        }
-        if chars[i] == '`' {
-            push_buf(&mut spans, &mut buf, bold, italic, code);
-            code = !code;
-            i += 1;
-            continue;
-        }
-        if chars[i] == '[' {
-            if i + 1 < chars.len() && chars[i + 1] == '[' {
-                let mut j = i + 2;
-                while j + 1 < chars.len() {
-                    if chars[j] == ']' && chars[j + 1] == ']' {
-                        break;
-                    }
-                    j += 1;
-                }
-                if j + 1 < chars.len() && chars[j] == ']' && chars[j + 1] == ']' {
-                    push_buf(&mut spans, &mut buf, bold, italic, code);
-                    let link_text = chars[i + 2..j].iter().collect::<String>();
-                    links.push(LinkTarget {
-                        label: link_text.clone(),
-                        target: link_text.clone(),
-                    });
-                    let idx = links.len();
-                    spans.push(Span::styled(
-                        link_text,
-                        Style::default()
-                            .fg(Color::LightBlue)
-                            .add_modifier(Modifier::UNDERLINED),
-                    ));
-                    spans.push(Span::styled(
-                        format!("[{idx}]"),
-                        Style::default().fg(Color::Yellow),
-                    ));
-                    i = j + 2;
-                    continue;
-                }
-            }
+    frame.render_widget(
+        Paragraph::new(header_text).style(Style::default().fg(Color::Cyan)),
+        chunks[0],
+    );
 
-            let mut j = i + 1;
-            while j < chars.len() && chars[j] != ']' {
-                j += 1;
-            }
-            if j + 1 < chars.len() && chars[j] == ']' && chars[j + 1] == '(' {
-                let mut k = j + 2;
-                while k < chars.len() && chars[k] != ')' {
-                    k += 1;
-                }
-                if k < chars.len() {
-                    push_buf(&mut spans, &mut buf, bold, italic, code);
-                    let link_text = chars[i + 1..j].iter().collect::<String>();
-                    let link_target = chars[j + 2..k].iter().collect::<String>();
-                    links.push(LinkTarget {
-                        label: link_text.clone(),
-                        target: link_target.clone(),
-                    });
-                    let idx = links.len();
-                    spans.push(Span::styled(
-                        link_text,
-                        Style::default()
-                            .fg(Color::LightBlue)
-                            .add_modifier(Modifier::UNDERLINED),
-                    ));
-                    spans.push(Span::styled(
-                        format!("[{idx}]"),
-                        Style::default().fg(Color::Yellow),
-                    ));
-                    i = k + 1;
-                    continue;
-                }
+    let wrap_width = chunks[1].width.saturating_sub(2) as usize;
+    let (wrapped_lines, wrapped_cursor, wrapped_highlight) =
+        wrap_lines_with_cursor_and_highlight(&page_lines, wrap_width, cursor, highlight_line);
+    cursor = wrapped_cursor;
+    highlight_line = wrapped_highlight;
+    page_lines = wrapped_lines;
+
+    if let Some(edit) = app.edit.as_mut() {
+        let view_height = chunks[1].height.saturating_sub(2) as usize;
+        if edit.follow_cursor {
+            if let Some((cursor_line, _)) = cursor {
+                edit.preview_scroll = ensure_scroll(cursor_line, edit.preview_scroll, view_height);
+            } else if let Some(line) = highlight_line {
+                edit.preview_scroll = ensure_scroll(line, edit.preview_scroll, view_height);
             }
         }
-        buf.push(chars[i]);
-        i += 1;
+        let max_scroll = page_lines.len().saturating_sub(view_height);
+        if edit.preview_scroll > max_scroll {
+            edit.preview_scroll = max_scroll;
+        }
     }
 
-    push_buf(&mut spans, &mut buf, bold, italic, code);
-    Line::from(spans)
-}
-
-fn highlight_code_line(line: &str, language: Option<&str>) -> Line<'static> {
-    let keywords = keywords_for_language(language.unwrap_or_default());
-
-    let mut spans = Vec::new();
-    let mut i = 0usize;
-    let chars = line.chars().collect::<Vec<_>>();
-    while i < chars.len() {
-        let c = chars[i];
-
-        if (language == Some("python") || language == Some("shell") || language == Some("bash"))
-            && c == '#'
-        {
-            let rest = chars[i..].iter().collect::<String>();
-            spans.push(Span::styled(rest, Style::default().fg(Color::DarkGray)));
-            break;
-        }
-        if language == Some("javascript") && i + 1 < chars.len() && c == '/' && chars[i + 1] == '/'
-        {
-            let rest = chars[i..].iter().collect::<String>();
-            spans.push(Span::styled(rest, Style::default().fg(Color::DarkGray)));
-            break;
-        }
-        if c == '"' || c == '\'' {
-            let quote = c;
-            let start = i;
-            i += 1;
-            while i < chars.len() {
-                if chars[i] == quote && chars[i.saturating_sub(1)] != '\\' {
-                    i += 1;
-                    break;
-                }
-                i += 1;
-            }
-            let s = chars[start..i].iter().collect::<String>();
-            spans.push(Span::styled(s, Style::default().fg(Color::Green)));
-            continue;
-        }
-        if c.is_ascii_digit() {
-            let start = i;
-            i += 1;
-            while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '.') {
-                i += 1;
-            }
-            let s = chars[start..i].iter().collect::<String>();
-            spans.push(Span::styled(s, Style::default().fg(Color::Yellow)));
-            continue;
-        }
-        if c.is_ascii_alphabetic() || c == '_' {
-            let start = i;
-            i += 1;
-            while i < chars.len() && (chars[i].is_ascii_alphanumeric() || chars[i] == '_') {
-                i += 1;
-            }
-            let word = chars[start..i].iter().collect::<String>();
-            if keywords.contains(&word.as_str()) {
-                spans.push(Span::styled(
-                    word,
-                    Style::default()
-                        .fg(Color::Magenta)
-                        .add_modifier(Modifier::BOLD),
-                ));
-            } else {
-                spans.push(Span::raw(word));
-            }
-            continue;
-        }
-
-        spans.push(Span::raw(c.to_string()));
-        i += 1;
+    let scroll = app
+        .edit
+        .as_ref()
+        .map(|e| e.preview_scroll)
+        .unwrap_or(scroll);
+    if let Some((cursor_line, cursor_col)) = cursor {
+        apply_cursor_marker(&mut page_lines, cursor_line, cursor_col);
     }
+    let text = Text::from(page_lines);
+    let paragraph = Paragraph::new(text)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Page")
+                .border_style(Style::default().fg(Color::Blue)),
+        )
+        .scroll((scroll as u16, 0));
+    frame.render_widget(paragraph, chunks[1]);
 
-    Line::from(spans)
-}
-
-fn highlight_search_match(text: &str, needle: &str) -> Line<'static> {
-    if needle.is_empty() {
-        return Line::from(Span::raw(text.to_string()));
-    }
-    let lower = text.to_lowercase();
-    let needle_lower = needle.to_lowercase();
-    if let Some(idx) = lower.find(&needle_lower) {
-        let end = idx + needle.len().min(text.len().saturating_sub(idx));
-        let before = text.get(..idx).unwrap_or("");
-        let mid = text.get(idx..end).unwrap_or("");
-        let after = text.get(end..).unwrap_or("");
-        Line::from(vec![
-            Span::raw(before.to_string()),
-            Span::styled(
-                mid.to_string(),
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(after.to_string()),
-        ])
-    } else {
-        Line::from(Span::raw(text.to_string()))
-    }
-}
-
-fn normalize_text(input: &str) -> String {
-    input.replace("\r\n", "\n").replace('\r', "\n")
-}
-
-fn sanitize_for_terminal(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    for ch in input.chars() {
-        match ch {
-            '\t' => out.push_str("    "),
-            '\u{001b}' => {}
-            c if c.is_control() && c != '\n' => out.push(' '),
-            c => out.push(c),
-        }
-    }
-    out
-}
-
-fn highlight_selected_link_markers(
-    lines: &[Line<'static>],
-    selected_idx: usize,
-) -> Vec<Line<'static>> {
-    let marker = format!("[{selected_idx}]");
-    let marker_style = Style::default()
-        .fg(Color::Black)
-        .bg(Color::Yellow)
-        .add_modifier(Modifier::BOLD);
-
-    let mut out = Vec::with_capacity(lines.len());
-    for line in lines {
-        let mut spans = Vec::new();
-        for span in &line.spans {
-            let text = span.content.as_ref();
-            let mut rest = text;
-            while let Some(pos) = rest.find(&marker) {
-                if pos > 0 {
-                    spans.push(Span::styled(rest[..pos].to_string(), span.style));
-                }
-                spans.push(Span::styled(marker.clone(), marker_style));
-                rest = &rest[pos + marker.len()..];
-            }
-            if !rest.is_empty() {
-                spans.push(Span::styled(rest.to_string(), span.style));
-            }
-        }
-        out.push(Line::from(spans));
-    }
-    out
+    let footer = "tab/backtab snippet | arrows move | pgup/pgdn page | type to edit | ctrl+u undo | esc done";
+    let dashboard = format!("{}\n{}", app.plugins.status_line(), footer);
+    frame.render_widget(
+        Paragraph::new(dashboard).style(Style::default().fg(Color::Gray)),
+        chunks[2],
+    );
 }
 
 fn collect_page_links(nodes: &[Node]) -> Vec<(String, String)> {

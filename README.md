@@ -17,6 +17,7 @@ this repository is a cargo workspace with two crates:
 - probe example to inspect corpus shape and parse issues.
 - tui with full-screen list/search, full-screen page reading, markdown-like rendering, and internal link navigation.
 - optional external snippet plugins via ipc (see `docs/plugins.md`).
+- tui editor for text and code snippets (auto-save with undo).
 
 ## quick start
 
@@ -61,6 +62,14 @@ page view:
 - `enter`: follow selected link
 - `h`: go back in page-link history
 - `b` or `esc`: return to list view
+- `e`: edit page snippets
+
+edit view:
+
+- `tab` / `shift+tab`: next/previous snippet
+- arrows: move cursor
+- `ctrl+u`: undo
+- `esc`: exit edit view
 
 ## documentation
 
@@ -68,6 +77,7 @@ page view:
 - core api guide: [`docs/core-api.md`](docs/core-api.md)
 - plugin system: [`docs/plugins.md`](docs/plugins.md)
 - tui behavior: [`docs/tui.md`](docs/tui.md)
+- editor: [`docs/editor.md`](docs/editor.md)
 - snippet support matrix: [`docs/snippet-support-matrix.md`](docs/snippet-support-matrix.md)
 
 api docs from rustdoc:

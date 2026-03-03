@@ -2,12 +2,29 @@
 
 all notable changes to this project are documented in this file.
 
+## 0.6.0 - 2026-03-03
+
+### added
+- tui edit mode for text/code snippets with autosave and undo
+- inline edit view: selected snippet highlighted in-page with a cursor marker
+- edit-time syntax highlighting for code blocks
+- annotation highlighting in text (`{{annotation:...}}`)
+- editor documentation (`docs/editor.md`)
+
+### changed
+- non-editable snippets are tinted with a light yellow background in edit view
+- read-only snippets are explicitly non-editable in the editor
+
+### fixed
+- multiline cursor tracking now handles `\\r` line breaks correctly
+
 ## 0.5.0 - 2026-03-01
 
 ### added
 - `AttachmentResolver` for attachment path resolution and missing-file reporting
 - external snippet renderers via ipc (`LEPITER_PLUGIN_CONFIG`)
 - plugin sdk types + `lepiter_plugin_main!` macro
+- tui snippet editor for text/code with auto-save and undo
 - tui external snippet renderer hook via `LEPITER_PLUGIN_CONFIG` (experimental)
 
 ## 0.4.0 - 2026-02-28

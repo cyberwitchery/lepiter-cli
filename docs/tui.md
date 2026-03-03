@@ -5,6 +5,7 @@
 - `List`: full-screen page index
 - `Search`: filtered list input state
 - `Page`: full-screen page reader
+- `Edit`: snippet-level editor (text/code only)
 
 ## search
 
@@ -23,6 +24,18 @@
 - basic language-aware code highlighting for common snippet languages
 - control characters are sanitized for terminal safety
 - unknown snippet types can be rendered by external plugins (see `docs/plugins.md`)
+
+## editing
+
+- open with `e` from page view
+- exit with `esc`
+- navigate snippets with `tab` / `shift+tab`
+- cursor movement with arrow keys, `home`, `end`
+- `ctrl+u` undo (snapshot-based)
+- auto-save after idle (default 500ms, `LEPITER_EDIT_AUTOSAVE_MS`)
+- editable snippets: `textSnippet` and code snippets (`pharoSnippet`, `pythonSnippet`, `javascriptSnippet`, `shellCommandSnippet`, `gemstoneSnippet`)
+- non-editable snippets are read-only and tinted light yellow
+- the current snippet is highlighted in-page with a visible cursor marker
 
 ## link navigation
 

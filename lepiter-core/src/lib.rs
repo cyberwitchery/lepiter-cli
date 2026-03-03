@@ -123,6 +123,15 @@ pub enum Node {
     Unknown { typ: String, raw: Value },
 }
 
+/// Parses a single raw snippet JSON value into a [`Node`].
+///
+/// This is a best-effort conversion that preserves unknown snippet types as
+/// [`Node::Unknown`]. It is intended for tooling that operates on raw JSON
+/// without loading a full page.
+pub fn parse_node_from_raw(item: &Value) -> Node {
+    parse_node(item)
+}
+
 /// Non-fatal parse/indexing issue associated with a source file.
 #[derive(Debug, Clone)]
 pub struct ParseIssue {

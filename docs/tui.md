@@ -77,3 +77,47 @@ configure limits with env vars:
 - `LEPITER_TUI_RENDERED_CACHE` (default `128`)
 
 the list footer shows cache occupancy and full-text index progress.
+
+## keybindings reference
+
+### list / search mode
+
+| key | action |
+|-----|--------|
+| `↑` / `k` | move selection up |
+| `↓` / `j` | move selection down |
+| `enter` | open selected page |
+| `/` | enter search mode |
+| `esc` | clear search / return to list |
+| `backspace` | delete last search character |
+
+### page mode
+
+| key | action |
+|-----|--------|
+| `↑` / `k` | scroll up one line |
+| `↓` / `j` | scroll down one line |
+| `page up` | scroll up half a screen |
+| `page down` | scroll down half a screen |
+| `g` | jump to top |
+| `G` | jump to bottom |
+| `tab` | select next link |
+| `shift+tab` | select previous link |
+| `enter` | follow selected link |
+| `h` | go back in link history |
+| `b` | back to list |
+| `e` | enter edit mode |
+| `esc` | back to list |
+| `q` | quit |
+
+### edit mode
+
+| key | action |
+|-----|--------|
+| `tab` / `shift+tab` | move to next / previous snippet |
+| `↑` / `↓` / `←` / `→` | cursor movement |
+| `home` / `end` | cursor to line start / end |
+| `ctrl+u` | undo (snapshot-based) |
+| `backspace` | delete character before cursor |
+| `delete` | delete character at cursor |
+| `esc` | exit edit mode |

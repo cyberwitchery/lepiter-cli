@@ -107,6 +107,7 @@ the list footer shows cache occupancy and full-text index progress.
 | `h` | go back in link history |
 | `b` | back to list |
 | `e` | enter edit mode |
+| `O` | open page source file in system default handler (e.g. GToolkit) |
 | `esc` | back to list |
 | `q` | quit |
 

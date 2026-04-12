@@ -291,6 +291,22 @@ impl App {
         self.mode = Mode::Page;
     }
 
+    fn open_in_gt(&mut self) {
+        let Some(page_id) = self.opened.as_ref() else {
+            self.status = "no page loaded".to_string();
+            return;
+        };
+        let Some(meta) = self.index.pages.get(page_id) else {
+            self.status = "page not found".to_string();
+            return;
+        };
+        let path = meta.path.display().to_string();
+        match open_with_system(&path) {
+            Ok(()) => self.status = format!("opened in gt: {path}"),
+            Err(err) => self.status = format!("failed to open in gt: {err:#}"),
+        }
+    }
+
     fn refresh_after_edit(&mut self, id: &str) {
         if let Ok(page) = self.index.load_page(id) {
             insert_lru(
@@ -1455,6 +1471,11 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> Result<()> {
             KeyCode::Char('h') => {
                 if app.mode == Mode::Page {
                     app.back_in_history();
+                }
+            }
+            KeyCode::Char('O') => {
+                if app.mode == Mode::Page {
+                    app.open_in_gt();
                 }
             }
             KeyCode::Tab => {

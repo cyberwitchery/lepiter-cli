@@ -1,5 +1,9 @@
 [advisories]
-ignore = []
+ignore = [
+    # paste is unmaintained but pulled in transitively by ratatui's dependency
+    # tree. No security impact and no drop-in replacement available yet.
+    "RUSTSEC-2024-0436",
+]
 
 [licenses]
 allow = [
@@ -9,6 +13,7 @@ allow = [
     "BSD-2-Clause",
     "ISC",
     "0BSD",
+    "Zlib",
     "Unicode-3.0",
     "Unicode-DFS-2016",
 ]

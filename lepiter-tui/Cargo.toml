@@ -4,7 +4,8 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "terminal cli and tui reader for lepiter knowledge bases"
-repository = "https://github.com/feenk/lepiter-cli"
+repository.workspace = true
+homepage.workspace = true
 
 [dependencies]
 anyhow.workspace = true

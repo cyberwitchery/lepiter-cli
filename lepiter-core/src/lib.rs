@@ -1513,4 +1513,140 @@ mod tests {
             other => panic!("expected paragraph, got {other:?}"),
         }
     }
+
+    #[test]
+    fn parse_page_meta_missing_uid_uses_empty_id() -> Result<()> {
+        let path = temp_file_path("no-uid");
+        let content = json!({"pageType": {"title": "Some Title"}});
+        fs::write(&path, serde_json::to_vec(&content)?)?;
+        let meta = parse_page_meta(&path)?;
+        fs::remove_file(&path)?;
+
+        assert!(meta.id.is_empty());
+        assert_eq!(meta.title, "Some Title");
+        Ok(())
+    }
+
+    #[test]
+    fn parse_page_meta_missing_page_type_uses_empty_title() -> Result<()> {
+        let path = temp_file_path("no-pt");
+        let content = json!({"uid": {"uuid": "abc-123"}});
+        fs::write(&path, serde_json::to_vec(&content)?)?;
+        let meta = parse_page_meta(&path)?;
+        fs::remove_file(&path)?;
+
+        assert_eq!(meta.id, "abc-123");
+        assert!(meta.title.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn parse_page_meta_invalid_date_string_yields_none() -> Result<()> {
+        let path = temp_file_path("bad-date");
+        let content = json!({
+            "uid": {"uuid": "id-1"},
+            "editTime": {"time": {"dateAndTimeString": "not-a-date"}}
+        });
+        fs::write(&path, serde_json::to_vec(&content)?)?;
+        let meta = parse_page_meta(&path)?;
+        fs::remove_file(&path)?;
+
+        assert!(meta.updated_at.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn open_empty_directory_returns_empty_index() -> Result<()> {
+        let dir = temp_dir_path("empty-kb");
+        fs::create_dir_all(&dir)?;
+        let index = KnowledgeBase::open(&dir)?;
+        fs::remove_dir_all(&dir)?;
+
+        assert!(index.pages.is_empty());
+        assert!(index.index_issues.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn open_skips_non_lepiter_files() -> Result<()> {
+        let dir = temp_dir_path("non-lepiter");
+        fs::create_dir_all(&dir)?;
+        fs::write(dir.join("readme.txt"), b"hello")?;
+        fs::write(dir.join("data.json"), b"{}")?;
+        let index = KnowledgeBase::open(&dir)?;
+        fs::remove_dir_all(&dir)?;
+
+        assert!(index.pages.is_empty());
+        assert!(index.index_issues.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn open_reports_invalid_json_as_issue() -> Result<()> {
+        let dir = temp_dir_path("bad-json");
+        fs::create_dir_all(&dir)?;
+        fs::write(dir.join("broken.lepiter"), b"not json at all")?;
+        let index = KnowledgeBase::open(&dir)?;
+        fs::remove_dir_all(&dir)?;
+
+        assert!(index.pages.is_empty());
+        assert_eq!(index.index_issues.len(), 1);
+        assert!(index.index_issues[0].message.contains("failed to decode"));
+        Ok(())
+    }
+
+    #[test]
+    fn open_reports_wrong_json_structure_as_issue() -> Result<()> {
+        let dir = temp_dir_path("wrong-shape");
+        fs::create_dir_all(&dir)?;
+        fs::write(dir.join("array.lepiter"), b"[1, 2, 3]")?;
+        let index = KnowledgeBase::open(&dir)?;
+        fs::remove_dir_all(&dir)?;
+
+        assert!(index.pages.is_empty());
+        assert_eq!(index.index_issues.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn open_fills_in_defaults_for_minimal_page() -> Result<()> {
+        let dir = temp_dir_path("minimal");
+        fs::create_dir_all(&dir)?;
+        fs::write(dir.join("mypage.lepiter"), b"{}")?;
+        let index = KnowledgeBase::open(&dir)?;
+        fs::remove_dir_all(&dir)?;
+
+        assert_eq!(index.pages.len(), 1);
+        let meta = index.pages.values().next().unwrap();
+        assert_eq!(meta.id, "mypage");
+        assert_eq!(meta.title, "mypage");
+        Ok(())
+    }
+
+    #[test]
+    fn load_page_nonexistent_id_errors() -> Result<()> {
+        let dir = temp_dir_path("no-such-id");
+        fs::create_dir_all(&dir)?;
+        let index = KnowledgeBase::open(&dir)?;
+        fs::remove_dir_all(&dir)?;
+
+        let err = index.load_page("does-not-exist");
+        assert!(err.is_err());
+        assert!(format!("{:#}", err.unwrap_err()).contains("page id not found"));
+        Ok(())
+    }
+
+    #[test]
+    fn load_page_missing_children_yields_empty_content() -> Result<()> {
+        let dir = temp_dir_path("no-children");
+        fs::create_dir_all(&dir)?;
+        let content = json!({"uid": {"uuid": "pg-1"}, "pageType": {"title": "T"}});
+        fs::write(dir.join("pg-1.lepiter"), serde_json::to_vec(&content)?)?;
+        let index = KnowledgeBase::open(&dir)?;
+        let page = index.load_page("pg-1")?;
+        fs::remove_dir_all(&dir)?;
+
+        assert!(page.content.is_empty());
+        Ok(())
+    }
 }

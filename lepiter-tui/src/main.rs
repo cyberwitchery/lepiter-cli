@@ -1374,30 +1374,20 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> Result<()> {
                 Mode::Page => app.page_scroll = usize::MAX / 2,
                 Mode::List | Mode::Search | Mode::Edit => {}
             },
-            KeyCode::Char('b') => {
-                if app.mode == Mode::Page {
-                    app.back_to_list();
-                }
+            KeyCode::Char('b') if app.mode == Mode::Page => {
+                app.back_to_list();
             }
-            KeyCode::Char('e') => {
-                if app.mode == Mode::Page {
-                    app.enter_edit_mode();
-                }
+            KeyCode::Char('e') if app.mode == Mode::Page => {
+                app.enter_edit_mode();
             }
-            KeyCode::Char('h') => {
-                if app.mode == Mode::Page {
-                    app.back_in_history();
-                }
+            KeyCode::Char('h') if app.mode == Mode::Page => {
+                app.back_in_history();
             }
-            KeyCode::Tab => {
-                if app.mode == Mode::Page {
-                    app.move_link_selection(1);
-                }
+            KeyCode::Tab if app.mode == Mode::Page => {
+                app.move_link_selection(1);
             }
-            KeyCode::BackTab => {
-                if app.mode == Mode::Page {
-                    app.move_link_selection(-1);
-                }
+            KeyCode::BackTab if app.mode == Mode::Page => {
+                app.move_link_selection(-1);
             }
             _ => {}
         }

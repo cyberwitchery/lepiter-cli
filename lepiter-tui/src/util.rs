@@ -81,6 +81,11 @@ impl<V> LruCache<V> {
         self.map.len()
     }
 
+    #[allow(dead_code)]
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+
     fn touch_order(&mut self, key: &str) {
         if let Some(pos) = self.order.iter().position(|x| x == key) {
             self.order.remove(pos);

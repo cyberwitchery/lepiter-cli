@@ -49,7 +49,7 @@ use crate::render::{
     RenderedPage, highlight_selected_link_markers, keywords_for_language, render_page,
     sanitize_for_terminal,
 };
-use crate::util::cache_limit_from_env;
+use crate::util::{LruCache, cache_limit_from_env};
 use anyhow::{Context, Result, bail};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use lepiter_core::{
@@ -83,12 +83,8 @@ struct App {
     visible_ids: Vec<PageId>,
     selected: usize,
     opened: Option<PageId>,
-    parsed_cache: HashMap<PageId, Page>,
-    rendered_cache: HashMap<PageId, RenderedPage>,
-    parsed_lru: VecDeque<PageId>,
-    rendered_lru: VecDeque<PageId>,
-    max_parsed_cache: usize,
-    max_rendered_cache: usize,
+    parsed_cache: LruCache<Page>,
+    rendered_cache: LruCache<RenderedPage>,
     page_scroll: usize,
     selected_link: usize,
     search: String,
@@ -112,12 +108,8 @@ impl App {
             visible_ids: Vec::new(),
             selected: 0,
             opened: None,
-            parsed_cache: HashMap::new(),
-            rendered_cache: HashMap::new(),
-            parsed_lru: VecDeque::new(),
-            rendered_lru: VecDeque::new(),
-            max_parsed_cache,
-            max_rendered_cache,
+            parsed_cache: LruCache::new(max_parsed_cache),
+            rendered_cache: LruCache::new(max_rendered_cache),
             page_scroll: 0,
             selected_link: 0,
             search: String::new(),
@@ -218,9 +210,7 @@ impl App {
     }
 
     fn open_page(&mut self, id: &str, from_link: bool) {
-        if self.rendered_cache.contains_key(id) {
-            touch_lru(&mut self.rendered_lru, id);
-        } else {
+        if !self.rendered_cache.touch(id) {
             let page = match self.get_or_load_page(id) {
                 Ok(page) => page,
                 Err(err) => {
@@ -229,13 +219,7 @@ impl App {
                 }
             };
             let rendered = render_page(&page, &mut self.plugins);
-            insert_lru(
-                &mut self.rendered_cache,
-                &mut self.rendered_lru,
-                id.to_string(),
-                rendered,
-                self.max_rendered_cache,
-            );
+            self.rendered_cache.insert(id.to_string(), rendered);
         }
 
         if from_link && let Some(current) = self.opened.as_ref() {
@@ -293,21 +277,9 @@ impl App {
 
     fn refresh_after_edit(&mut self, id: &str) {
         if let Ok(page) = self.index.load_page(id) {
-            insert_lru(
-                &mut self.parsed_cache,
-                &mut self.parsed_lru,
-                id.to_string(),
-                page.clone(),
-                self.max_parsed_cache,
-            );
+            self.parsed_cache.insert(id.to_string(), page.clone());
             let rendered = render_page(&page, &mut self.plugins);
-            insert_lru(
-                &mut self.rendered_cache,
-                &mut self.rendered_lru,
-                id.to_string(),
-                rendered,
-                self.max_rendered_cache,
-            );
+            self.rendered_cache.insert(id.to_string(), rendered);
             let raw = render_page_to_text(&page);
             self.text_index.insert(
                 id.to_string(),
@@ -320,21 +292,12 @@ impl App {
     }
 
     fn get_or_load_page(&mut self, id: &str) -> Result<Page> {
-        if self.parsed_cache.contains_key(id) {
-            touch_lru(&mut self.parsed_lru, id);
-            if let Some(page) = self.parsed_cache.get(id) {
-                return Ok(page.clone());
-            }
+        if let Some(page) = self.parsed_cache.get(id) {
+            return Ok(page.clone());
         }
 
         let page = self.index.load_page(id)?;
-        insert_lru(
-            &mut self.parsed_cache,
-            &mut self.parsed_lru,
-            id.to_string(),
-            page.clone(),
-            self.max_parsed_cache,
-        );
+        self.parsed_cache.insert(id.to_string(), page.clone());
         Ok(page)
     }
 
@@ -366,7 +329,7 @@ impl App {
 
     fn current_rendered_page(&self) -> Option<&RenderedPage> {
         let id = self.opened.as_ref()?;
-        self.rendered_cache.get(id)
+        self.rendered_cache.peek(id)
     }
 
     fn move_link_selection(&mut self, delta: isize) {
@@ -474,7 +437,7 @@ impl App {
         if query.is_empty() {
             return;
         }
-        let Some(page) = self.rendered_cache.get(id) else {
+        let Some(page) = self.rendered_cache.peek(id) else {
             return;
         };
         let mut line_idx = 0usize;
@@ -1330,37 +1293,6 @@ fn highlight_code_line_ansi(line: &str, language: Option<&str>) -> String {
     }
 
     out
-}
-
-fn touch_lru(order: &mut VecDeque<PageId>, id: &str) {
-    if let Some(pos) = order.iter().position(|x| x == id) {
-        order.remove(pos);
-    }
-    order.push_back(id.to_string());
-}
-
-fn insert_lru<T>(
-    map: &mut HashMap<PageId, T>,
-    order: &mut VecDeque<PageId>,
-    id: PageId,
-    value: T,
-    max_entries: usize,
-) {
-    if map.contains_key(&id) {
-        map.insert(id.clone(), value);
-        touch_lru(order, &id);
-        return;
-    }
-
-    if max_entries > 0
-        && map.len() >= max_entries
-        && let Some(oldest) = order.pop_front()
-    {
-        map.remove(&oldest);
-    }
-
-    order.push_back(id.clone());
-    map.insert(id, value);
 }
 
 fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> Result<()> {

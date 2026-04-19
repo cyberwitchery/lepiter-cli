@@ -2,6 +2,11 @@
 
 all notable changes to this project are documented in this file.
 
+## Unreleased
+
+### fixed
+- plugin cache now uses LRU eviction instead of arbitrary hash-order eviction
+
 ## 0.6.0 - 2026-03-03
 
 ### added

@@ -6,6 +6,7 @@ all notable changes to this project are documented in this file.
 
 ### fixed
 - plugin cache now uses LRU eviction instead of arbitrary hash-order eviction
+- plugin IPC no longer spin-waits at 100% CPU when a plugin process crashes mid-request
 
 ## 0.6.0 - 2026-03-03
 

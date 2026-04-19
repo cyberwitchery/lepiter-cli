@@ -359,7 +359,7 @@ impl KnowledgeBaseIndex {
     /// Returns metadata entries sorted case-insensitively by title.
     pub fn sorted_pages_by_title(&self) -> Vec<&PageMeta> {
         let mut pages = self.pages.values().collect::<Vec<_>>();
-        pages.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
+        pages.sort_by_key(|a| a.title.to_lowercase());
         pages
     }
 

@@ -77,13 +77,9 @@ impl<V> LruCache<V> {
         self.map.insert(key, value);
     }
 
+    #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
         self.map.len()
-    }
-
-    #[allow(dead_code)]
-    pub fn is_empty(&self) -> bool {
-        self.map.is_empty()
     }
 
     fn touch_order(&mut self, key: &str) {

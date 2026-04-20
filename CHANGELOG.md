@@ -5,8 +5,8 @@ all notable changes to this project are documented in this file.
 ## Unreleased
 
 ### added
-- `O` keybinding in page mode to open the current page's source file in the
-  system default handler (e.g. GlamorousToolkit)
+- `O` keybinding in page mode to open the current page's source file in
+  GlamorousToolkit directly (configurable via `LEPITER_GT_BINARY` env var)
 
 ### fixed
 - plugin cache now uses LRU eviction instead of arbitrary hash-order eviction

@@ -21,6 +21,7 @@
 //! - `LEPITER_TUI_PARSED_CACHE` / `LEPITER_TUI_RENDERED_CACHE`: cache sizes
 //! - `LEPITER_EDIT_AUTOSAVE_MS`: edit autosave delay
 //! - `LEPITER_PLUGIN_CONFIG`: external snippet renderer config
+//! - `LEPITER_GT_BINARY`: GT binary for `O` keybinding (default: `GlamorousToolkit`)
 //!
 //! # docs
 //!
@@ -286,7 +287,9 @@ impl App {
             return;
         };
         let path = meta.path.display().to_string();
-        match open_with_system(&path) {
+        let gt_bin =
+            std::env::var("LEPITER_GT_BINARY").unwrap_or_else(|_| "GlamorousToolkit".to_string());
+        match open::with(&path, &gt_bin) {
             Ok(()) => self.status = format!("opened in gt: {path}"),
             Err(err) => self.status = format!("failed to open in gt: {err:#}"),
         }

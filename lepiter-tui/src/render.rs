@@ -5,6 +5,7 @@ use lepiter_core::{Node, Page, PageId};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
+use crate::highlight::{CodeToken, tokenize_code_line};
 use crate::plugins::{PluginManager, PluginRender};
 
 #[derive(Debug, Clone)]
@@ -402,75 +403,23 @@ pub fn parse_inline_annotations(text: &str) -> Line<'static> {
 }
 
 pub fn highlight_code_line(line: &str, language: Option<&str>) -> Line<'static> {
-    let keywords = keywords_for_language(language.unwrap_or_default());
-
-    let mut spans = Vec::new();
-    let mut i = 0usize;
-    let chars = line.chars().collect::<Vec<_>>();
-    while i < chars.len() {
-        let c = chars[i];
-
-        if (language == Some("python") || language == Some("shell") || language == Some("bash"))
-            && c == '#'
-        {
-            let rest = chars[i..].iter().collect::<String>();
-            spans.push(Span::styled(rest, Style::default().fg(Color::DarkGray)));
-            break;
-        }
-        if language == Some("javascript") && i + 1 < chars.len() && c == '/' && chars[i + 1] == '/'
-        {
-            let rest = chars[i..].iter().collect::<String>();
-            spans.push(Span::styled(rest, Style::default().fg(Color::DarkGray)));
-            break;
-        }
-        if c == '"' || c == '\'' {
-            let quote = c;
-            let start = i;
-            i += 1;
-            while i < chars.len() {
-                if chars[i] == quote && chars[i.saturating_sub(1)] != '\\' {
-                    i += 1;
-                    break;
-                }
-                i += 1;
-            }
-            let s = chars[start..i].iter().collect::<String>();
-            spans.push(Span::styled(s, Style::default().fg(Color::Green)));
-            continue;
-        }
-        if c.is_ascii_digit() {
-            let start = i;
-            i += 1;
-            while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '.') {
-                i += 1;
-            }
-            let s = chars[start..i].iter().collect::<String>();
-            spans.push(Span::styled(s, Style::default().fg(Color::Yellow)));
-            continue;
-        }
-        if c.is_ascii_alphabetic() || c == '_' {
-            let start = i;
-            i += 1;
-            while i < chars.len() && (chars[i].is_ascii_alphanumeric() || chars[i] == '_') {
-                i += 1;
-            }
-            let word = chars[start..i].iter().collect::<String>();
-            if keywords.contains(&word.as_str()) {
-                spans.push(Span::styled(
-                    word,
-                    Style::default()
-                        .fg(Color::LightMagenta)
-                        .add_modifier(Modifier::BOLD),
-                ));
-            } else {
-                spans.push(Span::raw(word));
-            }
-            continue;
-        }
-        spans.push(Span::raw(c.to_string()));
-        i += 1;
-    }
-
+    let tokens = tokenize_code_line(line, language);
+    let spans: Vec<Span<'static>> = tokens
+        .into_iter()
+        .map(|tok| match tok {
+            CodeToken::Comment(s) => Span::styled(s, Style::default().fg(Color::DarkGray)),
+            CodeToken::StringLit(s) => Span::styled(s, Style::default().fg(Color::Green)),
+            CodeToken::Number(s) => Span::styled(s, Style::default().fg(Color::Yellow)),
+            CodeToken::Keyword(s) => Span::styled(
+                s,
+                Style::default()
+                    .fg(Color::LightMagenta)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            CodeToken::Ident(s) => Span::raw(s),
+            CodeToken::Punct(c) => Span::raw(c.to_string()),
+        })
+        .collect();
     Line::from(spans)
 }
 
@@ -523,42 +472,4 @@ pub fn highlight_selected_link_markers(
         out.push(Line::from(spans));
     }
     out
-}
-
-pub fn keywords_for_language(language: &str) -> &'static [&'static str] {
-    match language {
-        "python" => &[
-            "def", "class", "return", "if", "elif", "else", "for", "while", "in", "try", "except",
-            "with", "as", "import", "from", "pass", "break", "continue", "True", "False", "None",
-        ],
-        "javascript" => &[
-            "function",
-            "return",
-            "if",
-            "else",
-            "for",
-            "while",
-            "const",
-            "let",
-            "var",
-            "class",
-            "new",
-            "import",
-            "from",
-            "export",
-            "default",
-            "try",
-            "catch",
-            "true",
-            "false",
-            "null",
-            "undefined",
-        ],
-        "shell" | "bash" => &[
-            "if", "then", "fi", "for", "in", "do", "done", "case", "esac", "while", "function",
-            "echo", "exit",
-        ],
-        "pharo" => &["self", "super", "true", "false", "nil", "thisContext", "^"],
-        _ => &[],
-    }
 }

@@ -28,6 +28,7 @@
 //! - editor: `docs/editor.md`
 //! - plugins: `docs/plugins.md`
 mod edit;
+mod highlight;
 mod plugins;
 mod render;
 mod util;
@@ -44,10 +45,10 @@ use crate::edit::{
     ensure_scroll, insert_char_at, load_raw_page, move_cursor_vertical, render_edit_page,
     wrap_lines_with_cursor_and_highlight,
 };
+use crate::highlight::{CodeToken, tokenize_code_line};
 use crate::plugins::PluginManager;
 use crate::render::{
-    RenderedPage, highlight_selected_link_markers, keywords_for_language, render_page,
-    sanitize_for_terminal,
+    RenderedPage, highlight_selected_link_markers, render_page, sanitize_for_terminal,
 };
 use crate::util::{LruCache, cache_limit_from_env};
 use anyhow::{Context, Result, bail};
@@ -1227,71 +1228,18 @@ fn ansi(style: &str, text: &str) -> String {
 }
 
 fn highlight_code_line_ansi(line: &str, language: Option<&str>) -> String {
-    let keywords = keywords_for_language(language.unwrap_or_default());
+    let tokens = tokenize_code_line(line, language);
     let mut out = String::new();
-    let mut i = 0usize;
-    let chars = line.chars().collect::<Vec<_>>();
-
-    while i < chars.len() {
-        let c = chars[i];
-
-        if (language == Some("python") || language == Some("shell") || language == Some("bash"))
-            && c == '#'
-        {
-            let rest = chars[i..].iter().collect::<String>();
-            out.push_str(&ansi("90", &rest));
-            break;
+    for tok in tokens {
+        match tok {
+            CodeToken::Comment(s) => out.push_str(&ansi("90", &s)),
+            CodeToken::StringLit(s) => out.push_str(&ansi("32", &s)),
+            CodeToken::Number(s) => out.push_str(&ansi("33", &s)),
+            CodeToken::Keyword(s) => out.push_str(&ansi("1;35", &s)),
+            CodeToken::Ident(s) => out.push_str(&s),
+            CodeToken::Punct(c) => out.push(c),
         }
-        if language == Some("javascript") && i + 1 < chars.len() && c == '/' && chars[i + 1] == '/'
-        {
-            let rest = chars[i..].iter().collect::<String>();
-            out.push_str(&ansi("90", &rest));
-            break;
-        }
-        if c == '"' || c == '\'' {
-            let quote = c;
-            let start = i;
-            i += 1;
-            while i < chars.len() {
-                if chars[i] == quote && chars[i.saturating_sub(1)] != '\\' {
-                    i += 1;
-                    break;
-                }
-                i += 1;
-            }
-            let s = chars[start..i].iter().collect::<String>();
-            out.push_str(&ansi("32", &s));
-            continue;
-        }
-        if c.is_ascii_digit() {
-            let start = i;
-            i += 1;
-            while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '.') {
-                i += 1;
-            }
-            let s = chars[start..i].iter().collect::<String>();
-            out.push_str(&ansi("33", &s));
-            continue;
-        }
-        if c.is_ascii_alphabetic() || c == '_' {
-            let start = i;
-            i += 1;
-            while i < chars.len() && (chars[i].is_ascii_alphanumeric() || chars[i] == '_') {
-                i += 1;
-            }
-            let word = chars[start..i].iter().collect::<String>();
-            if keywords.contains(&word.as_str()) {
-                out.push_str(&ansi("1;35", &word));
-            } else {
-                out.push_str(&word);
-            }
-            continue;
-        }
-
-        out.push(c);
-        i += 1;
     }
-
     out
 }
 

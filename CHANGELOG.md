@@ -4,6 +4,10 @@ all notable changes to this project are documented in this file.
 
 ## Unreleased
 
+### added
+- `O` keybinding in page mode to open the current page's source file in the
+  system default handler (e.g. GlamorousToolkit)
+
 ### fixed
 - plugin cache now uses LRU eviction instead of arbitrary hash-order eviction
 - plugin IPC no longer spin-waits at 100% CPU when a plugin process crashes mid-request

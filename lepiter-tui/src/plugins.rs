@@ -10,7 +10,7 @@ use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
@@ -74,7 +74,7 @@ impl PluginProcess {
     fn request_with_timeout(
         &mut self,
         req: &PluginRequest,
-        timeout: Duration,
+        _timeout: Duration,
     ) -> Result<PluginResponse> {
         if let Some(status) = self.child.try_wait()? {
             bail!("plugin exited: {status}");
@@ -84,22 +84,19 @@ impl PluginProcess {
         self.stdin.write_all(payload.as_bytes())?;
         self.stdin.flush()?;
 
-        let start = Instant::now();
-        loop {
-            if start.elapsed() >= timeout {
-                bail!("plugin timeout after {}ms", timeout.as_millis());
-            }
-            if let Some(status) = self.child.try_wait()? {
-                bail!("plugin exited: {status}");
-            }
-            let mut line = String::new();
-            let n = self.stdout.read_line(&mut line)?;
-            if n == 0 {
-                continue;
-            }
-            let resp: PluginResponse = serde_json::from_str(&line)?;
-            return Ok(resp);
+        // read_line blocks until a full line arrives or the pipe closes (EOF).
+        // The timeout parameter is not enforced on the blocking read; the
+        // caller's retry count bounds total attempts instead.
+        if let Some(status) = self.child.try_wait()? {
+            bail!("plugin exited mid-request: {status}");
         }
+        let mut line = String::new();
+        let n = self.stdout.read_line(&mut line)?;
+        if n == 0 {
+            bail!("plugin stdout closed unexpectedly (process likely crashed)");
+        }
+        let resp: PluginResponse = serde_json::from_str(&line)?;
+        Ok(resp)
     }
 }
 

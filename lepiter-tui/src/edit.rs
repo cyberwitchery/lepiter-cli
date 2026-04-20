@@ -250,9 +250,14 @@ pub fn collect_snippets(raw: &Value, path: Vec<usize>, out: &mut Vec<SnippetEntr
     }
 }
 
+/// Field names that may hold text-snippet content, in priority order.
+const TEXT_FIELDS: &[&str] = &["string", "text", "content"];
+/// Field names that may hold code-snippet content, in priority order.
+const CODE_FIELDS: &[&str] = &["code", "source"];
+
 pub fn editable_field(typ: &str, item: &Value) -> (bool, Option<String>) {
     if typ == "textSnippet" {
-        let field = pick_first_field(item, &["string", "text", "content"]).unwrap_or("string");
+        let field = pick_first_field(item, TEXT_FIELDS).unwrap_or("string");
         return (true, Some(field.to_string()));
     }
 
@@ -264,7 +269,7 @@ pub fn editable_field(typ: &str, item: &Value) -> (bool, Option<String>) {
             | "shellCommandSnippet"
             | "gemstoneSnippet"
     ) {
-        let field = pick_first_field(item, &["code", "source"]).unwrap_or("code");
+        let field = pick_first_field(item, CODE_FIELDS).unwrap_or("code");
         return (true, Some(field.to_string()));
     }
 
@@ -281,12 +286,9 @@ fn pick_first_field<'a>(item: &'a Value, fields: &[&'a str]) -> Option<&'a str> 
 }
 
 fn snippet_preview(item: &Value) -> String {
-    item.get("string")
-        .or_else(|| item.get("text"))
-        .or_else(|| item.get("content"))
-        .or_else(|| item.get("code"))
-        .or_else(|| item.get("source"))
-        .and_then(Value::as_str)
+    pick_first_field(item, TEXT_FIELDS)
+        .or_else(|| pick_first_field(item, CODE_FIELDS))
+        .and_then(|f| item.get(f).and_then(Value::as_str))
         .unwrap_or("")
         .to_string()
 }

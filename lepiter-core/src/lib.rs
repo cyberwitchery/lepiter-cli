@@ -422,9 +422,10 @@ impl KnowledgeBaseIndex {
             return TitleResolution::NotFound;
         }
 
-        let exact = self
-            .sorted_pages_by_title()
-            .into_iter()
+        let sorted = self.sorted_pages_by_title();
+
+        let exact = sorted
+            .iter()
             .filter(|m| m.title.to_lowercase() == needle)
             .map(|m| m.id.clone())
             .collect::<Vec<_>>();
@@ -434,9 +435,8 @@ impl KnowledgeBaseIndex {
             _ => {}
         }
 
-        let partial = self
-            .sorted_pages_by_title()
-            .into_iter()
+        let partial = sorted
+            .iter()
             .filter(|m| m.title.to_lowercase().contains(&needle))
             .map(|m| m.id.clone())
             .collect::<Vec<_>>();

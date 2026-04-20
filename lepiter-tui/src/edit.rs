@@ -833,4 +833,729 @@ mod tests {
         assert_eq!(cursor.0, 1);
         assert!(lines.len() >= 2);
     }
+
+    // ── insert_char_at ──────────────────────────────────────────────
+
+    #[test]
+    fn insert_char_at_ascii_middle() {
+        let mut buf = "hello".to_string();
+        let mut cursor = 2;
+        insert_char_at(&mut buf, &mut cursor, 'X');
+        assert_eq!(buf, "heXllo");
+        assert_eq!(cursor, 3);
+    }
+
+    #[test]
+    fn insert_char_at_beginning() {
+        let mut buf = "abc".to_string();
+        let mut cursor = 0;
+        insert_char_at(&mut buf, &mut cursor, 'Z');
+        assert_eq!(buf, "Zabc");
+        assert_eq!(cursor, 1);
+    }
+
+    #[test]
+    fn insert_char_at_end() {
+        let mut buf = "abc".to_string();
+        let mut cursor = 3;
+        insert_char_at(&mut buf, &mut cursor, '!');
+        assert_eq!(buf, "abc!");
+        assert_eq!(cursor, 4);
+    }
+
+    #[test]
+    fn insert_char_at_multibyte() {
+        let mut buf = "café".to_string();
+        let mut cursor = 4; // after 'é'
+        insert_char_at(&mut buf, &mut cursor, '☕');
+        assert_eq!(buf, "café☕");
+        assert_eq!(cursor, 5);
+    }
+
+    #[test]
+    fn insert_char_at_multibyte_middle() {
+        let mut buf = "αβγ".to_string();
+        let mut cursor = 1; // after 'α'
+        insert_char_at(&mut buf, &mut cursor, 'δ');
+        assert_eq!(buf, "αδβγ");
+        assert_eq!(cursor, 2);
+    }
+
+    #[test]
+    fn insert_char_at_cr_becomes_lf() {
+        let mut buf = "ab".to_string();
+        let mut cursor = 1;
+        insert_char_at(&mut buf, &mut cursor, '\r');
+        assert_eq!(buf, "a\nb");
+        assert_eq!(cursor, 2);
+    }
+
+    #[test]
+    fn insert_char_at_empty_buffer() {
+        let mut buf = String::new();
+        let mut cursor = 0;
+        insert_char_at(&mut buf, &mut cursor, 'x');
+        assert_eq!(buf, "x");
+        assert_eq!(cursor, 1);
+    }
+
+    // ── delete_char_before ──────────────────────────────────────────
+
+    #[test]
+    fn delete_char_before_at_start_returns_false() {
+        let mut buf = "hello".to_string();
+        let mut cursor = 0;
+        assert!(!delete_char_before(&mut buf, &mut cursor));
+        assert_eq!(buf, "hello");
+        assert_eq!(cursor, 0);
+    }
+
+    #[test]
+    fn delete_char_before_middle() {
+        let mut buf = "hello".to_string();
+        let mut cursor = 3;
+        assert!(delete_char_before(&mut buf, &mut cursor));
+        assert_eq!(buf, "helo");
+        assert_eq!(cursor, 2);
+    }
+
+    #[test]
+    fn delete_char_before_end() {
+        let mut buf = "abc".to_string();
+        let mut cursor = 3;
+        assert!(delete_char_before(&mut buf, &mut cursor));
+        assert_eq!(buf, "ab");
+        assert_eq!(cursor, 2);
+    }
+
+    #[test]
+    fn delete_char_before_multibyte() {
+        let mut buf = "café".to_string();
+        let mut cursor = 4; // after 'é'
+        assert!(delete_char_before(&mut buf, &mut cursor));
+        assert_eq!(buf, "caf");
+        assert_eq!(cursor, 3);
+    }
+
+    #[test]
+    fn delete_char_before_single_char() {
+        let mut buf = "x".to_string();
+        let mut cursor = 1;
+        assert!(delete_char_before(&mut buf, &mut cursor));
+        assert_eq!(buf, "");
+        assert_eq!(cursor, 0);
+    }
+
+    // ── delete_char_at ──────────────────────────────────────────────
+
+    #[test]
+    fn delete_char_at_end_returns_false() {
+        let mut buf = "hello".to_string();
+        let mut cursor = 5;
+        assert!(!delete_char_at(&mut buf, &mut cursor));
+        assert_eq!(buf, "hello");
+    }
+
+    #[test]
+    fn delete_char_at_beginning() {
+        let mut buf = "hello".to_string();
+        let mut cursor = 0;
+        assert!(delete_char_at(&mut buf, &mut cursor));
+        assert_eq!(buf, "ello");
+        assert_eq!(cursor, 0); // cursor stays
+    }
+
+    #[test]
+    fn delete_char_at_middle() {
+        let mut buf = "hello".to_string();
+        let mut cursor = 2;
+        assert!(delete_char_at(&mut buf, &mut cursor));
+        assert_eq!(buf, "helo");
+        assert_eq!(cursor, 2);
+    }
+
+    #[test]
+    fn delete_char_at_multibyte() {
+        let mut buf = "α☕β".to_string();
+        let mut cursor = 1; // at '☕'
+        assert!(delete_char_at(&mut buf, &mut cursor));
+        assert_eq!(buf, "αβ");
+        assert_eq!(cursor, 1);
+    }
+
+    #[test]
+    fn delete_char_at_empty_returns_false() {
+        let mut buf = String::new();
+        let mut cursor = 0;
+        assert!(!delete_char_at(&mut buf, &mut cursor));
+    }
+
+    // ── char_to_byte_idx ────────────────────────────────────────────
+
+    #[test]
+    fn char_to_byte_idx_ascii() {
+        assert_eq!(char_to_byte_idx("hello", 0), 0);
+        assert_eq!(char_to_byte_idx("hello", 2), 2);
+        assert_eq!(char_to_byte_idx("hello", 5), 5); // past end
+    }
+
+    #[test]
+    fn char_to_byte_idx_multibyte() {
+        // 'é' is 2 bytes in UTF-8
+        assert_eq!(char_to_byte_idx("café", 0), 0);
+        assert_eq!(char_to_byte_idx("café", 3), 3); // 'é'
+        assert_eq!(char_to_byte_idx("café", 4), 5); // past end
+    }
+
+    #[test]
+    fn char_to_byte_idx_emoji() {
+        // '☕' is 3 bytes
+        let s = "a☕b";
+        assert_eq!(char_to_byte_idx(s, 0), 0); // 'a'
+        assert_eq!(char_to_byte_idx(s, 1), 1); // '☕'
+        assert_eq!(char_to_byte_idx(s, 2), 4); // 'b'
+    }
+
+    // ── cursor_line_col_display ─────────────────────────────────────
+
+    #[test]
+    fn cursor_line_col_single_line() {
+        assert_eq!(cursor_line_col_display("hello", 0), (0, 0));
+        assert_eq!(cursor_line_col_display("hello", 3), (0, 3));
+        assert_eq!(cursor_line_col_display("hello", 5), (0, 5)); // at end
+    }
+
+    #[test]
+    fn cursor_line_col_multiline() {
+        let text = "ab\ncd\nef";
+        assert_eq!(cursor_line_col_display(text, 0), (0, 0)); // 'a'
+        assert_eq!(cursor_line_col_display(text, 2), (0, 2)); // '\n'
+        assert_eq!(cursor_line_col_display(text, 3), (1, 0)); // 'c'
+        assert_eq!(cursor_line_col_display(text, 5), (1, 2)); // second '\n'
+        assert_eq!(cursor_line_col_display(text, 6), (2, 0)); // 'e'
+        assert_eq!(cursor_line_col_display(text, 8), (2, 2)); // at end
+    }
+
+    #[test]
+    fn cursor_line_col_with_tab() {
+        let text = "a\tb";
+        assert_eq!(cursor_line_col_display(text, 0), (0, 0));
+        assert_eq!(cursor_line_col_display(text, 1), (0, 1)); // '\t'
+        assert_eq!(cursor_line_col_display(text, 2), (0, 5)); // 'b' (tab=4)
+    }
+
+    #[test]
+    fn cursor_line_col_cr_treated_as_newline() {
+        let text = "a\rb";
+        assert_eq!(cursor_line_col_display(text, 0), (0, 0));
+        assert_eq!(cursor_line_col_display(text, 1), (0, 1)); // '\r'
+        assert_eq!(cursor_line_col_display(text, 2), (1, 0)); // 'b'
+    }
+
+    // ── display_col_to_char_idx ─────────────────────────────────────
+
+    #[test]
+    fn display_col_to_char_idx_basic() {
+        assert_eq!(display_col_to_char_idx("hello", 0), 0);
+        assert_eq!(display_col_to_char_idx("hello", 3), 3);
+        assert_eq!(display_col_to_char_idx("hello", 10), 5); // past end
+    }
+
+    #[test]
+    fn display_col_to_char_idx_with_tab() {
+        let line = "a\tb";
+        assert_eq!(display_col_to_char_idx(line, 0), 0); // 'a'
+        assert_eq!(display_col_to_char_idx(line, 1), 1); // '\t' starts
+        assert_eq!(display_col_to_char_idx(line, 4), 1); // still within tab
+        assert_eq!(display_col_to_char_idx(line, 5), 2); // 'b'
+    }
+
+    #[test]
+    fn display_col_to_char_idx_empty() {
+        assert_eq!(display_col_to_char_idx("", 0), 0);
+        assert_eq!(display_col_to_char_idx("", 5), 0);
+    }
+
+    // ── move_cursor_vertical ────────────────────────────────────────
+
+    fn make_edit(text: &str) -> EditState {
+        let raw = json!({
+            "children": {
+                "items": [
+                    {
+                        "__type": "textSnippet",
+                        "string": text
+                    }
+                ]
+            }
+        });
+        let mut snippets = Vec::new();
+        collect_snippets(&raw, Vec::new(), &mut snippets);
+        let buffer = snippets[0].text.clone();
+        EditState::new(
+            "p".into(),
+            PathBuf::from("/tmp/t.json"),
+            raw,
+            snippets,
+            buffer,
+        )
+    }
+
+    #[test]
+    fn move_cursor_vertical_down() {
+        let mut edit = make_edit("abc\ndef\nghi");
+        edit.cursor = 1; // 'b' on line 0
+        move_cursor_vertical(&mut edit, 1);
+        // should land on line 1, col 1 → char index = 4+1 = 5 ('e')
+        let (line, col) = cursor_line_col_display(&edit.buffer, edit.cursor);
+        assert_eq!(line, 1);
+        assert_eq!(col, 1);
+    }
+
+    #[test]
+    fn move_cursor_vertical_up() {
+        let mut edit = make_edit("abc\ndef\nghi");
+        edit.cursor = 5; // 'e' on line 1
+        move_cursor_vertical(&mut edit, -1);
+        let (line, col) = cursor_line_col_display(&edit.buffer, edit.cursor);
+        assert_eq!(line, 0);
+        assert_eq!(col, 1);
+    }
+
+    #[test]
+    fn move_cursor_vertical_at_first_line_stays() {
+        let mut edit = make_edit("abc\ndef");
+        edit.cursor = 1; // 'b'
+        move_cursor_vertical(&mut edit, -1);
+        let (line, _) = cursor_line_col_display(&edit.buffer, edit.cursor);
+        assert_eq!(line, 0);
+    }
+
+    #[test]
+    fn move_cursor_vertical_at_last_line_stays() {
+        let mut edit = make_edit("abc\ndef");
+        edit.cursor = 5; // 'e' on line 1
+        move_cursor_vertical(&mut edit, 1);
+        let (line, _) = cursor_line_col_display(&edit.buffer, edit.cursor);
+        assert_eq!(line, 1);
+    }
+
+    #[test]
+    fn move_cursor_vertical_clamps_to_shorter_line() {
+        let mut edit = make_edit("abcdef\nxy");
+        edit.cursor = 5; // 'f' on line 0, col 5
+        move_cursor_vertical(&mut edit, 1);
+        let (line, col) = cursor_line_col_display(&edit.buffer, edit.cursor);
+        assert_eq!(line, 1);
+        // line 1 only has 2 chars, so col clamps
+        assert!(col <= 2);
+    }
+
+    #[test]
+    fn move_cursor_vertical_single_line_noop() {
+        let mut edit = make_edit("hello");
+        edit.cursor = 2;
+        move_cursor_vertical(&mut edit, 1);
+        // should stay on line 0
+        let (line, _) = cursor_line_col_display(&edit.buffer, edit.cursor);
+        assert_eq!(line, 0);
+    }
+
+    // ── collect_snippets ────────────────────────────────────────────
+
+    #[test]
+    fn collect_snippets_flat() {
+        let raw = json!({
+            "children": {
+                "items": [
+                    {"__type": "textSnippet", "string": "hello"},
+                    {"__type": "pictureSnippet", "url": "img.png"}
+                ]
+            }
+        });
+        let mut out = Vec::new();
+        collect_snippets(&raw, Vec::new(), &mut out);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].typ, "textSnippet");
+        assert!(out[0].editable);
+        assert_eq!(out[0].text, "hello");
+        assert_eq!(out[0].path, vec![0]);
+        assert_eq!(out[1].typ, "pictureSnippet");
+        assert!(!out[1].editable);
+        assert_eq!(out[1].path, vec![1]);
+    }
+
+    #[test]
+    fn collect_snippets_nested() {
+        let raw = json!({
+            "children": {
+                "items": [
+                    {
+                        "__type": "textSnippet",
+                        "string": "parent",
+                        "children": {
+                            "items": [
+                                {"__type": "pharoSnippet", "code": "1 + 2"}
+                            ]
+                        }
+                    }
+                ]
+            }
+        });
+        let mut out = Vec::new();
+        collect_snippets(&raw, Vec::new(), &mut out);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].path, vec![0]);
+        assert_eq!(out[0].text, "parent");
+        assert_eq!(out[1].path, vec![0, 0]);
+        assert_eq!(out[1].typ, "pharoSnippet");
+        assert!(out[1].editable);
+        assert_eq!(out[1].text, "1 + 2");
+    }
+
+    #[test]
+    fn collect_snippets_deeply_nested() {
+        let raw = json!({
+            "children": {
+                "items": [
+                    {
+                        "__type": "textSnippet",
+                        "string": "L1",
+                        "children": {
+                            "items": [
+                                {
+                                    "__type": "textSnippet",
+                                    "string": "L2",
+                                    "children": {
+                                        "items": [
+                                            {"__type": "textSnippet", "string": "L3"}
+                                        ]
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        });
+        let mut out = Vec::new();
+        collect_snippets(&raw, Vec::new(), &mut out);
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0].path, vec![0]);
+        assert_eq!(out[1].path, vec![0, 0]);
+        assert_eq!(out[2].path, vec![0, 0, 0]);
+        assert_eq!(out[2].text, "L3");
+    }
+
+    #[test]
+    fn collect_snippets_empty() {
+        let raw = json!({"children": {"items": []}});
+        let mut out = Vec::new();
+        collect_snippets(&raw, Vec::new(), &mut out);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn collect_snippets_no_children_key() {
+        let raw = json!({"other": "data"});
+        let mut out = Vec::new();
+        collect_snippets(&raw, Vec::new(), &mut out);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn collect_snippets_normalizes_cr() {
+        let raw = json!({
+            "children": {
+                "items": [
+                    {"__type": "textSnippet", "string": "line1\rline2"}
+                ]
+            }
+        });
+        let mut out = Vec::new();
+        collect_snippets(&raw, Vec::new(), &mut out);
+        assert_eq!(out[0].text, "line1\nline2");
+    }
+
+    // ── editable_field ──────────────────────────────────────────────
+
+    #[test]
+    fn editable_field_text_snippet() {
+        let item = json!({"__type": "textSnippet", "string": "hi"});
+        let (editable, field) = editable_field("textSnippet", &item);
+        assert!(editable);
+        assert_eq!(field, Some("string".to_string()));
+    }
+
+    #[test]
+    fn editable_field_text_snippet_text_field() {
+        let item = json!({"__type": "textSnippet", "text": "hi"});
+        let (editable, field) = editable_field("textSnippet", &item);
+        assert!(editable);
+        assert_eq!(field, Some("text".to_string()));
+    }
+
+    #[test]
+    fn editable_field_code_snippet() {
+        let item = json!({"__type": "pharoSnippet", "code": "1+2"});
+        let (editable, field) = editable_field("pharoSnippet", &item);
+        assert!(editable);
+        assert_eq!(field, Some("code".to_string()));
+    }
+
+    #[test]
+    fn editable_field_code_snippet_source_field() {
+        let item = json!({"__type": "pythonSnippet", "source": "print(1)"});
+        let (editable, field) = editable_field("pythonSnippet", &item);
+        assert!(editable);
+        assert_eq!(field, Some("source".to_string()));
+    }
+
+    #[test]
+    fn editable_field_non_editable() {
+        let item = json!({"__type": "pictureSnippet"});
+        let (editable, field) = editable_field("pictureSnippet", &item);
+        assert!(!editable);
+        assert_eq!(field, None);
+    }
+
+    // ── undo/redo push/pop ──────────────────────────────────────────
+
+    #[test]
+    fn push_undo_snapshot_records_state() {
+        let mut edit = make_edit("hello");
+        edit.push_undo_snapshot();
+        let entry = edit.current().unwrap();
+        assert_eq!(entry.undo.len(), 1);
+        assert_eq!(entry.undo[0].text, "hello");
+    }
+
+    #[test]
+    fn undo_restores_previous_state() {
+        let mut edit = make_edit("original");
+        edit.push_undo_snapshot();
+        edit.buffer = "modified".to_string();
+        edit.cursor = 3;
+        edit.commit_buffer();
+
+        let undone = edit.undo();
+        assert!(undone);
+        assert_eq!(edit.buffer, "original");
+    }
+
+    #[test]
+    fn undo_on_empty_stack_returns_false() {
+        let mut edit = make_edit("hello");
+        assert!(!edit.undo());
+    }
+
+    #[test]
+    fn push_undo_caps_at_200() {
+        let mut edit = make_edit("initial");
+        for i in 0..210 {
+            edit.buffer = format!("v{i}");
+            edit.cursor = edit.buffer.chars().count();
+            edit.push_undo_snapshot();
+        }
+        let entry = edit.current().unwrap();
+        assert_eq!(entry.undo.len(), 200);
+    }
+
+    #[test]
+    fn push_undo_on_non_editable_is_noop() {
+        let raw = json!({
+            "children": {
+                "items": [
+                    {"__type": "pictureSnippet", "url": "img.png"}
+                ]
+            }
+        });
+        let mut snippets = Vec::new();
+        collect_snippets(&raw, Vec::new(), &mut snippets);
+        let mut edit = EditState::new(
+            "p".into(),
+            PathBuf::from("/tmp/t.json"),
+            raw,
+            snippets,
+            String::new(),
+        );
+        edit.push_undo_snapshot();
+        let entry = edit.current().unwrap();
+        assert!(entry.undo.is_empty());
+    }
+
+    #[test]
+    fn undo_clamps_cursor_to_buffer_length() {
+        let mut edit = make_edit("hi");
+        edit.cursor = 2;
+        edit.push_undo_snapshot();
+        // Manually set cursor beyond buffer length in the snapshot
+        edit.current_mut().unwrap().undo.last_mut().unwrap().cursor = 100;
+        edit.buffer = "longer text".to_string();
+        edit.commit_buffer();
+        let undone = edit.undo();
+        assert!(undone);
+        // cursor should be clamped to chars().count() of "hi" = 2
+        assert!(edit.cursor <= edit.buffer.chars().count());
+    }
+
+    // ── ensure_scroll ───────────────────────────────────────────────
+
+    #[test]
+    fn ensure_scroll_zero_height_returns_current() {
+        assert_eq!(ensure_scroll(5, 3, 0), 3);
+    }
+
+    #[test]
+    fn ensure_scroll_cursor_in_view() {
+        // cursor at line 5, scroll at 3, view_height 10 → visible
+        assert_eq!(ensure_scroll(5, 3, 10), 3);
+    }
+
+    #[test]
+    fn ensure_scroll_cursor_above_view() {
+        // cursor at line 2, scroll at 5 → scroll up
+        assert_eq!(ensure_scroll(2, 5, 10), 2);
+    }
+
+    #[test]
+    fn ensure_scroll_cursor_below_view() {
+        // cursor at line 15, scroll at 3, view_height 10 → scroll down
+        let new_scroll = ensure_scroll(15, 3, 10);
+        assert!(new_scroll > 3);
+        assert!(new_scroll + 10 > 15); // cursor should be visible
+    }
+
+    #[test]
+    fn ensure_scroll_cursor_at_top_edge() {
+        assert_eq!(ensure_scroll(3, 3, 10), 3); // exactly at top
+    }
+
+    #[test]
+    fn ensure_scroll_cursor_at_bottom_edge() {
+        // cursor at line 12, scroll at 3, view_height 10
+        // scroll + view_height = 13, cursor < 13 → still in view
+        assert_eq!(ensure_scroll(12, 3, 10), 3);
+    }
+
+    #[test]
+    fn ensure_scroll_cursor_just_past_bottom() {
+        // cursor at line 13, scroll at 3, view_height 10
+        // scroll + view_height = 13, cursor >= 13 → need scroll
+        let new_scroll = ensure_scroll(13, 3, 10);
+        assert!(new_scroll > 3);
+    }
+
+    #[test]
+    fn ensure_scroll_view_height_one() {
+        assert_eq!(ensure_scroll(5, 5, 1), 5);
+        assert_eq!(ensure_scroll(6, 5, 1), 6);
+        assert_eq!(ensure_scroll(4, 5, 1), 4);
+    }
+
+    // ── snippet_at_path_mut ─────────────────────────────────────────
+
+    #[test]
+    fn snippet_at_path_mut_finds_nested() {
+        let mut raw = json!({
+            "children": {
+                "items": [
+                    {
+                        "__type": "textSnippet",
+                        "string": "top",
+                        "children": {
+                            "items": [
+                                {"__type": "textSnippet", "string": "nested"}
+                            ]
+                        }
+                    }
+                ]
+            }
+        });
+        let item = snippet_at_path_mut(&mut raw, &[0, 0]).unwrap();
+        assert_eq!(item.get("string").unwrap().as_str().unwrap(), "nested");
+    }
+
+    #[test]
+    fn snippet_at_path_mut_empty_path_returns_root() {
+        let mut raw = json!({"children": {"items": []}});
+        let item = snippet_at_path_mut(&mut raw, &[]);
+        assert!(item.is_some());
+    }
+
+    #[test]
+    fn snippet_at_path_mut_invalid_returns_none() {
+        let mut raw = json!({"children": {"items": []}});
+        assert!(snippet_at_path_mut(&mut raw, &[99]).is_none());
+    }
+
+    // ── commit_buffer ───────────────────────────────────────────────
+
+    #[test]
+    fn commit_buffer_updates_raw_json() {
+        let mut edit = make_edit("original");
+        edit.buffer = "updated".to_string();
+        edit.commit_buffer();
+        assert!(edit.dirty);
+        let snippet_text = edit
+            .raw
+            .get("children")
+            .unwrap()
+            .get("items")
+            .unwrap()
+            .get(0)
+            .unwrap()
+            .get("string")
+            .unwrap()
+            .as_str()
+            .unwrap();
+        assert_eq!(snippet_text, "updated");
+    }
+
+    #[test]
+    fn commit_buffer_noop_when_unchanged() {
+        let mut edit = make_edit("same");
+        edit.commit_buffer();
+        assert!(!edit.dirty);
+    }
+
+    // ── set_buffer ──────────────────────────────────────────────────
+
+    #[test]
+    fn set_buffer_normalizes_and_sets_cursor() {
+        let mut edit = make_edit("old");
+        edit.set_buffer("new\rtext".to_string());
+        assert_eq!(edit.buffer, "new\ntext");
+        assert_eq!(edit.cursor, 8); // chars count
+        assert!(edit.snapshot_pending);
+    }
+
+    // ── is_editable ─────────────────────────────────────────────────
+
+    #[test]
+    fn is_editable_true_for_text() {
+        let edit = make_edit("hi");
+        assert!(edit.is_editable());
+    }
+
+    #[test]
+    fn is_editable_false_for_picture() {
+        let raw = json!({
+            "children": {
+                "items": [
+                    {"__type": "pictureSnippet", "url": "img.png"}
+                ]
+            }
+        });
+        let mut snippets = Vec::new();
+        collect_snippets(&raw, Vec::new(), &mut snippets);
+        let edit = EditState::new(
+            "p".into(),
+            PathBuf::from("/tmp/t.json"),
+            raw,
+            snippets,
+            String::new(),
+        );
+        assert!(!edit.is_editable());
+    }
 }

@@ -5,6 +5,7 @@ all notable changes to this project are documented in this file.
 ## Unreleased
 
 ### added
+- `?` key opens a help overlay showing all keybindings for the current mode; dismiss with `Esc` or `?`
 - PageUp/PageDown keys in page mode scroll by half a screen
 
 ### fixed

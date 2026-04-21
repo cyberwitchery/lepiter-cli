@@ -57,10 +57,10 @@ use lepiter_core::{
     KnowledgeBase, KnowledgeBaseIndex, LinkTargetKind, Node, Page, PageId, SearchMatchKind,
     TitleResolution, render_page_to_text,
 };
-use ratatui::layout::{Constraint, Direction, Layout};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::{DefaultTerminal, Frame};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,6 +94,7 @@ struct App {
     text_index_queue: VecDeque<PageId>,
     history: Vec<PageId>,
     mode: Mode,
+    show_help: bool,
     status: String,
 }
 
@@ -119,6 +120,7 @@ impl App {
             text_index_queue: VecDeque::new(),
             history: Vec::new(),
             mode: Mode::List,
+            show_help: false,
             status: String::new(),
         };
         app.plugins.apply_status(&mut app.status);
@@ -1259,6 +1261,14 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> Result<()> {
             continue;
         }
 
+        if app.show_help {
+            match key.code {
+                KeyCode::Char('?') | KeyCode::Esc => app.show_help = false,
+                _ => {}
+            }
+            continue;
+        }
+
         if app.mode == Mode::Search {
             match key.code {
                 KeyCode::Esc => app.mode = Mode::List,
@@ -1290,6 +1300,9 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> Result<()> {
 
         match key.code {
             KeyCode::Char('q') => break,
+            KeyCode::Char('?') => {
+                app.show_help = true;
+            }
             KeyCode::Char('/') => {
                 app.search.clear();
                 app.rebuild_visible_ids();
@@ -1369,6 +1382,9 @@ fn ui(frame: &mut Frame, app: &mut App) {
         Mode::List | Mode::Search => render_list_view(frame, app),
         Mode::Page => render_page_view(frame, app),
         Mode::Edit => render_edit_view(frame, app),
+    }
+    if app.show_help {
+        render_help_overlay(frame, app.mode);
     }
 }
 
@@ -1450,7 +1466,7 @@ fn render_list_view(frame: &mut Frame, app: &App) {
     frame.render_stateful_widget(list, chunks[1], &mut state);
 
     let mut status = format!(
-        "matches: {} | index: {}/{} | cache p/r: {}/{} | j/k or up/down move | enter open | / search | q quit",
+        "matches: {} | index: {}/{} | cache p/r: {}/{} | j/k move | enter open | / search | ? help | q quit",
         app.visible_ids.len(),
         app.text_index.len(),
         app.index.pages.len(),
@@ -1511,7 +1527,7 @@ fn render_page_view(frame: &mut Frame, app: &App) {
     frame.render_widget(paragraph, chunks[1]);
 
     let mut footer = String::from(
-        "j/k scroll | tab/backtab select link | enter follow link | h back-link | b list | q quit",
+        "j/k scroll | tab/backtab link | enter follow | h back | b list | ? help | q quit",
     );
     if let Some(page) = app.current_rendered_page() {
         if let Some(link) = page.links.get(app.selected_link) {
@@ -1616,6 +1632,137 @@ fn render_edit_view(frame: &mut Frame, app: &mut App) {
         Paragraph::new(dashboard).style(Style::default().fg(Color::Gray)),
         chunks[2],
     );
+}
+
+fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
+    let x = area.x + area.width.saturating_sub(width) / 2;
+    let y = area.y + area.height.saturating_sub(height) / 2;
+    let w = width.min(area.width);
+    let h = height.min(area.height);
+    Rect::new(x, y, w, h)
+}
+
+fn render_help_overlay(frame: &mut Frame, mode: Mode) {
+    let key = Style::default()
+        .fg(Color::Yellow)
+        .add_modifier(Modifier::BOLD);
+    let desc = Style::default().fg(Color::White);
+    let heading = Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD);
+    let dim = Style::default().fg(Color::DarkGray);
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+
+    lines.push(Line::from(vec![Span::styled(
+        "  Keyboard Shortcuts",
+        heading,
+    )]));
+    lines.push(Line::raw(""));
+
+    let add_section =
+        |lines: &mut Vec<Line<'static>>, title: &'static str, bindings: &[(&str, &str)]| {
+            lines.push(Line::from(vec![
+                Span::styled("  ", dim),
+                Span::styled(title, heading),
+            ]));
+            for (k, d) in bindings {
+                lines.push(Line::from(vec![
+                    Span::raw("    "),
+                    Span::styled(format!("{:<16}", k), key),
+                    Span::styled((*d).to_string(), desc),
+                ]));
+            }
+            lines.push(Line::raw(""));
+        };
+
+    add_section(
+        &mut lines,
+        "Global",
+        &[
+            ("q", "quit"),
+            ("/", "search"),
+            ("?", "toggle this help"),
+            ("Esc", "back to list / dismiss"),
+        ],
+    );
+
+    match mode {
+        Mode::List => {
+            add_section(
+                &mut lines,
+                "List",
+                &[
+                    ("j / Down", "move down"),
+                    ("k / Up", "move up"),
+                    ("Enter", "open page"),
+                ],
+            );
+        }
+        Mode::Search => {
+            add_section(
+                &mut lines,
+                "Search",
+                &[
+                    ("type", "filter pages"),
+                    ("Backspace", "delete character"),
+                    ("Up / Down", "navigate results"),
+                    ("Enter", "open selected"),
+                    ("Esc", "cancel search"),
+                ],
+            );
+        }
+        Mode::Page => {
+            add_section(
+                &mut lines,
+                "Page",
+                &[
+                    ("j / Down", "scroll down"),
+                    ("k / Up", "scroll up"),
+                    ("PgUp / PgDn", "half-page scroll"),
+                    ("g", "go to top"),
+                    ("G", "go to bottom"),
+                    ("Tab / Shift+Tab", "next / prev link"),
+                    ("Enter", "follow link"),
+                    ("e", "edit page"),
+                    ("h", "back in history"),
+                    ("b", "back to list"),
+                ],
+            );
+        }
+        Mode::Edit => {
+            add_section(
+                &mut lines,
+                "Edit",
+                &[
+                    ("Arrows", "move cursor"),
+                    ("Home / End", "start / end of text"),
+                    ("PgUp / PgDn", "scroll preview"),
+                    ("Tab / Shift+Tab", "next / prev snippet"),
+                    ("Ctrl+U", "undo"),
+                    ("Esc", "save and exit"),
+                ],
+            );
+        }
+    }
+
+    lines.push(Line::from(vec![Span::styled(
+        "  press ? or Esc to close",
+        dim,
+    )]));
+
+    let content_height = lines.len() as u16 + 2; // +2 for borders
+    let content_width = 44;
+    let area = centered_rect(content_width, content_height, frame.area());
+
+    frame.render_widget(Clear, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Help ")
+        .border_style(Style::default().fg(Color::Cyan))
+        .style(Style::default().bg(Color::Black));
+    let paragraph = Paragraph::new(lines).block(block);
+    frame.render_widget(paragraph, area);
 }
 
 fn collect_page_links(nodes: &[Node]) -> Vec<(String, String)> {

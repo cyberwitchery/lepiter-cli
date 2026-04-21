@@ -1314,6 +1314,24 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> Result<()> {
                 Mode::Page => app.scroll_page(1),
                 Mode::Search | Mode::Edit => {}
             },
+            KeyCode::PageUp => match app.mode {
+                Mode::Page => {
+                    let half = crossterm::terminal::size()
+                        .map(|(_, h)| (h.saturating_sub(6) / 2).max(1) as isize)
+                        .unwrap_or(10);
+                    app.scroll_page(-half);
+                }
+                Mode::List | Mode::Search | Mode::Edit => {}
+            },
+            KeyCode::PageDown => match app.mode {
+                Mode::Page => {
+                    let half = crossterm::terminal::size()
+                        .map(|(_, h)| (h.saturating_sub(6) / 2).max(1) as isize)
+                        .unwrap_or(10);
+                    app.scroll_page(half);
+                }
+                Mode::List | Mode::Search | Mode::Edit => {}
+            },
             KeyCode::Char('g') => match app.mode {
                 Mode::Page => app.page_scroll = 0,
                 Mode::List | Mode::Search | Mode::Edit => {}
@@ -1489,7 +1507,7 @@ fn render_page_view(frame: &mut Frame, app: &App) {
                 .border_style(Style::default().fg(Color::Blue)),
         )
         .wrap(Wrap { trim: false })
-        .scroll((app.page_scroll as u16, 0));
+        .scroll((app.page_scroll.min(u16::MAX as usize) as u16, 0));
     frame.render_widget(paragraph, chunks[1]);
 
     let mut footer = String::from(

@@ -421,10 +421,18 @@ impl App {
         if needle.is_empty() {
             return None;
         }
-        let idx = text.lower.find(&needle)?;
-        let start = idx.saturating_sub(40);
-        let end = (idx + needle.len() + 80).min(text.raw.len());
-        let fragment = text.raw.get(start..end).unwrap_or("").replace('\n', " ");
+        let lower_idx = text.lower.find(&needle)?;
+
+        // Map byte offsets from lowered text to raw text — lowercasing can
+        // change byte lengths for non-ASCII characters.
+        let raw_match = lower_byte_to_raw_byte(&text.raw, lower_idx);
+        let raw_end = lower_byte_to_raw_byte(&text.raw, lower_idx + needle.len());
+
+        let start = text.raw.floor_char_boundary(raw_match.saturating_sub(40));
+        let end = text
+            .raw
+            .ceil_char_boundary((raw_end + 80).min(text.raw.len()));
+        let fragment = text.raw[start..end].replace('\n', " ");
         let fragment = fragment.trim();
         if fragment.is_empty() {
             None
@@ -995,6 +1003,24 @@ fn resolve_page_id_by_title(index: &KnowledgeBaseIndex, title: &str) -> Result<S
     }
 }
 
+/// Map a byte offset in `raw.to_lowercase()` to the corresponding byte offset
+/// in `raw`. Walks both strings' characters in tandem so the result is correct
+/// even when lowercasing changes byte lengths (e.g. multi-byte characters).
+fn lower_byte_to_raw_byte(raw: &str, lower_pos: usize) -> usize {
+    let mut raw_byte = 0usize;
+    let mut lower_byte = 0usize;
+    for ch in raw.chars() {
+        if lower_byte >= lower_pos {
+            return raw_byte;
+        }
+        raw_byte += ch.len_utf8();
+        for lch in ch.to_lowercase() {
+            lower_byte += lch.len_utf8();
+        }
+    }
+    raw_byte
+}
+
 fn truncate_chars(input: &str, max_chars: usize) -> String {
     let mut chars = input.chars();
     let mut out = String::new();
@@ -1021,19 +1047,8 @@ fn highlight_search_match(text: &str, query: &str) -> Line<'static> {
     let Some(pos) = lower_text.find(&lower_needle) else {
         return Line::raw(text.to_string());
     };
-    let start_char = lower_text[..pos].chars().count();
-    let match_chars = lower_needle.chars().count();
-    let end_char = start_char + match_chars;
-    let start_byte = text
-        .char_indices()
-        .nth(start_char)
-        .map(|(i, _)| i)
-        .unwrap_or(text.len());
-    let end_byte = text
-        .char_indices()
-        .nth(end_char)
-        .map(|(i, _)| i)
-        .unwrap_or(text.len());
+    let start_byte = lower_byte_to_raw_byte(text, pos);
+    let end_byte = lower_byte_to_raw_byte(text, pos + lower_needle.len());
     let before = &text[..start_byte];
     let matched = &text[start_byte..end_byte];
     let after = &text[end_byte..];

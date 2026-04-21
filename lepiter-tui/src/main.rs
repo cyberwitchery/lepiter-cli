@@ -1286,7 +1286,11 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> Result<()> {
 
         if app.mode == Mode::Search {
             match key.code {
-                KeyCode::Esc => app.mode = Mode::List,
+                KeyCode::Esc => {
+                    app.search.clear();
+                    app.rebuild_visible_ids();
+                    app.mode = Mode::List;
+                }
                 KeyCode::Enter => {
                     app.mode = Mode::List;
                     app.open_selected_page();

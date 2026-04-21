@@ -4,7 +4,11 @@ all notable changes to this project are documented in this file.
 
 ## Unreleased
 
+### added
+- PageUp/PageDown keys in page mode scroll by half a screen
+
 ### fixed
+- `G` (jump to bottom) no longer wraps `page_scroll` on `u16` cast, fixing garbled scroll position
 - plugin cache now uses LRU eviction instead of arbitrary hash-order eviction
 - plugin IPC no longer spin-waits at 100% CPU when a plugin process crashes mid-request
 - code highlighting now correctly handles escaped backslashes in string literals

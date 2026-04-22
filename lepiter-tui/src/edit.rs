@@ -11,12 +11,11 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use serde_json::Value;
 
-use lepiter_core::{Node, PageId, parse_node_from_raw};
+use lepiter_core::{Node, PageId, normalize_text, parse_node_from_raw};
 
 use crate::plugins::PluginManager;
 use crate::render::{
-    highlight_code_line, normalize_text, parse_inline_annotations, render_node,
-    sanitize_for_terminal,
+    highlight_code_line, parse_inline_annotations, render_node, sanitize_for_terminal,
 };
 
 pub struct EditState {

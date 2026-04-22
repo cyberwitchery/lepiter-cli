@@ -1134,7 +1134,7 @@ pub fn render_nodes_to_text(nodes: &[Node]) -> String {
     out
 }
 
-fn normalize_text(input: &str) -> String {
+pub fn normalize_text(input: &str) -> String {
     input.replace("\r\n", "\n").replace('\r', "\n")
 }
 

@@ -1,7 +1,7 @@
 //! page rendering to tui lines, including inline markdown, annotations, and
 //! code highlighting.
 
-use lepiter_core::{Node, Page, PageId};
+use lepiter_core::{Node, Page, PageId, normalize_text};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
@@ -421,10 +421,6 @@ pub fn highlight_code_line(line: &str, language: Option<&str>) -> Line<'static> 
         })
         .collect();
     Line::from(spans)
-}
-
-pub fn normalize_text(input: &str) -> String {
-    input.replace("\r\n", "\n").replace('\r', "\n")
 }
 
 pub fn sanitize_for_terminal(input: &str) -> String {

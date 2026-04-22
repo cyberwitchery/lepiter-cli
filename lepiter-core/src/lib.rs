@@ -463,6 +463,9 @@ impl KnowledgeBaseIndex {
             if self.pages.contains_key(id) {
                 return LinkTargetKind::InternalPage(id.to_string());
             }
+            if let TitleResolution::Unique(resolved) = self.resolve_page_id_by_title(id) {
+                return LinkTargetKind::InternalPage(resolved);
+            }
         }
         if let Some(rest) = target.strip_prefix("title:") {
             return match self.resolve_page_id_by_title(rest.trim()) {
@@ -1475,6 +1478,16 @@ mod tests {
         ));
         assert!(matches!(
             index.classify_link_target("not a thing"),
+            LinkTargetKind::Unknown(_)
+        ));
+        // page: prefix falls back to title resolution
+        assert!(matches!(
+            index.classify_link_target("page:Alpha"),
+            LinkTargetKind::InternalPage(_)
+        ));
+        // page: prefix with unknown title stays Unknown
+        assert!(matches!(
+            index.classify_link_target("page:Nonexistent"),
             LinkTargetKind::Unknown(_)
         ));
     }

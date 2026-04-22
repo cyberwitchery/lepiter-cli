@@ -11,6 +11,8 @@ all notable changes to this project are documented in this file.
 ### fixed
 - search snippets and match highlighting no longer silently break for pages with non-ASCII
   content (byte offsets from lowercased text are now correctly mapped back to the raw text)
+- pressing Esc in search mode now clears the search and restores the full page list
+- `page:Title` links now fall back to title resolution when the target is not a page ID
 - `G` (jump to bottom) no longer wraps `page_scroll` on `u16` cast, fixing garbled scroll position
 - plugin cache now uses LRU eviction instead of arbitrary hash-order eviction
 - plugin IPC no longer spin-waits at 100% CPU when a plugin process crashes mid-request

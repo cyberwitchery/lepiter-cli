@@ -29,6 +29,7 @@
 //! - plugins: `docs/plugins.md`
 mod edit;
 mod highlight;
+mod keybindings;
 mod plugins;
 mod render;
 mod util;
@@ -41,18 +42,18 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::edit::{
-    EditState, apply_cursor_marker, collect_snippets, delete_char_at, delete_char_before,
-    ensure_scroll, insert_char_at, load_raw_page, move_cursor_vertical, render_edit_page,
-    wrap_lines_with_cursor_and_highlight,
+    EditState, apply_cursor_marker, collect_snippets, ensure_scroll, load_raw_page,
+    render_edit_page, wrap_lines_with_cursor_and_highlight,
 };
 use crate::highlight::{CodeToken, tokenize_code_line};
+use crate::keybindings::KeyResult;
 use crate::plugins::PluginManager;
 use crate::render::{
     RenderedPage, highlight_selected_link_markers, render_page, sanitize_for_terminal,
 };
 use crate::util::{LruCache, cache_limit_from_env};
 use anyhow::{Context, Result, bail};
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{self, Event, KeyEventKind};
 use lepiter_core::{
     KnowledgeBase, KnowledgeBaseIndex, LinkTargetKind, Node, Page, PageId, SearchMatchKind,
     TitleResolution, render_page_to_text,
@@ -465,148 +466,6 @@ impl App {
             }
         }
         self.page_scroll = line_idx;
-    }
-
-    fn handle_edit_key(&mut self, key: KeyEvent) {
-        let Some(edit) = self.edit.as_mut() else {
-            return;
-        };
-
-        match key.code {
-            KeyCode::Esc => {
-                self.exit_edit_mode();
-                return;
-            }
-            KeyCode::PageUp => {
-                edit.preview_scroll = edit.preview_scroll.saturating_sub(10);
-                edit.follow_cursor = false;
-                edit.snapshot_pending = true;
-                return;
-            }
-            KeyCode::PageDown => {
-                edit.preview_scroll = edit.preview_scroll.saturating_add(10);
-                edit.follow_cursor = false;
-                edit.snapshot_pending = true;
-                return;
-            }
-            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                let mut saved_page = None;
-                if edit.undo() {
-                    if let Err(err) = edit.save_to_disk() {
-                        self.status = format!("edit save failed: {err:#}");
-                    } else {
-                        saved_page = Some(edit.page_id.clone());
-                    }
-                }
-                if let Some(id) = saved_page {
-                    self.refresh_after_edit(&id);
-                }
-                return;
-            }
-            KeyCode::Tab => {
-                self.switch_edit_snippet(1);
-                return;
-            }
-            KeyCode::BackTab => {
-                self.switch_edit_snippet(-1);
-                return;
-            }
-            _ => {}
-        }
-
-        if !edit.is_editable() {
-            return;
-        }
-
-        match key.code {
-            KeyCode::Left => {
-                edit.cursor = edit.cursor.saturating_sub(1);
-                edit.snapshot_pending = true;
-            }
-            KeyCode::Right => {
-                let len = edit.buffer.chars().count();
-                if edit.cursor < len {
-                    edit.cursor += 1;
-                }
-                edit.snapshot_pending = true;
-            }
-            KeyCode::Up => {
-                move_cursor_vertical(edit, -1);
-                edit.snapshot_pending = true;
-            }
-            KeyCode::Down => {
-                move_cursor_vertical(edit, 1);
-                edit.snapshot_pending = true;
-            }
-            KeyCode::Home => {
-                edit.cursor = 0;
-                edit.snapshot_pending = true;
-            }
-            KeyCode::End => {
-                edit.cursor = edit.buffer.chars().count();
-                edit.snapshot_pending = true;
-            }
-            KeyCode::Backspace => {
-                if edit.cursor > 0 {
-                    edit.maybe_push_undo_snapshot();
-                }
-                if delete_char_before(&mut edit.buffer, &mut edit.cursor) {
-                    edit.commit_buffer();
-                }
-            }
-            KeyCode::Delete => {
-                let len = edit.buffer.chars().count();
-                if edit.cursor < len {
-                    edit.maybe_push_undo_snapshot();
-                }
-                if delete_char_at(&mut edit.buffer, &mut edit.cursor) {
-                    edit.commit_buffer();
-                }
-            }
-            KeyCode::Enter => {
-                edit.maybe_push_undo_snapshot();
-                insert_char_at(&mut edit.buffer, &mut edit.cursor, '\n');
-                edit.commit_buffer();
-            }
-            KeyCode::Char(c) => {
-                if key.modifiers.contains(KeyModifiers::CONTROL) {
-                    return;
-                }
-                edit.maybe_push_undo_snapshot();
-                insert_char_at(&mut edit.buffer, &mut edit.cursor, c);
-                edit.commit_buffer();
-            }
-            _ => {}
-        }
-    }
-
-    fn switch_edit_snippet(&mut self, delta: isize) {
-        let Some(edit) = self.edit.as_mut() else {
-            return;
-        };
-        edit.commit_buffer();
-        let mut saved_page = None;
-        if edit.dirty {
-            if let Err(err) = edit.save_to_disk() {
-                self.status = format!("edit save failed: {err:#}");
-            } else {
-                saved_page = Some(edit.page_id.clone());
-            }
-        }
-
-        let total = edit.snippets.len() as isize;
-        if total == 0 {
-            return;
-        }
-        let next = (edit.selected as isize + delta).clamp(0, total - 1) as usize;
-        edit.selected = next;
-        if let Some(entry) = edit.current() {
-            edit.set_buffer(entry.text.clone());
-        }
-        edit.follow_cursor = true;
-        if let Some(id) = saved_page {
-            self.refresh_after_edit(&id);
-        }
     }
 }
 
@@ -1276,121 +1135,12 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> Result<()> {
             continue;
         }
 
-        if app.show_help {
-            match key.code {
-                KeyCode::Char('?') | KeyCode::Esc => app.show_help = false,
-                _ => {}
-            }
-            continue;
+        match app.handle_key(key) {
+            KeyResult::Quit => break,
+            KeyResult::Continue => {}
+            KeyResult::Tick => app.tick(),
+            KeyResult::SearchTick => app.advance_full_text_index(4),
         }
-
-        if app.mode == Mode::Search {
-            match key.code {
-                KeyCode::Esc => {
-                    app.search.clear();
-                    app.rebuild_visible_ids();
-                    app.mode = Mode::List;
-                }
-                KeyCode::Enter => {
-                    app.mode = Mode::List;
-                    app.open_selected_page();
-                }
-                KeyCode::Up => app.move_selection(-1),
-                KeyCode::Down => app.move_selection(1),
-                KeyCode::Backspace => {
-                    app.search.pop();
-                    app.rebuild_visible_ids();
-                }
-                KeyCode::Char(c) => {
-                    app.search.push(c);
-                    app.rebuild_visible_ids();
-                }
-                _ => {}
-            }
-            app.advance_full_text_index(4);
-            continue;
-        }
-
-        if app.mode == Mode::Edit {
-            app.handle_edit_key(key);
-            app.tick();
-            continue;
-        }
-
-        match key.code {
-            KeyCode::Char('q') => break,
-            KeyCode::Char('?') => {
-                app.show_help = true;
-            }
-            KeyCode::Char('/') => {
-                app.search.clear();
-                app.rebuild_visible_ids();
-                app.mode = Mode::Search;
-            }
-            KeyCode::Esc => app.mode = Mode::List,
-            KeyCode::Enter => match app.mode {
-                Mode::List => {
-                    app.mode = Mode::List;
-                    app.open_selected_page();
-                }
-                Mode::Page => app.follow_selected_link(),
-                Mode::Search | Mode::Edit => {}
-            },
-            KeyCode::Up | KeyCode::Char('k') => match app.mode {
-                Mode::List => app.move_selection(-1),
-                Mode::Page => app.scroll_page(-1),
-                Mode::Search | Mode::Edit => {}
-            },
-            KeyCode::Down | KeyCode::Char('j') => match app.mode {
-                Mode::List => app.move_selection(1),
-                Mode::Page => app.scroll_page(1),
-                Mode::Search | Mode::Edit => {}
-            },
-            KeyCode::PageUp => match app.mode {
-                Mode::Page => {
-                    let half = crossterm::terminal::size()
-                        .map(|(_, h)| (h.saturating_sub(6) / 2).max(1) as isize)
-                        .unwrap_or(10);
-                    app.scroll_page(-half);
-                }
-                Mode::List | Mode::Search | Mode::Edit => {}
-            },
-            KeyCode::PageDown => match app.mode {
-                Mode::Page => {
-                    let half = crossterm::terminal::size()
-                        .map(|(_, h)| (h.saturating_sub(6) / 2).max(1) as isize)
-                        .unwrap_or(10);
-                    app.scroll_page(half);
-                }
-                Mode::List | Mode::Search | Mode::Edit => {}
-            },
-            KeyCode::Char('g') => match app.mode {
-                Mode::Page => app.page_scroll = 0,
-                Mode::List | Mode::Search | Mode::Edit => {}
-            },
-            KeyCode::Char('G') => match app.mode {
-                Mode::Page => app.page_scroll = usize::MAX / 2,
-                Mode::List | Mode::Search | Mode::Edit => {}
-            },
-            KeyCode::Char('b') if app.mode == Mode::Page => {
-                app.back_to_list();
-            }
-            KeyCode::Char('e') if app.mode == Mode::Page => {
-                app.enter_edit_mode();
-            }
-            KeyCode::Char('h') if app.mode == Mode::Page => {
-                app.back_in_history();
-            }
-            KeyCode::Tab if app.mode == Mode::Page => {
-                app.move_link_selection(1);
-            }
-            KeyCode::BackTab if app.mode == Mode::Page => {
-                app.move_link_selection(-1);
-            }
-            _ => {}
-        }
-
-        app.tick();
     }
 
     Ok(())

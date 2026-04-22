@@ -9,6 +9,8 @@ all notable changes to this project are documented in this file.
 - PageUp/PageDown keys in page mode scroll by half a screen
 
 ### fixed
+- pressing `G` (jump to bottom) then `k`/Up no longer leaves the user stuck; `page_scroll`
+  is clamped to content length before applying scroll deltas
 - search snippets and match highlighting no longer silently break for pages with non-ASCII
   content (byte offsets from lowercased text are now correctly mapped back to the raw text)
 - pressing Esc in search mode now clears the search and restores the full page list

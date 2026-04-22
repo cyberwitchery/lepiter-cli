@@ -327,6 +327,17 @@ impl App {
     }
 
     fn scroll_page(&mut self, delta: isize) {
+        // Clamp page_scroll to content length before applying delta.
+        // 'G' sets page_scroll to a huge sentinel; without this clamp,
+        // small deltas (k/Up) cannot bring it back to a usable range.
+        if let Some(max) = self
+            .opened
+            .as_ref()
+            .and_then(|id| self.rendered_cache.peek(id))
+            .map(|p| p.lines.len())
+        {
+            self.page_scroll = self.page_scroll.min(max);
+        }
         let next = self.page_scroll as isize + delta;
         self.page_scroll = next.max(0) as usize;
     }

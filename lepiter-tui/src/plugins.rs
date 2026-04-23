@@ -18,7 +18,7 @@ use serde_json::Value;
 
 use lepiter_core::plugin::{PluginRequest, PluginResponse};
 
-use crate::util::{cache_limit_from_env, cache_limit_from_env_allow_zero};
+use crate::util::cache_limit_from_env_allow_zero;
 
 #[derive(Debug, Deserialize)]
 struct PluginConfig {
@@ -173,7 +173,7 @@ impl PluginManager {
                     by_type: HashMap::new(),
                     cache: HashMap::new(),
                     cache_order: VecDeque::new(),
-                    max_cache: cache_limit_from_env("LEPITER_PLUGIN_CACHE", 128),
+                    max_cache: cache_limit_from_env_allow_zero("LEPITER_PLUGIN_CACHE", 128),
                     timeout: Duration::from_millis(
                         std::env::var("LEPITER_PLUGIN_TIMEOUT_MS")
                             .ok()

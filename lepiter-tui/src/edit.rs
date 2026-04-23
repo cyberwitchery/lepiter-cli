@@ -373,8 +373,7 @@ fn display_col_to_char_idx(line: &str, target_col: usize) -> usize {
 
 pub fn move_cursor_vertical(edit: &mut EditState, delta: isize) {
     let (line, col) = cursor_line_col_display(&edit.buffer, edit.cursor);
-    let normalized = normalize_text(&edit.buffer);
-    let lines = normalized.split('\n').collect::<Vec<_>>();
+    let lines = edit.buffer.split('\n').collect::<Vec<_>>();
     if lines.is_empty() {
         return;
     }

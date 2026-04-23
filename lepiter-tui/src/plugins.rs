@@ -4,7 +4,6 @@
 //! render requests over stdin/stdout as json lines.
 
 use std::collections::HashMap;
-use std::collections::VecDeque;
 use std::collections::hash_map::DefaultHasher;
 use std::fs;
 use std::hash::{Hash, Hasher};
@@ -18,7 +17,7 @@ use serde_json::Value;
 
 use lepiter_core::plugin::{PluginRequest, PluginResponse};
 
-use crate::util::cache_limit_from_env_allow_zero;
+use crate::util::{LruCache, cache_limit_from_env_allow_zero};
 
 #[derive(Debug, Deserialize)]
 struct PluginConfig {
@@ -46,6 +45,13 @@ struct PluginProcess {
     child: Child,
     stdin: BufWriter<ChildStdin>,
     stdout: BufReader<ChildStdout>,
+}
+
+impl Drop for PluginProcess {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
 }
 
 impl PluginProcess {
@@ -108,9 +114,7 @@ struct PluginHandle {
 pub struct PluginManager {
     processes: Vec<PluginHandle>,
     by_type: HashMap<String, usize>,
-    cache: HashMap<(String, u64), PluginRender>,
-    cache_order: VecDeque<(String, u64)>,
-    max_cache: usize,
+    cache: LruCache<(String, u64), PluginRender>,
     timeout: Duration,
     retries: usize,
     notes: Vec<String>,
@@ -121,9 +125,7 @@ impl PluginManager {
         Self {
             processes: Vec::new(),
             by_type: HashMap::new(),
-            cache: HashMap::new(),
-            cache_order: VecDeque::new(),
-            max_cache: cache_limit_from_env_allow_zero("LEPITER_PLUGIN_CACHE", 128),
+            cache: LruCache::new(cache_limit_from_env_allow_zero("LEPITER_PLUGIN_CACHE", 128)),
             timeout: Duration::from_millis(
                 std::env::var("LEPITER_PLUGIN_TIMEOUT_MS")
                     .ok()
@@ -148,9 +150,10 @@ impl PluginManager {
                 return Self {
                     processes: Vec::new(),
                     by_type: HashMap::new(),
-                    cache: HashMap::new(),
-                    cache_order: VecDeque::new(),
-                    max_cache: cache_limit_from_env_allow_zero("LEPITER_PLUGIN_CACHE", 128),
+                    cache: LruCache::new(cache_limit_from_env_allow_zero(
+                        "LEPITER_PLUGIN_CACHE",
+                        128,
+                    )),
                     timeout: Duration::from_millis(
                         std::env::var("LEPITER_PLUGIN_TIMEOUT_MS")
                             .ok()
@@ -171,9 +174,10 @@ impl PluginManager {
                 return Self {
                     processes: Vec::new(),
                     by_type: HashMap::new(),
-                    cache: HashMap::new(),
-                    cache_order: VecDeque::new(),
-                    max_cache: cache_limit_from_env_allow_zero("LEPITER_PLUGIN_CACHE", 128),
+                    cache: LruCache::new(cache_limit_from_env_allow_zero(
+                        "LEPITER_PLUGIN_CACHE",
+                        128,
+                    )),
                     timeout: Duration::from_millis(
                         std::env::var("LEPITER_PLUGIN_TIMEOUT_MS")
                             .ok()
@@ -217,9 +221,7 @@ impl PluginManager {
         Self {
             processes,
             by_type,
-            cache: HashMap::new(),
-            cache_order: VecDeque::new(),
-            max_cache: cache_limit_from_env_allow_zero("LEPITER_PLUGIN_CACHE", 128),
+            cache: LruCache::new(cache_limit_from_env_allow_zero("LEPITER_PLUGIN_CACHE", 128)),
             timeout: Duration::from_millis(
                 std::env::var("LEPITER_PLUGIN_TIMEOUT_MS")
                     .ok()
@@ -246,7 +248,6 @@ impl PluginManager {
 
         let key = (typ.to_string(), hash_value(raw));
         if let Some(hit) = self.cache.get(&key).cloned() {
-            touch_cache_lru(&mut self.cache_order, &key);
             return Some(hit);
         }
 
@@ -266,7 +267,7 @@ impl PluginManager {
                             .unwrap_or_else(|| "plugin returned error".to_string());
                         PluginRender::Error(format!("{}: {}", handle.name, msg))
                     };
-                    self.insert_cache(key.clone(), rendered.clone());
+                    self.cache.insert(key.clone(), rendered.clone());
                     return Some(rendered);
                 }
                 Err(err) => {
@@ -276,7 +277,7 @@ impl PluginManager {
         }
         let err = last_err.unwrap_or_else(|| anyhow::anyhow!("plugin failed"));
         let rendered = PluginRender::Error(format!("{}: {err}", handle.name));
-        self.insert_cache(key, rendered.clone());
+        self.cache.insert(key, rendered.clone());
         Some(rendered)
     }
 
@@ -285,7 +286,7 @@ impl PluginManager {
             "plugins: {} | cache: {}/{} | timeout: {}ms | retries: {}",
             self.processes.len(),
             self.cache.len(),
-            self.max_cache,
+            self.cache.capacity(),
             self.timeout.as_millis(),
             self.retries
         );
@@ -301,31 +302,6 @@ impl PluginManager {
         }
         out
     }
-
-    fn insert_cache(&mut self, key: (String, u64), value: PluginRender) {
-        if self.max_cache == 0 {
-            return;
-        }
-        if self.cache.contains_key(&key) {
-            self.cache.insert(key.clone(), value);
-            touch_cache_lru(&mut self.cache_order, &key);
-            return;
-        }
-        if self.cache.len() >= self.max_cache
-            && let Some(oldest) = self.cache_order.pop_front()
-        {
-            self.cache.remove(&oldest);
-        }
-        self.cache_order.push_back(key.clone());
-        self.cache.insert(key, value);
-    }
-}
-
-fn touch_cache_lru(order: &mut VecDeque<(String, u64)>, key: &(String, u64)) {
-    if let Some(pos) = order.iter().position(|k| k == key) {
-        order.remove(pos);
-    }
-    order.push_back(key.clone());
 }
 
 fn spawn_plugin_process(plugin: &PluginSpec) -> Result<PluginProcess> {

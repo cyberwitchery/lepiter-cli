@@ -4,6 +4,11 @@ all notable changes to this project are documented in this file.
 
 ## Unreleased
 
+### changed
+- plugin child processes are now killed and reaped on exit (Drop impl for PluginProcess)
+- `LruCache` accepts any key type implementing `Eq + Hash + Clone`, not just `String`
+- plugin render cache now uses the shared `LruCache` instead of a hand-rolled implementation
+
 ### added
 - `?` key opens a help overlay showing all keybindings for the current mode; dismiss with `Esc` or `?`
 - PageUp/PageDown keys in page mode scroll by half a screen

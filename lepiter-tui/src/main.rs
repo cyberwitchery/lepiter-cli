@@ -90,6 +90,7 @@ struct App {
     page_scroll: usize,
     selected_link: usize,
     search: String,
+    search_needle: String,
     search_hit_kind: HashMap<PageId, SearchMatchKind>,
     text_index: HashMap<PageId, IndexedPageText>,
     text_index_queue: VecDeque<PageId>,
@@ -116,6 +117,7 @@ impl App {
             page_scroll: 0,
             selected_link: 0,
             search: String::new(),
+            search_needle: String::new(),
             search_hit_kind: HashMap::new(),
             text_index: HashMap::new(),
             text_index_queue: VecDeque::new(),
@@ -149,6 +151,10 @@ impl App {
         }
     }
 
+    fn update_search_needle(&mut self) {
+        self.search_needle = self.search.trim().to_lowercase();
+    }
+
     fn rebuild_visible_ids(&mut self) {
         let query = self.search.trim();
         if query.is_empty() {
@@ -161,7 +167,6 @@ impl App {
             self.search_hit_kind.clear();
             self.reset_text_index_queue();
         } else {
-            let needle = query.to_lowercase();
             let mut hit_kind = HashMap::new();
             for id in self.index.filter_page_ids(query) {
                 hit_kind.insert(id, SearchMatchKind::Meta);
@@ -170,7 +175,7 @@ impl App {
                 if hit_kind.contains_key(id) {
                     continue;
                 }
-                if text.lower.contains(&needle) {
+                if text.lower.contains(&self.search_needle) {
                     hit_kind.insert(id.clone(), SearchMatchKind::Content);
                 }
             }
@@ -397,12 +402,10 @@ impl App {
     }
 
     fn advance_full_text_index(&mut self, batch_size: usize) {
-        let query = self.search.trim();
-        if query.is_empty() {
+        if self.search_needle.is_empty() {
             return;
         }
 
-        let needle = query.to_lowercase();
         let mut changed = false;
 
         for _ in 0..batch_size {
@@ -418,7 +421,7 @@ impl App {
             };
             let raw = render_page_to_text(&page);
             let lower = raw.to_lowercase();
-            if lower.contains(&needle) {
+            if lower.contains(&self.search_needle) {
                 changed = true;
             }
             self.text_index.insert(id, IndexedPageText { raw, lower });
@@ -429,18 +432,17 @@ impl App {
         }
     }
 
-    fn snippet_for(&self, id: &str, query: &str) -> Option<String> {
+    fn snippet_for(&self, id: &str) -> Option<String> {
         let text = self.text_index.get(id)?;
-        let needle = query.trim().to_lowercase();
-        if needle.is_empty() {
+        if self.search_needle.is_empty() {
             return None;
         }
-        let lower_idx = text.lower.find(&needle)?;
+        let lower_idx = text.lower.find(&self.search_needle)?;
 
         // Map byte offsets from lowered text to raw text — lowercasing can
         // change byte lengths for non-ASCII characters.
         let raw_match = lower_byte_to_raw_byte(&text.raw, lower_idx);
-        let raw_end = lower_byte_to_raw_byte(&text.raw, lower_idx + needle.len());
+        let raw_end = lower_byte_to_raw_byte(&text.raw, lower_idx + self.search_needle.len());
 
         let start = text.raw.floor_char_boundary(raw_match.saturating_sub(40));
         let end = text
@@ -456,8 +458,7 @@ impl App {
     }
 
     fn jump_to_search_match(&mut self, id: &str) {
-        let query = self.search.trim().to_lowercase();
-        if query.is_empty() {
+        if self.search_needle.is_empty() {
             return;
         }
         let Some(page) = self.rendered_cache.peek(id) else {
@@ -471,7 +472,7 @@ impl App {
                 .map(|s| s.content.as_ref())
                 .collect::<String>()
                 .to_lowercase();
-            if text.contains(&query) {
+            if text.contains(&self.search_needle) {
                 line_idx = idx;
                 break;
             }
@@ -1208,7 +1209,7 @@ fn render_list_view(frame: &mut Frame, app: &App) {
             let mut text = format!("{}  [{}]", meta.title, meta.id);
             if let Some(kind) = app.search_hit_kind.get(id)
                 && *kind == SearchMatchKind::Content
-                && let Some(snippet) = app.snippet_for(id, &app.search)
+                && let Some(snippet) = app.snippet_for(id)
             {
                 text.push_str("  :: ");
                 text.push_str(&snippet);

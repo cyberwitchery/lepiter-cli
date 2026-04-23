@@ -29,6 +29,7 @@ impl App {
             match key.code {
                 KeyCode::Esc => {
                     self.search.clear();
+                    self.update_search_needle();
                     self.rebuild_visible_ids();
                     self.mode = Mode::List;
                 }
@@ -40,10 +41,12 @@ impl App {
                 KeyCode::Down => self.move_selection(1),
                 KeyCode::Backspace => {
                     self.search.pop();
+                    self.update_search_needle();
                     self.rebuild_visible_ids();
                 }
                 KeyCode::Char(c) => {
                     self.search.push(c);
+                    self.update_search_needle();
                     self.rebuild_visible_ids();
                 }
                 _ => {}
@@ -63,6 +66,7 @@ impl App {
             }
             KeyCode::Char('/') => {
                 self.search.clear();
+                self.update_search_needle();
                 self.rebuild_visible_ids();
                 self.mode = Mode::Search;
             }

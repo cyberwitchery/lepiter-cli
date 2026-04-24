@@ -6,6 +6,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use crate::highlight::{CodeToken, tokenize_code_line};
+use crate::inline::{InlineElement, parse_inline};
 use crate::plugins::{PluginManager, PluginRender};
 
 #[derive(Debug, Clone)]
@@ -220,140 +221,72 @@ pub fn render_node(
 }
 
 fn parse_inline_markdown(text: &str, links: &mut Vec<LinkTarget>) -> Line<'static> {
+    let elements = parse_inline(text);
     let mut spans = Vec::new();
-    let chars = text.chars().collect::<Vec<_>>();
-    let mut i = 0usize;
-    let mut buf = String::new();
-    let mut bold = false;
-    let mut italic = false;
-    let mut code = false;
     let annotation_style = Style::default()
         .fg(Color::LightMagenta)
         .add_modifier(Modifier::BOLD);
 
-    let push_buf =
-        |spans: &mut Vec<Span<'static>>, buf: &mut String, bold: bool, italic: bool, code: bool| {
-            if buf.is_empty() {
-                return;
-            }
-            let mut style = Style::default();
-            if bold {
-                style = style.add_modifier(Modifier::BOLD);
-            }
-            if italic {
-                style = style.add_modifier(Modifier::ITALIC);
-            }
-            if code {
-                style = style.fg(Color::Yellow).bg(Color::Black);
-            }
-            spans.push(Span::styled(std::mem::take(buf), style));
-        };
-
-    while i < chars.len() {
-        if i + 1 < chars.len() && chars[i] == '{' && chars[i + 1] == '{' {
-            let mut j = i + 2;
-            while j + 1 < chars.len() {
-                if chars[j] == '}' && chars[j + 1] == '}' {
-                    break;
+    for elem in elements {
+        match elem {
+            InlineElement::Styled {
+                text,
+                bold,
+                italic,
+                code,
+            } => {
+                let mut style = Style::default();
+                if bold {
+                    style = style.add_modifier(Modifier::BOLD);
                 }
-                j += 1;
+                if italic {
+                    style = style.add_modifier(Modifier::ITALIC);
+                }
+                if code {
+                    style = style.fg(Color::Yellow).bg(Color::Black);
+                }
+                spans.push(Span::styled(text, style));
             }
-            if j + 1 < chars.len() && chars[j] == '}' && chars[j + 1] == '}' {
-                push_buf(&mut spans, &mut buf, bold, italic, code);
-                let annotation = chars[i..=j + 1].iter().collect::<String>();
-                spans.push(Span::styled(annotation, annotation_style));
-                i = j + 2;
-                continue;
+            InlineElement::Link { label, target } => {
+                links.push(LinkTarget {
+                    label: label.clone(),
+                    target,
+                });
+                let idx = links.len();
+                spans.push(Span::styled(
+                    label,
+                    Style::default()
+                        .fg(Color::LightBlue)
+                        .add_modifier(Modifier::UNDERLINED),
+                ));
+                spans.push(Span::styled(
+                    format!("[{idx}]"),
+                    Style::default().fg(Color::Yellow),
+                ));
+            }
+            InlineElement::WikiLink { text } => {
+                links.push(LinkTarget {
+                    label: text.clone(),
+                    target: text.clone(),
+                });
+                let idx = links.len();
+                spans.push(Span::styled(
+                    text,
+                    Style::default()
+                        .fg(Color::LightBlue)
+                        .add_modifier(Modifier::UNDERLINED),
+                ));
+                spans.push(Span::styled(
+                    format!("[{idx}]"),
+                    Style::default().fg(Color::Yellow),
+                ));
+            }
+            InlineElement::Annotation { text } => {
+                spans.push(Span::styled(text, annotation_style));
             }
         }
-        if i + 1 < chars.len() && chars[i] == '*' && chars[i + 1] == '*' {
-            push_buf(&mut spans, &mut buf, bold, italic, code);
-            bold = !bold;
-            i += 2;
-            continue;
-        }
-        if chars[i] == '*' {
-            push_buf(&mut spans, &mut buf, bold, italic, code);
-            italic = !italic;
-            i += 1;
-            continue;
-        }
-        if chars[i] == '`' {
-            push_buf(&mut spans, &mut buf, bold, italic, code);
-            code = !code;
-            i += 1;
-            continue;
-        }
-        if chars[i] == '[' {
-            if i + 1 < chars.len() && chars[i + 1] == '[' {
-                let mut j = i + 2;
-                while j + 1 < chars.len() {
-                    if chars[j] == ']' && chars[j + 1] == ']' {
-                        break;
-                    }
-                    j += 1;
-                }
-                if j + 1 < chars.len() && chars[j] == ']' && chars[j + 1] == ']' {
-                    push_buf(&mut spans, &mut buf, bold, italic, code);
-                    let link_text = chars[i + 2..j].iter().collect::<String>();
-                    links.push(LinkTarget {
-                        label: link_text.clone(),
-                        target: link_text.clone(),
-                    });
-                    let idx = links.len();
-                    spans.push(Span::styled(
-                        link_text,
-                        Style::default()
-                            .fg(Color::LightBlue)
-                            .add_modifier(Modifier::UNDERLINED),
-                    ));
-                    spans.push(Span::styled(
-                        format!("[{idx}]"),
-                        Style::default().fg(Color::Yellow),
-                    ));
-                    i = j + 2;
-                    continue;
-                }
-            }
-
-            let mut j = i + 1;
-            while j < chars.len() && chars[j] != ']' {
-                j += 1;
-            }
-            if j + 1 < chars.len() && chars[j] == ']' && chars[j + 1] == '(' {
-                let mut k = j + 2;
-                while k < chars.len() && chars[k] != ')' {
-                    k += 1;
-                }
-                if k < chars.len() {
-                    push_buf(&mut spans, &mut buf, bold, italic, code);
-                    let link_text = chars[i + 1..j].iter().collect::<String>();
-                    let link_target = chars[j + 2..k].iter().collect::<String>();
-                    links.push(LinkTarget {
-                        label: link_text.clone(),
-                        target: link_target.clone(),
-                    });
-                    let idx = links.len();
-                    spans.push(Span::styled(
-                        link_text,
-                        Style::default()
-                            .fg(Color::LightBlue)
-                            .add_modifier(Modifier::UNDERLINED),
-                    ));
-                    spans.push(Span::styled(
-                        format!("[{idx}]"),
-                        Style::default().fg(Color::Yellow),
-                    ));
-                    i = k + 1;
-                    continue;
-                }
-            }
-        }
-        buf.push(chars[i]);
-        i += 1;
     }
 
-    push_buf(&mut spans, &mut buf, bold, italic, code);
     Line::from(spans)
 }
 

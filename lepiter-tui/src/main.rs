@@ -29,6 +29,7 @@
 //! - plugins: `docs/plugins.md`
 mod edit;
 mod highlight;
+mod inline;
 mod keybindings;
 mod plugins;
 mod render;
@@ -1033,81 +1034,46 @@ fn render_markdown_with_ansi(markdown: &str) -> String {
 }
 
 fn style_inline_markdown_ansi(text: &str) -> String {
-    let chars = text.chars().collect::<Vec<_>>();
-    let mut i = 0usize;
+    let elements = inline::parse_inline(text);
     let mut out = String::new();
-    let mut buf = String::new();
-    let mut bold = false;
-    let mut italic = false;
-    let mut code = false;
 
-    let push_buf = |out: &mut String, buf: &mut String, bold: bool, italic: bool, code: bool| {
-        if buf.is_empty() {
-            return;
-        }
-        let s = std::mem::take(buf);
-        if code {
-            out.push_str(&ansi("33", &s));
-            return;
-        }
-        let style = match (bold, italic) {
-            (true, true) => Some("1;3"),
-            (true, false) => Some("1"),
-            (false, true) => Some("3"),
-            (false, false) => None,
-        };
-        if let Some(style) = style {
-            out.push_str(&ansi(style, &s));
-        } else {
-            out.push_str(&s);
-        }
-    };
-
-    while i < chars.len() {
-        if i + 1 < chars.len() && chars[i] == '*' && chars[i + 1] == '*' {
-            push_buf(&mut out, &mut buf, bold, italic, code);
-            bold = !bold;
-            i += 2;
-            continue;
-        }
-        if chars[i] == '*' {
-            push_buf(&mut out, &mut buf, bold, italic, code);
-            italic = !italic;
-            i += 1;
-            continue;
-        }
-        if chars[i] == '`' {
-            push_buf(&mut out, &mut buf, bold, italic, code);
-            code = !code;
-            i += 1;
-            continue;
-        }
-        if chars[i] == '[' {
-            let mut j = i + 1;
-            while j < chars.len() && chars[j] != ']' {
-                j += 1;
-            }
-            if j + 1 < chars.len() && chars[j] == ']' && chars[j + 1] == '(' {
-                let mut k = j + 2;
-                while k < chars.len() && chars[k] != ')' {
-                    k += 1;
-                }
-                if k < chars.len() {
-                    push_buf(&mut out, &mut buf, bold, italic, code);
-                    let label = chars[i + 1..j].iter().collect::<String>();
-                    let target = chars[j + 2..k].iter().collect::<String>();
-                    out.push_str(&ansi("4;94", &label));
-                    out.push_str(&ansi("90", &format!(" ({target})")));
-                    i = k + 1;
-                    continue;
+    for elem in elements {
+        match elem {
+            inline::InlineElement::Styled {
+                text,
+                bold,
+                italic,
+                code,
+            } => {
+                if code {
+                    out.push_str(&ansi("33", &text));
+                } else {
+                    let style = match (bold, italic) {
+                        (true, true) => Some("1;3"),
+                        (true, false) => Some("1"),
+                        (false, true) => Some("3"),
+                        (false, false) => None,
+                    };
+                    if let Some(style) = style {
+                        out.push_str(&ansi(style, &text));
+                    } else {
+                        out.push_str(&text);
+                    }
                 }
             }
+            inline::InlineElement::Link { label, target } => {
+                out.push_str(&ansi("4;94", &label));
+                out.push_str(&ansi("90", &format!(" ({target})")));
+            }
+            inline::InlineElement::WikiLink { text } => {
+                out.push_str(&ansi("4;94", &text));
+            }
+            inline::InlineElement::Annotation { text } => {
+                out.push_str(&ansi("1;35", &text));
+            }
         }
-        buf.push(chars[i]);
-        i += 1;
     }
 
-    push_buf(&mut out, &mut buf, bold, italic, code);
     out
 }
 

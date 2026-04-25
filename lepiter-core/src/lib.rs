@@ -68,6 +68,8 @@ pub struct PageMeta {
     pub id: PageId,
     /// Human-readable page title.
     pub title: String,
+    /// Pre-computed lowercased title for case-insensitive comparisons.
+    pub title_lower: String,
     /// Absolute or relative path to the source page file.
     pub path: PathBuf,
     /// Last edit timestamp, if present in source metadata.
@@ -359,7 +361,7 @@ impl KnowledgeBaseIndex {
     /// Returns metadata entries sorted case-insensitively by title.
     pub fn sorted_pages_by_title(&self) -> Vec<&PageMeta> {
         let mut pages = self.pages.values().collect::<Vec<_>>();
-        pages.sort_by_key(|a| a.title.to_lowercase());
+        pages.sort_by(|a, b| a.title_lower.cmp(&b.title_lower));
         pages
     }
 
@@ -426,7 +428,7 @@ impl KnowledgeBaseIndex {
 
         let exact = sorted
             .iter()
-            .filter(|m| m.title.to_lowercase() == needle)
+            .filter(|m| m.title_lower == needle)
             .map(|m| m.id.clone())
             .collect::<Vec<_>>();
         match exact.len() {
@@ -437,7 +439,7 @@ impl KnowledgeBaseIndex {
 
         let partial = sorted
             .iter()
-            .filter(|m| m.title.to_lowercase().contains(&needle))
+            .filter(|m| m.title_lower.contains(&needle))
             .map(|m| m.id.clone())
             .collect::<Vec<_>>();
         match partial.len() {
@@ -506,7 +508,7 @@ impl KnowledgeBaseIndex {
 }
 
 fn page_meta_matches(meta: &PageMeta, needle: &str) -> bool {
-    meta.title.to_lowercase().contains(needle)
+    meta.title_lower.contains(needle)
         || meta.id.to_lowercase().contains(needle)
         || meta.tags.iter().any(|t| t.to_lowercase().contains(needle))
 }
@@ -640,9 +642,11 @@ fn parse_page_meta(path: &Path) -> Result<PageMeta> {
         .and_then(|s| DateTime::parse_from_rfc3339(&s).ok());
     let tags = parse_tags(raw.tags.as_ref());
 
+    let title_lower = title.to_lowercase();
     Ok(PageMeta {
         id,
         title,
+        title_lower,
         path: path.to_path_buf(),
         updated_at,
         tags,
@@ -1364,6 +1368,7 @@ mod tests {
             PageMeta {
                 id: "id-1".to_string(),
                 title: "Alpha".to_string(),
+                title_lower: "alpha".to_string(),
                 path: PathBuf::from("/tmp/a"),
                 updated_at: None,
                 tags: vec!["rust".to_string()],
@@ -1374,6 +1379,7 @@ mod tests {
             PageMeta {
                 id: "id-2".to_string(),
                 title: "Beta".to_string(),
+                title_lower: "beta".to_string(),
                 path: PathBuf::from("/tmp/b"),
                 updated_at: None,
                 tags: vec!["pharo".to_string()],
@@ -1402,6 +1408,7 @@ mod tests {
             PageMeta {
                 id: "id-1".to_string(),
                 title: "Alpha".to_string(),
+                title_lower: "alpha".to_string(),
                 path: PathBuf::from("/tmp/a"),
                 updated_at: None,
                 tags: Vec::new(),
@@ -1412,6 +1419,7 @@ mod tests {
             PageMeta {
                 id: "id-2".to_string(),
                 title: "Alphabet".to_string(),
+                title_lower: "alphabet".to_string(),
                 path: PathBuf::from("/tmp/b"),
                 updated_at: None,
                 tags: Vec::new(),
@@ -1445,6 +1453,7 @@ mod tests {
             PageMeta {
                 id: "8a505fa0-2222-3333-4444-555555555555".to_string(),
                 title: "Alpha".to_string(),
+                title_lower: "alpha".to_string(),
                 path: PathBuf::from("/tmp/a"),
                 updated_at: None,
                 tags: Vec::new(),

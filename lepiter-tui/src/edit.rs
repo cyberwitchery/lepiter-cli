@@ -1,6 +1,7 @@
 //! edit-mode support: snippet collection, buffer edits, cursor positioning,
 //! autosave, undo, and rendering helpers for the inline editor view.
 
+use std::collections::VecDeque;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::PathBuf;
@@ -40,7 +41,7 @@ pub struct SnippetEntry {
     pub field: Option<String>,
     pub text: String,
     pub editable: bool,
-    pub undo: Vec<UndoEntry>,
+    pub undo: VecDeque<UndoEntry>,
 }
 
 pub struct UndoEntry {
@@ -128,9 +129,9 @@ impl EditState {
             return;
         }
         if entry.undo.len() >= 200 {
-            entry.undo.remove(0);
+            entry.undo.pop_front();
         }
-        entry.undo.push(snapshot);
+        entry.undo.push_back(snapshot);
     }
 
     pub fn maybe_push_undo_snapshot(&mut self) {
@@ -154,7 +155,7 @@ impl EditState {
             if !entry.editable {
                 return false;
             }
-            let Some(prev) = entry.undo.pop() else {
+            let Some(prev) = entry.undo.pop_back() else {
                 return false;
             };
             entry.text = prev.text.clone();
@@ -242,7 +243,7 @@ pub fn collect_snippets(raw: &Value, path: Vec<usize>, out: &mut Vec<SnippetEntr
             field,
             text,
             editable,
-            undo: Vec::new(),
+            undo: VecDeque::new(),
         });
 
         collect_snippets(item, current_path, out);
@@ -1394,7 +1395,7 @@ mod tests {
         edit.cursor = 2;
         edit.push_undo_snapshot();
         // Manually set cursor beyond buffer length in the snapshot
-        edit.current_mut().unwrap().undo.last_mut().unwrap().cursor = 100;
+        edit.current_mut().unwrap().undo.back_mut().unwrap().cursor = 100;
         edit.buffer = "longer text".to_string();
         edit.commit_buffer();
         let undone = edit.undo();

@@ -1519,6 +1519,164 @@ mod tests {
         Ok(())
     }
 
+    fn make_kb_on_disk(pages: &[(&str, &str, &[&str], &str)]) -> (PathBuf, KnowledgeBaseIndex) {
+        let dir = temp_dir_path("kb");
+        fs::create_dir_all(&dir).unwrap();
+        for (id, title, tags, body_text) in pages {
+            let tags_json: Vec<Value> = tags.iter().map(|t| json!(t)).collect();
+            let content = json!({
+                "uid": {"uuid": id},
+                "pageType": {"title": title},
+                "tags": tags_json,
+                "children": {"items": [
+                    {"__type": "textSnippet", "string": body_text}
+                ]}
+            });
+            let file_path = dir.join(format!("{id}.lepiter"));
+            fs::write(&file_path, serde_json::to_vec(&content).unwrap()).unwrap();
+        }
+        let index = KnowledgeBase::open(&dir).unwrap();
+        (dir, index)
+    }
+
+    #[test]
+    fn search_hits_empty_query_returns_nothing() {
+        let (dir, index) = make_kb_on_disk(&[("p1", "Alpha", &[], "hello world")]);
+        assert!(index.search_hits("", false).is_empty());
+        assert!(index.search_hits("  ", true).is_empty());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn search_hits_matches_title_case_insensitively() {
+        let (dir, index) = make_kb_on_disk(&[
+            ("p1", "Alpha Guide", &[], "nothing special"),
+            ("p2", "Beta Notes", &[], "nothing special"),
+        ]);
+        let hits = index.search_hits("alpha", false);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].id, "p1");
+        assert_eq!(hits[0].kind, SearchMatchKind::Meta);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn search_hits_matches_tags() {
+        let (dir, index) = make_kb_on_disk(&[
+            ("p1", "Page One", &["rust", "cli"], "body"),
+            ("p2", "Page Two", &["pharo"], "body"),
+        ]);
+        let hits = index.search_hits("rust", false);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].id, "p1");
+        assert_eq!(hits[0].kind, SearchMatchKind::Meta);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn search_hits_content_flag_searches_page_body() {
+        let (dir, index) = make_kb_on_disk(&[
+            ("p1", "Alpha", &[], "the quick brown fox"),
+            ("p2", "Beta", &[], "lazy dog sleeps"),
+        ]);
+
+        let no_content = index.search_hits("fox", false);
+        assert!(no_content.is_empty());
+
+        let with_content = index.search_hits("fox", true);
+        assert_eq!(with_content.len(), 1);
+        assert_eq!(with_content[0].id, "p1");
+        assert_eq!(with_content[0].kind, SearchMatchKind::Content);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn search_hits_meta_match_takes_priority_over_content() {
+        let (dir, index) = make_kb_on_disk(&[("p1", "Fox Guide", &[], "the fox jumps")]);
+        let hits = index.search_hits("fox", true);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].kind, SearchMatchKind::Meta);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn search_hits_returns_results_sorted_by_title() {
+        let (dir, index) = make_kb_on_disk(&[
+            ("p1", "Zebra", &["common"], "body"),
+            ("p2", "Alpha", &["common"], "body"),
+            ("p3", "Middle", &["common"], "body"),
+        ]);
+        let hits = index.search_hits("common", false);
+        let ids: Vec<&str> = hits.iter().map(|h| h.id.as_str()).collect();
+        assert_eq!(ids, vec!["p2", "p3", "p1"]);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn classify_link_target_page_prefix() {
+        let (dir, index) = make_kb_on_disk(&[("p1", "Alpha", &[], "body")]);
+        assert!(matches!(
+            index.classify_link_target("page:p1"),
+            LinkTargetKind::InternalPage(id) if id == "p1"
+        ));
+        assert!(matches!(
+            index.classify_link_target("page:nonexistent"),
+            LinkTargetKind::Unknown(_)
+        ));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn classify_link_target_empty_is_unknown() {
+        let (dir, index) = make_kb_on_disk(&[("p1", "Alpha", &[], "body")]);
+        assert!(matches!(
+            index.classify_link_target(""),
+            LinkTargetKind::Unknown(_)
+        ));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn classify_link_target_title_fallback() {
+        let (dir, index) = make_kb_on_disk(&[("p1", "My Special Page", &[], "body")]);
+        assert!(matches!(
+            index.classify_link_target("My Special Page"),
+            LinkTargetKind::InternalPage(id) if id == "p1"
+        ));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn resolve_page_id_by_title_empty_and_whitespace() {
+        let (dir, index) = make_kb_on_disk(&[("p1", "Alpha", &[], "body")]);
+        assert_eq!(
+            index.resolve_page_id_by_title(""),
+            TitleResolution::NotFound
+        );
+        assert_eq!(
+            index.resolve_page_id_by_title("   "),
+            TitleResolution::NotFound
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn resolve_page_id_by_title_case_insensitive_exact() {
+        let (dir, index) = make_kb_on_disk(&[("p1", "Alpha", &[], "body")]);
+        assert_eq!(
+            index.resolve_page_id_by_title("ALPHA"),
+            TitleResolution::Unique("p1".to_string())
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn filter_page_ids_no_match_returns_empty() {
+        let (dir, index) = make_kb_on_disk(&[("p1", "Alpha", &[], "body")]);
+        assert!(index.filter_page_ids("zzzzz").is_empty());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn parse_word_node_extracts_primary_fields() {
         let item = json!({

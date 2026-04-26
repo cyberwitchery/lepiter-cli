@@ -2,7 +2,7 @@
 
 all notable changes to this project are documented in this file.
 
-## Unreleased
+## 0.7.0 - 2026-04-26
 
 ### changed
 - editor paragraph lines now render full inline markdown (bold, italic, code, links)

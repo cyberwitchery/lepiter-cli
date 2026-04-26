@@ -159,12 +159,7 @@ impl App {
     fn rebuild_visible_ids(&mut self) {
         let query = self.search.trim();
         if query.is_empty() {
-            self.visible_ids = self
-                .index
-                .sorted_pages_by_title()
-                .into_iter()
-                .map(|m| m.id.clone())
-                .collect();
+            self.visible_ids = self.index.sorted_ids.clone();
             self.search_hit_kind.clear();
             self.reset_text_index_queue();
         } else {
@@ -181,13 +176,13 @@ impl App {
                 }
             }
 
-            let mut ids = Vec::new();
-            for meta in self.index.sorted_pages_by_title() {
-                if hit_kind.contains_key(&meta.id) {
-                    ids.push(meta.id.clone());
-                }
-            }
-            self.visible_ids = ids;
+            self.visible_ids = self
+                .index
+                .sorted_ids
+                .iter()
+                .filter(|id| hit_kind.contains_key(id.as_str()))
+                .cloned()
+                .collect();
             self.search_hit_kind = hit_kind;
         }
         if self.selected >= self.visible_ids.len() {
@@ -312,12 +307,7 @@ impl App {
     }
 
     fn reset_text_index_queue(&mut self) {
-        self.text_index_queue = self
-            .index
-            .sorted_pages_by_title()
-            .into_iter()
-            .map(|m| m.id.clone())
-            .collect();
+        self.text_index_queue = self.index.sorted_ids.iter().cloned().collect();
     }
 
     fn back_to_list(&mut self) {
@@ -694,14 +684,14 @@ fn print_page_list(kb_path: PathBuf, tsv: bool) -> Result<()> {
     let index = KnowledgeBase::open(&kb_path)
         .with_context(|| format!("failed to open knowledge base at {}", kb_path.display()))?;
     if tsv {
-        for meta in index.sorted_pages_by_title() {
+        for meta in index.sorted_pages() {
             println!("{}\t{}", meta.title, meta.id);
         }
         return Ok(());
     }
 
     let title_width = index
-        .sorted_pages_by_title()
+        .sorted_pages()
         .iter()
         .map(|m| m.title.chars().count())
         .max()
@@ -710,7 +700,7 @@ fn print_page_list(kb_path: PathBuf, tsv: bool) -> Result<()> {
 
     println!("{:<width$}  id", "title", width = title_width);
     println!("{:-<width$}  {:-<36}", "", "", width = title_width);
-    for meta in index.sorted_pages_by_title() {
+    for meta in index.sorted_pages() {
         println!(
             "{:<width$}  {}",
             truncate_chars(&meta.title, title_width),
@@ -724,7 +714,7 @@ fn print_page_list(kb_path: PathBuf, tsv: bool) -> Result<()> {
 fn print_page_ids(kb_path: PathBuf) -> Result<()> {
     let index = KnowledgeBase::open(&kb_path)
         .with_context(|| format!("failed to open knowledge base at {}", kb_path.display()))?;
-    for meta in index.sorted_pages_by_title() {
+    for meta in index.sorted_pages() {
         println!("{}", meta.id);
     }
     Ok(())
@@ -770,7 +760,7 @@ fn run_search(args: Vec<String>) -> Result<()> {
         .collect::<std::collections::HashMap<_, _>>();
 
     if tsv {
-        for meta in index.sorted_pages_by_title() {
+        for meta in index.sorted_pages() {
             if let Some(kind) = hit_by_id.get(&meta.id) {
                 println!("{}\t{}\t{}", meta.title, meta.id, kind);
             }
@@ -779,7 +769,7 @@ fn run_search(args: Vec<String>) -> Result<()> {
     }
 
     let title_width = index
-        .sorted_pages_by_title()
+        .sorted_pages()
         .iter()
         .map(|m| m.title.chars().count())
         .max()
@@ -799,7 +789,7 @@ fn run_search(args: Vec<String>) -> Result<()> {
         "",
         width = title_width
     );
-    for meta in index.sorted_pages_by_title() {
+    for meta in index.sorted_pages() {
         if let Some(kind) = hit_by_id.get(&meta.id) {
             println!(
                 "{:<width$}  {:<36}  {}",

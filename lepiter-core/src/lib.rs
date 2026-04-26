@@ -13,7 +13,7 @@
 //!
 //! # fn main() -> anyhow::Result<()> {
 //! let index = KnowledgeBase::open("./lepiter")?;
-//! for page in index.sorted_pages_by_title() {
+//! for page in index.sorted_pages() {
 //!     println!("{} - {}", page.id, page.title);
 //! }
 //! # Ok(())
@@ -264,6 +264,8 @@ pub struct KnowledgeBaseIndex {
     root: PathBuf,
     /// Metadata map keyed by canonical page id.
     pub pages: HashMap<PageId, PageMeta>,
+    /// Page ids in case-insensitive title sort order, computed once at open time.
+    pub sorted_ids: Vec<PageId>,
     /// Non-fatal issues encountered while scanning metadata.
     pub index_issues: Vec<ParseIssue>,
 }
@@ -314,9 +316,12 @@ impl KnowledgeBase {
             }
         }
 
+        let sorted_ids = compute_sorted_ids(&pages);
+
         Ok(KnowledgeBaseIndex {
             root,
             pages,
+            sorted_ids,
             index_issues: issues,
         })
     }
@@ -358,17 +363,18 @@ impl KnowledgeBaseIndex {
         })
     }
 
-    /// Returns metadata entries sorted case-insensitively by title.
-    pub fn sorted_pages_by_title(&self) -> Vec<&PageMeta> {
-        let mut pages = self.pages.values().collect::<Vec<_>>();
-        pages.sort_by(|a, b| a.title_lower.cmp(&b.title_lower));
-        pages
+    /// Returns metadata entries in cached title-sorted order.
+    pub fn sorted_pages(&self) -> Vec<&PageMeta> {
+        self.sorted_ids
+            .iter()
+            .filter_map(|id| self.pages.get(id))
+            .collect()
     }
 
     /// Returns page ids filtered by metadata query (title/id/tags), sorted by title.
     pub fn filter_page_ids(&self, query: &str) -> Vec<PageId> {
         let needle = query.trim().to_lowercase();
-        let mut metas = self.sorted_pages_by_title();
+        let mut metas = self.sorted_pages();
         if !needle.is_empty() {
             metas.retain(|m| page_meta_matches(m, &needle));
         }
@@ -383,7 +389,7 @@ impl KnowledgeBaseIndex {
         }
 
         let mut by_id: HashMap<PageId, SearchMatchKind> = HashMap::new();
-        let metas = self.sorted_pages_by_title();
+        let metas = self.sorted_pages();
 
         for meta in &metas {
             if page_meta_matches(meta, &needle) {
@@ -424,7 +430,7 @@ impl KnowledgeBaseIndex {
             return TitleResolution::NotFound;
         }
 
-        let sorted = self.sorted_pages_by_title();
+        let sorted = self.sorted_pages();
 
         let exact = sorted
             .iter()
@@ -505,6 +511,12 @@ impl KnowledgeBaseIndex {
     pub fn attachment_resolver(&self) -> AttachmentResolver {
         AttachmentResolver::new(&self.root)
     }
+}
+
+fn compute_sorted_ids(pages: &HashMap<PageId, PageMeta>) -> Vec<PageId> {
+    let mut entries: Vec<_> = pages.values().collect();
+    entries.sort_by(|a, b| a.title_lower.cmp(&b.title_lower));
+    entries.into_iter().map(|m| m.id.clone()).collect()
 }
 
 fn page_meta_matches(meta: &PageMeta, needle: &str) -> bool {
@@ -1385,9 +1397,11 @@ mod tests {
                 tags: vec!["pharo".to_string()],
             },
         );
+        let sorted_ids = compute_sorted_ids(&pages);
         let index = KnowledgeBaseIndex {
             root: PathBuf::from("/tmp"),
             pages,
+            sorted_ids,
             index_issues: Vec::new(),
         };
 
@@ -1425,9 +1439,11 @@ mod tests {
                 tags: Vec::new(),
             },
         );
+        let sorted_ids = compute_sorted_ids(&pages);
         let index = KnowledgeBaseIndex {
             root: PathBuf::from("/tmp"),
             pages,
+            sorted_ids,
             index_issues: Vec::new(),
         };
 
@@ -1459,9 +1475,11 @@ mod tests {
                 tags: Vec::new(),
             },
         );
+        let sorted_ids = compute_sorted_ids(&pages);
         let index = KnowledgeBaseIndex {
             root: PathBuf::from("/kb"),
             pages,
+            sorted_ids,
             index_issues: Vec::new(),
         };
 

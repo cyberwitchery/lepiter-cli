@@ -5,6 +5,8 @@ all notable changes to this project are documented in this file.
 ## Unreleased
 
 ### changed
+- editor paragraph lines now render full inline markdown (bold, italic, code, links)
+  instead of only annotation highlighting
 - plugin child processes are now killed and reaped on exit (Drop impl for PluginProcess)
 - `LruCache` accepts any key type implementing `Eq + Hash + Clone`, not just `String`
 - plugin render cache now uses the shared `LruCache` instead of a hand-rolled implementation

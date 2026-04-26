@@ -220,13 +220,23 @@ pub fn render_node(
     }
 }
 
-fn parse_inline_markdown(text: &str, links: &mut Vec<LinkTarget>) -> Line<'static> {
-    let elements = parse_inline(text);
-    let mut spans = Vec::new();
+/// Convert parsed inline elements to ratatui spans.
+///
+/// When `links` is `Some`, link targets are tracked and numbered markers
+/// (`[1]`, `[2]`, …) are appended after each link.  When `None`, links are
+/// rendered as styled text without markers or tracking.
+fn render_inline_to_spans(
+    elements: Vec<InlineElement>,
+    mut links: Option<&mut Vec<LinkTarget>>,
+) -> Vec<Span<'static>> {
     let annotation_style = Style::default()
         .fg(Color::LightMagenta)
         .add_modifier(Modifier::BOLD);
+    let link_style = Style::default()
+        .fg(Color::LightBlue)
+        .add_modifier(Modifier::UNDERLINED);
 
+    let mut spans = Vec::new();
     for elem in elements {
         match elem {
             InlineElement::Styled {
@@ -248,38 +258,36 @@ fn parse_inline_markdown(text: &str, links: &mut Vec<LinkTarget>) -> Line<'stati
                 spans.push(Span::styled(text, style));
             }
             InlineElement::Link { label, target } => {
-                links.push(LinkTarget {
-                    label: label.clone(),
-                    target,
-                });
-                let idx = links.len();
-                spans.push(Span::styled(
-                    label,
-                    Style::default()
-                        .fg(Color::LightBlue)
-                        .add_modifier(Modifier::UNDERLINED),
-                ));
-                spans.push(Span::styled(
-                    format!("[{idx}]"),
-                    Style::default().fg(Color::Yellow),
-                ));
+                if let Some(links) = &mut links {
+                    links.push(LinkTarget {
+                        label: label.clone(),
+                        target,
+                    });
+                    let idx = links.len();
+                    spans.push(Span::styled(label, link_style));
+                    spans.push(Span::styled(
+                        format!("[{idx}]"),
+                        Style::default().fg(Color::Yellow),
+                    ));
+                } else {
+                    spans.push(Span::styled(label, link_style));
+                }
             }
             InlineElement::WikiLink { text } => {
-                links.push(LinkTarget {
-                    label: text.clone(),
-                    target: text.clone(),
-                });
-                let idx = links.len();
-                spans.push(Span::styled(
-                    text,
-                    Style::default()
-                        .fg(Color::LightBlue)
-                        .add_modifier(Modifier::UNDERLINED),
-                ));
-                spans.push(Span::styled(
-                    format!("[{idx}]"),
-                    Style::default().fg(Color::Yellow),
-                ));
+                if let Some(links) = &mut links {
+                    links.push(LinkTarget {
+                        label: text.clone(),
+                        target: text.clone(),
+                    });
+                    let idx = links.len();
+                    spans.push(Span::styled(text, link_style));
+                    spans.push(Span::styled(
+                        format!("[{idx}]"),
+                        Style::default().fg(Color::Yellow),
+                    ));
+                } else {
+                    spans.push(Span::styled(text, link_style));
+                }
             }
             InlineElement::Annotation { text } => {
                 spans.push(Span::styled(text, annotation_style));
@@ -287,52 +295,15 @@ fn parse_inline_markdown(text: &str, links: &mut Vec<LinkTarget>) -> Line<'stati
         }
     }
 
-    Line::from(spans)
+    spans
+}
+
+fn parse_inline_markdown(text: &str, links: &mut Vec<LinkTarget>) -> Line<'static> {
+    Line::from(render_inline_to_spans(parse_inline(text), Some(links)))
 }
 
 pub fn parse_inline_annotations(text: &str) -> Line<'static> {
-    let mut spans = Vec::new();
-    let chars = text.chars().collect::<Vec<_>>();
-    let mut i = 0usize;
-    let mut buf = String::new();
-    let annotation_style = Style::default()
-        .fg(Color::LightMagenta)
-        .add_modifier(Modifier::BOLD);
-
-    let push_buf = |spans: &mut Vec<Span<'static>>, buf: &mut String| {
-        if buf.is_empty() {
-            return;
-        }
-        spans.push(Span::raw(std::mem::take(buf)));
-    };
-
-    while i < chars.len() {
-        if i + 1 < chars.len() && chars[i] == '{' && chars[i + 1] == '{' {
-            let mut j = i + 2;
-            while j + 1 < chars.len() {
-                if chars[j] == '}' && chars[j + 1] == '}' {
-                    break;
-                }
-                j += 1;
-            }
-            if j + 1 < chars.len() && chars[j] == '}' && chars[j + 1] == '}' {
-                push_buf(&mut spans, &mut buf);
-                let annotation = chars[i..=j + 1].iter().collect::<String>();
-                spans.push(Span::styled(annotation, annotation_style));
-                i = j + 2;
-                continue;
-            }
-        }
-        buf.push(chars[i]);
-        i += 1;
-    }
-
-    push_buf(&mut spans, &mut buf);
-    if spans.is_empty() {
-        Line::raw(text.to_string())
-    } else {
-        Line::from(spans)
-    }
+    Line::from(render_inline_to_spans(parse_inline(text), None))
 }
 
 pub fn highlight_code_line(line: &str, language: Option<&str>) -> Line<'static> {
@@ -543,6 +514,72 @@ mod tests {
         let line = parse_inline_markdown("array[0] done", &mut links);
         assert!(links.is_empty());
         assert_eq!(span_texts(&line), vec!["array[0] done"]);
+    }
+
+    // --- parse_inline_annotations ---
+
+    #[test]
+    fn annotations_plain_text() {
+        let line = parse_inline_annotations("hello world");
+        assert_eq!(span_texts(&line), vec!["hello world"]);
+    }
+
+    #[test]
+    fn annotations_empty_string() {
+        let line = parse_inline_annotations("");
+        assert!(line.spans.is_empty());
+    }
+
+    #[test]
+    fn annotations_highlight() {
+        let line = parse_inline_annotations("text {{gtView}} more");
+        assert_eq!(span_texts(&line), vec!["text ", "{{gtView}}", " more"]);
+        assert!(has_fg(&line, 1, Color::LightMagenta));
+        assert!(has_modifier(&line, 1, Modifier::BOLD));
+    }
+
+    #[test]
+    fn annotations_multiple() {
+        let line = parse_inline_annotations("{{a}} mid {{b}}");
+        assert_eq!(span_texts(&line), vec!["{{a}}", " mid ", "{{b}}"]);
+        assert!(has_fg(&line, 0, Color::LightMagenta));
+        assert!(has_fg(&line, 2, Color::LightMagenta));
+    }
+
+    #[test]
+    fn annotations_renders_bold() {
+        let line = parse_inline_annotations("before **bold** after");
+        assert_eq!(span_texts(&line), vec!["before ", "bold", " after"]);
+        assert!(has_modifier(&line, 1, Modifier::BOLD));
+    }
+
+    #[test]
+    fn annotations_renders_links_without_markers() {
+        let line = parse_inline_annotations("see [[Page]] here");
+        // links are rendered but without numbered markers
+        assert_eq!(span_texts(&line), vec!["see ", "Page", " here"]);
+        assert!(has_fg(&line, 1, Color::LightBlue));
+        assert!(has_modifier(&line, 1, Modifier::UNDERLINED));
+    }
+
+    // --- render_inline_to_spans consistency ---
+
+    #[test]
+    fn both_paths_style_annotations_identically() {
+        let mut links = Vec::new();
+        let md_line = parse_inline_markdown("text {{note}} end", &mut links);
+        let ann_line = parse_inline_annotations("text {{note}} end");
+        // annotation span (index 1) should have the same style in both
+        assert_eq!(md_line.spans[1].style, ann_line.spans[1].style);
+        assert_eq!(md_line.spans[1].content, ann_line.spans[1].content);
+    }
+
+    #[test]
+    fn both_paths_style_bold_identically() {
+        let mut links = Vec::new();
+        let md_line = parse_inline_markdown("**bold**", &mut links);
+        let ann_line = parse_inline_annotations("**bold**");
+        assert_eq!(md_line.spans[0].style, ann_line.spans[0].style);
     }
 
     // --- sanitize_for_terminal ---

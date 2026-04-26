@@ -17,7 +17,7 @@ fn main() -> Result<()> {
     }
 
     let index = KnowledgeBase::open(&kb_path)?;
-    let pages = index.sorted_pages_by_title();
+    let pages = index.sorted_pages();
 
     let mut global_types: HashMap<String, usize> = HashMap::new();
     let mut unknown_types: HashMap<String, usize> = HashMap::new();

@@ -11,7 +11,7 @@ fn fixtures_dir() -> PathBuf {
 }
 
 fn first_page_id(index: &lepiter_core::KnowledgeBaseIndex) -> Option<String> {
-    index.sorted_pages_by_title().first().map(|m| m.id.clone())
+    index.sorted_pages().first().map(|m| m.id.clone())
 }
 
 #[test]

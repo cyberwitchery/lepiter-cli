@@ -7,6 +7,8 @@ all notable changes to this project are documented in this file.
 ### changed
 - editor paragraph lines now render full inline markdown (bold, italic, code, links)
   instead of only annotation highlighting
+- `sorted_pages_by_title()` replaced by `sorted_pages()` which uses a cached title-sorted
+  ordering computed once at `open()` time; `KnowledgeBaseIndex` now exposes `sorted_ids: Vec<PageId>`
 - plugin child processes are now killed and reaped on exit (Drop impl for PluginProcess)
 - `LruCache` accepts any key type implementing `Eq + Hash + Clone`, not just `String`
 - plugin render cache now uses the shared `LruCache` instead of a hand-rolled implementation

@@ -20,6 +20,9 @@ all notable changes to this project are documented in this file.
 - PageUp/PageDown keys in page mode scroll by half a screen
 
 ### fixed
+- plugin request timeout (`LEPITER_PLUGIN_TIMEOUT_MS`) is now enforced: a hung plugin no longer
+  freezes the TUI indefinitely. Timed-out plugins are killed and respawned automatically before
+  retrying.
 - pressing `G` (jump to bottom) then `k`/Up no longer leaves the user stuck; `page_scroll`
   is clamped to content length before applying scroll deltas
 - search snippets and match highlighting no longer silently break for pages with non-ASCII

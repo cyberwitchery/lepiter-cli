@@ -7,8 +7,10 @@ use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::fs;
 use std::hash::{Hash, Hasher};
-use std::io::{BufRead, BufReader, BufWriter, Write};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::io::{self, BufRead, BufReader, BufWriter, Write};
+use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::mpsc;
+use std::thread;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -41,10 +43,30 @@ pub enum PluginRender {
     Error(String),
 }
 
+/// Distinguishes timeout errors from other plugin failures so the retry
+/// loop can decide whether to kill-and-respawn.
+#[derive(Debug)]
+enum RequestError {
+    /// Plugin did not respond within the deadline.
+    Timeout(Duration),
+    /// Plugin process died, produced bad output, or hit an I/O error.
+    Failed(anyhow::Error),
+}
+
+impl std::fmt::Display for RequestError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RequestError::Timeout(d) => write!(f, "timed out after {}ms", d.as_millis()),
+            RequestError::Failed(e) => write!(f, "{e}"),
+        }
+    }
+}
+
 struct PluginProcess {
     child: Child,
     stdin: BufWriter<ChildStdin>,
-    stdout: BufReader<ChildStdout>,
+    /// Receives lines read by a background reader thread.
+    rx: mpsc::Receiver<io::Result<String>>,
 }
 
 impl Drop for PluginProcess {
@@ -70,44 +92,87 @@ impl PluginProcess {
             .stdout
             .take()
             .ok_or_else(|| anyhow::anyhow!("missing plugin stdout"))?;
+
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let mut reader = BufReader::new(stdout);
+            loop {
+                let mut line = String::new();
+                match reader.read_line(&mut line) {
+                    Ok(0) => {
+                        let _ = tx.send(Err(io::Error::new(
+                            io::ErrorKind::UnexpectedEof,
+                            "plugin stdout closed unexpectedly (process likely crashed)",
+                        )));
+                        break;
+                    }
+                    Ok(_) => {
+                        if tx.send(Ok(line)).is_err() {
+                            break; // receiver dropped
+                        }
+                    }
+                    Err(e) => {
+                        let _ = tx.send(Err(e));
+                        break;
+                    }
+                }
+            }
+        });
+
         Ok(Self {
             child,
             stdin: BufWriter::new(stdin),
-            stdout: BufReader::new(stdout),
+            rx,
         })
     }
 
     fn request_with_timeout(
         &mut self,
         req: &PluginRequest,
-        _timeout: Duration,
-    ) -> Result<PluginResponse> {
-        if let Some(status) = self.child.try_wait()? {
-            bail!("plugin exited: {status}");
+        timeout: Duration,
+    ) -> Result<PluginResponse, RequestError> {
+        if let Some(status) = self
+            .child
+            .try_wait()
+            .map_err(|e| RequestError::Failed(e.into()))?
+        {
+            return Err(RequestError::Failed(anyhow::anyhow!(
+                "plugin exited: {status}"
+            )));
         }
-        let mut payload = serde_json::to_string(req)?;
-        payload.push('\n');
-        self.stdin.write_all(payload.as_bytes())?;
-        self.stdin.flush()?;
 
-        // read_line blocks until a full line arrives or the pipe closes (EOF).
-        // The timeout parameter is not enforced on the blocking read; the
-        // caller's retry count bounds total attempts instead.
-        if let Some(status) = self.child.try_wait()? {
-            bail!("plugin exited mid-request: {status}");
+        let mut payload = serde_json::to_string(req).map_err(|e| RequestError::Failed(e.into()))?;
+        payload.push('\n');
+        self.stdin
+            .write_all(payload.as_bytes())
+            .map_err(|e| RequestError::Failed(e.into()))?;
+        self.stdin
+            .flush()
+            .map_err(|e| RequestError::Failed(e.into()))?;
+
+        match self.rx.recv_timeout(timeout) {
+            Ok(Ok(line)) => {
+                let resp: PluginResponse =
+                    serde_json::from_str(&line).map_err(|e| RequestError::Failed(e.into()))?;
+                Ok(resp)
+            }
+            Ok(Err(io_err)) => Err(RequestError::Failed(anyhow::anyhow!(
+                "plugin stdout error: {io_err}"
+            ))),
+            Err(mpsc::RecvTimeoutError::Timeout) => Err(RequestError::Timeout(timeout)),
+            Err(mpsc::RecvTimeoutError::Disconnected) => Err(RequestError::Failed(
+                anyhow::anyhow!("plugin reader thread terminated unexpectedly"),
+            )),
         }
-        let mut line = String::new();
-        let n = self.stdout.read_line(&mut line)?;
-        if n == 0 {
-            bail!("plugin stdout closed unexpectedly (process likely crashed)");
-        }
-        let resp: PluginResponse = serde_json::from_str(&line)?;
-        Ok(resp)
     }
 }
 
 struct PluginHandle {
     name: String,
+    /// Resolved binary path, kept for respawning after a timeout.
+    binary: String,
+    /// Arguments passed to the binary, kept for respawning.
+    args: Vec<String>,
     process: PluginProcess,
 }
 
@@ -173,8 +238,8 @@ impl PluginManager {
         let mut by_type = HashMap::new();
         let mut notes = Vec::new();
         for plugin in config.plugins {
-            let process = match spawn_plugin_process(&plugin) {
-                Ok(process) => process,
+            let (process, binary) = match spawn_plugin_process(&plugin) {
+                Ok(result) => result,
                 Err(err) => {
                     notes.push(format!("plugin {} failed to start: {err}", plugin.name));
                     continue;
@@ -183,6 +248,8 @@ impl PluginManager {
             let idx = processes.len();
             processes.push(PluginHandle {
                 name: plugin.name.clone(),
+                binary,
+                args: plugin.args.clone(),
                 process,
             });
             for typ in plugin.types {
@@ -213,7 +280,9 @@ impl PluginManager {
 
     pub fn render(&mut self, typ: &str, raw: &Value) -> Option<PluginRender> {
         let idx = *self.by_type.get(typ)?;
-        let handle = self.processes.get_mut(idx)?;
+        if idx >= self.processes.len() {
+            return None;
+        }
 
         let key = (typ.to_string(), hash_value(raw));
         if let Some(hit) = self.cache.get(&key).cloned() {
@@ -226,7 +295,10 @@ impl PluginManager {
         };
         let mut last_err = None;
         for _ in 0..=self.retries {
-            match handle.process.request_with_timeout(&req, self.timeout) {
+            let result = self.processes[idx]
+                .process
+                .request_with_timeout(&req, self.timeout);
+            match result {
                 Ok(resp) => {
                     let rendered = if resp.ok {
                         PluginRender::Lines(resp.lines)
@@ -234,18 +306,32 @@ impl PluginManager {
                         let msg = resp
                             .error
                             .unwrap_or_else(|| "plugin returned error".to_string());
-                        PluginRender::Error(format!("{}: {}", handle.name, msg))
+                        PluginRender::Error(format!("{}: {}", self.processes[idx].name, msg))
                     };
-                    self.cache.insert(key.clone(), rendered.clone());
+                    self.cache.insert(key, rendered.clone());
                     return Some(rendered);
                 }
-                Err(err) => {
-                    last_err = Some(err);
+                Err(e) => {
+                    last_err = Some(format!("{e}"));
+                    // Kill the hung/dead plugin and try to respawn for the next
+                    // retry attempt. Respawning is essential after a timeout
+                    // because the old channel may contain a stale response.
+                    let binary = self.processes[idx].binary.clone();
+                    let args = self.processes[idx].args.clone();
+                    match PluginProcess::spawn(&binary, &args) {
+                        Ok(new_process) => {
+                            self.processes[idx].process = new_process;
+                        }
+                        Err(spawn_err) => {
+                            last_err = Some(format!("respawn failed: {spawn_err}"));
+                            break;
+                        }
+                    }
                 }
             }
         }
-        let err = last_err.unwrap_or_else(|| anyhow::anyhow!("plugin failed"));
-        let rendered = PluginRender::Error(format!("{}: {err}", handle.name));
+        let err = last_err.unwrap_or_else(|| "plugin failed".to_string());
+        let rendered = PluginRender::Error(format!("{}: {err}", self.processes[idx].name));
         self.cache.insert(key, rendered.clone());
         Some(rendered)
     }
@@ -273,7 +359,9 @@ impl PluginManager {
     }
 }
 
-fn spawn_plugin_process(plugin: &PluginSpec) -> Result<PluginProcess> {
+/// Tries candidate binary names for a plugin spec. Returns the spawned
+/// process and the resolved binary name (needed for respawning later).
+fn spawn_plugin_process(plugin: &PluginSpec) -> Result<(PluginProcess, String)> {
     let mut candidates = Vec::new();
     if let Some(binary) = plugin.binary.as_ref() {
         candidates.push(binary.clone());
@@ -286,7 +374,7 @@ fn spawn_plugin_process(plugin: &PluginSpec) -> Result<PluginProcess> {
     let mut last_err = None;
     for candidate in candidates {
         match PluginProcess::spawn(&candidate, &plugin.args) {
-            Ok(process) => return Ok(process),
+            Ok(process) => return Ok((process, candidate)),
             Err(err) => {
                 last_err = Some((candidate, err));
                 continue;
@@ -308,4 +396,190 @@ fn hash_value(value: &Value) -> u64 {
         Err(_) => "<invalid>".hash(&mut hasher),
     }
     hasher.finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dummy_request() -> PluginRequest {
+        PluginRequest {
+            typ: "test".to_string(),
+            snippet: serde_json::json!({}),
+        }
+    }
+
+    #[test]
+    fn working_plugin_responds_within_timeout() {
+        let script = r#"read line; echo '{"ok":true,"lines":["hello"],"error":null}'"#;
+        let mut proc =
+            PluginProcess::spawn("bash", &["-c".to_string(), script.to_string()]).unwrap();
+        let req = dummy_request();
+        let result = proc.request_with_timeout(&req, Duration::from_secs(5));
+        match result {
+            Ok(resp) => {
+                assert!(resp.ok);
+                assert_eq!(resp.lines, vec!["hello"]);
+            }
+            Err(e) => panic!("expected Ok, got: {e}"),
+        }
+    }
+
+    #[test]
+    fn request_times_out_on_unresponsive_plugin() {
+        // `sleep infinity` accepts piped stdin/stdout but never writes output.
+        let mut proc = PluginProcess::spawn("sleep", &["infinity".to_string()]).unwrap();
+        let req = dummy_request();
+        let start = std::time::Instant::now();
+        let result = proc.request_with_timeout(&req, Duration::from_millis(100));
+        let elapsed = start.elapsed();
+        match result {
+            Err(RequestError::Timeout(d)) => {
+                assert_eq!(d, Duration::from_millis(100));
+                // Should have taken roughly the timeout duration, not much more.
+                assert!(elapsed < Duration::from_millis(500));
+            }
+            other => panic!("expected Timeout, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn request_detects_mid_request_crash() {
+        // Plugin reads the request then exits without responding.
+        let script = "read line; exit 1";
+        let mut proc =
+            PluginProcess::spawn("bash", &["-c".to_string(), script.to_string()]).unwrap();
+        let req = dummy_request();
+        let result = proc.request_with_timeout(&req, Duration::from_secs(5));
+        assert!(
+            matches!(result, Err(RequestError::Failed(_))),
+            "expected Failed, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn request_detects_already_exited_plugin() {
+        let mut proc = PluginProcess::spawn("true", &[]).unwrap();
+        // Give it a moment to exit.
+        std::thread::sleep(Duration::from_millis(50));
+        let req = dummy_request();
+        let result = proc.request_with_timeout(&req, Duration::from_secs(1));
+        assert!(
+            matches!(result, Err(RequestError::Failed(_))),
+            "expected Failed, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn render_with_working_plugin() {
+        let script =
+            r#"while read line; do echo '{"ok":true,"lines":["rendered"],"error":null}'; done"#;
+        let proc = PluginProcess::spawn("bash", &["-c".to_string(), script.to_string()]).unwrap();
+
+        let mut mgr = PluginManager::empty();
+        mgr.processes.push(PluginHandle {
+            name: "test".to_string(),
+            binary: "bash".to_string(),
+            args: vec!["-c".to_string(), script.to_string()],
+            process: proc,
+        });
+        mgr.by_type.insert("testType".to_string(), 0);
+
+        let result = mgr.render("testType", &serde_json::json!({"data": "test"}));
+        match result {
+            Some(PluginRender::Lines(lines)) => assert_eq!(lines, vec!["rendered"]),
+            other => panic!("expected Lines, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn render_respawns_hung_plugin() {
+        // Start with a plugin that hangs after reading the request.
+        let hang_script = "read line; sleep infinity";
+        let proc =
+            PluginProcess::spawn("bash", &["-c".to_string(), hang_script.to_string()]).unwrap();
+
+        // The handle's binary/args point to a *working* plugin, so the
+        // respawn produces a process that actually responds.
+        let work_script =
+            r#"while read line; do echo '{"ok":true,"lines":["recovered"],"error":null}'; done"#;
+
+        let mut mgr = PluginManager::empty();
+        mgr.timeout = Duration::from_millis(100);
+        mgr.retries = 1;
+        mgr.processes.push(PluginHandle {
+            name: "test".to_string(),
+            binary: "bash".to_string(),
+            args: vec!["-c".to_string(), work_script.to_string()],
+            process: proc,
+        });
+        mgr.by_type.insert("testType".to_string(), 0);
+
+        let result = mgr.render("testType", &serde_json::json!({"data": "test"}));
+        match result {
+            Some(PluginRender::Lines(lines)) => assert_eq!(lines, vec!["recovered"]),
+            other => panic!("expected Lines after respawn, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn render_returns_error_when_respawn_fails() {
+        let hang_script = "read line; sleep infinity";
+        let proc =
+            PluginProcess::spawn("bash", &["-c".to_string(), hang_script.to_string()]).unwrap();
+
+        let mut mgr = PluginManager::empty();
+        mgr.timeout = Duration::from_millis(100);
+        mgr.retries = 1;
+        mgr.processes.push(PluginHandle {
+            name: "test".to_string(),
+            binary: "nonexistent-binary-xyz".to_string(),
+            args: vec![],
+            process: proc,
+        });
+        mgr.by_type.insert("testType".to_string(), 0);
+
+        let result = mgr.render("testType", &serde_json::json!({}));
+        match result {
+            Some(PluginRender::Error(msg)) => {
+                assert!(msg.contains("respawn failed"), "unexpected error: {msg}");
+            }
+            other => panic!("expected Error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn multiple_requests_work_after_respawn() {
+        let hang_script = "read line; sleep infinity";
+        let work_script =
+            r#"while read line; do echo '{"ok":true,"lines":["ok"],"error":null}'; done"#;
+
+        let proc =
+            PluginProcess::spawn("bash", &["-c".to_string(), hang_script.to_string()]).unwrap();
+
+        let mut mgr = PluginManager::empty();
+        mgr.timeout = Duration::from_millis(100);
+        mgr.retries = 1;
+        mgr.processes.push(PluginHandle {
+            name: "test".to_string(),
+            binary: "bash".to_string(),
+            args: vec!["-c".to_string(), work_script.to_string()],
+            process: proc,
+        });
+        mgr.by_type.insert("testType".to_string(), 0);
+
+        // First render: initial process hangs, respawns, then succeeds.
+        let r1 = mgr.render("testType", &serde_json::json!({"a": 1}));
+        assert!(
+            matches!(r1, Some(PluginRender::Lines(_))),
+            "first render should succeed after respawn"
+        );
+
+        // Second render (different key to avoid cache): uses the respawned process.
+        let r2 = mgr.render("testType", &serde_json::json!({"b": 2}));
+        assert!(
+            matches!(r2, Some(PluginRender::Lines(_))),
+            "second render should succeed on respawned process"
+        );
+    }
 }

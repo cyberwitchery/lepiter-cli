@@ -121,21 +121,29 @@ pub struct PluginManager {
 }
 
 impl PluginManager {
+    fn env_defaults() -> (LruCache<(String, u64), PluginRender>, Duration, usize) {
+        let cache = LruCache::new(cache_limit_from_env_allow_zero("LEPITER_PLUGIN_CACHE", 128));
+        let timeout = Duration::from_millis(
+            std::env::var("LEPITER_PLUGIN_TIMEOUT_MS")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(250),
+        );
+        let retries = std::env::var("LEPITER_PLUGIN_RETRIES")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(1);
+        (cache, timeout, retries)
+    }
+
     pub fn empty() -> Self {
+        let (cache, timeout, retries) = Self::env_defaults();
         Self {
             processes: Vec::new(),
             by_type: HashMap::new(),
-            cache: LruCache::new(cache_limit_from_env_allow_zero("LEPITER_PLUGIN_CACHE", 128)),
-            timeout: Duration::from_millis(
-                std::env::var("LEPITER_PLUGIN_TIMEOUT_MS")
-                    .ok()
-                    .and_then(|v| v.parse::<u64>().ok())
-                    .unwrap_or(250),
-            ),
-            retries: std::env::var("LEPITER_PLUGIN_RETRIES")
-                .ok()
-                .and_then(|v| v.parse::<usize>().ok())
-                .unwrap_or(1),
+            cache,
+            timeout,
+            retries,
             notes: Vec::new(),
         }
     }
@@ -147,49 +155,17 @@ impl PluginManager {
         let bytes = match fs::read(&path) {
             Ok(bytes) => bytes,
             Err(err) => {
-                return Self {
-                    processes: Vec::new(),
-                    by_type: HashMap::new(),
-                    cache: LruCache::new(cache_limit_from_env_allow_zero(
-                        "LEPITER_PLUGIN_CACHE",
-                        128,
-                    )),
-                    timeout: Duration::from_millis(
-                        std::env::var("LEPITER_PLUGIN_TIMEOUT_MS")
-                            .ok()
-                            .and_then(|v| v.parse::<u64>().ok())
-                            .unwrap_or(250),
-                    ),
-                    retries: std::env::var("LEPITER_PLUGIN_RETRIES")
-                        .ok()
-                        .and_then(|v| v.parse::<usize>().ok())
-                        .unwrap_or(1),
-                    notes: vec![format!("plugin config read failed: {err}")],
-                };
+                let mut mgr = Self::empty();
+                mgr.notes.push(format!("plugin config read failed: {err}"));
+                return mgr;
             }
         };
         let config: PluginConfig = match serde_json::from_slice(&bytes) {
             Ok(config) => config,
             Err(err) => {
-                return Self {
-                    processes: Vec::new(),
-                    by_type: HashMap::new(),
-                    cache: LruCache::new(cache_limit_from_env_allow_zero(
-                        "LEPITER_PLUGIN_CACHE",
-                        128,
-                    )),
-                    timeout: Duration::from_millis(
-                        std::env::var("LEPITER_PLUGIN_TIMEOUT_MS")
-                            .ok()
-                            .and_then(|v| v.parse::<u64>().ok())
-                            .unwrap_or(250),
-                    ),
-                    retries: std::env::var("LEPITER_PLUGIN_RETRIES")
-                        .ok()
-                        .and_then(|v| v.parse::<usize>().ok())
-                        .unwrap_or(1),
-                    notes: vec![format!("plugin config parse failed: {err}")],
-                };
+                let mut mgr = Self::empty();
+                mgr.notes.push(format!("plugin config parse failed: {err}"));
+                return mgr;
             }
         };
 
@@ -218,20 +194,13 @@ impl PluginManager {
             }
         }
 
+        let (cache, timeout, retries) = Self::env_defaults();
         Self {
             processes,
             by_type,
-            cache: LruCache::new(cache_limit_from_env_allow_zero("LEPITER_PLUGIN_CACHE", 128)),
-            timeout: Duration::from_millis(
-                std::env::var("LEPITER_PLUGIN_TIMEOUT_MS")
-                    .ok()
-                    .and_then(|v| v.parse::<u64>().ok())
-                    .unwrap_or(250),
-            ),
-            retries: std::env::var("LEPITER_PLUGIN_RETRIES")
-                .ok()
-                .and_then(|v| v.parse::<usize>().ok())
-                .unwrap_or(1),
+            cache,
+            timeout,
+            retries,
             notes,
         }
     }

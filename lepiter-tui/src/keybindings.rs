@@ -3,6 +3,13 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::edit::{delete_char_at, delete_char_before, insert_char_at, move_cursor_vertical};
 use crate::{App, Mode};
 
+/// Half the usable terminal height, for PageUp / PageDown scrolling.
+fn page_scroll_half() -> isize {
+    crossterm::terminal::size()
+        .map(|(_, h)| (h.saturating_sub(6) / 2).max(1) as isize)
+        .unwrap_or(10)
+}
+
 /// Result from processing a key event, telling the event loop what to do next.
 pub(crate) enum KeyResult {
     /// Exit the application.
@@ -90,21 +97,11 @@ impl App {
                 Mode::Search | Mode::Edit => {}
             },
             KeyCode::PageUp => match self.mode {
-                Mode::Page => {
-                    let half = crossterm::terminal::size()
-                        .map(|(_, h)| (h.saturating_sub(6) / 2).max(1) as isize)
-                        .unwrap_or(10);
-                    self.scroll_page(-half);
-                }
+                Mode::Page => self.scroll_page(-page_scroll_half()),
                 Mode::List | Mode::Search | Mode::Edit => {}
             },
             KeyCode::PageDown => match self.mode {
-                Mode::Page => {
-                    let half = crossterm::terminal::size()
-                        .map(|(_, h)| (h.saturating_sub(6) / 2).max(1) as isize)
-                        .unwrap_or(10);
-                    self.scroll_page(half);
-                }
+                Mode::Page => self.scroll_page(page_scroll_half()),
                 Mode::List | Mode::Search | Mode::Edit => {}
             },
             KeyCode::Char('g') => match self.mode {

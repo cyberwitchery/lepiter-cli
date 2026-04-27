@@ -735,10 +735,10 @@ mod tests {
         app.handle_key(key(KeyCode::Tab));
         // If there are links, selection should advance (or stay at 0 if no links).
         let page = app.current_rendered_page();
-        if let Some(p) = page {
-            if !p.links.is_empty() {
-                assert!(app.selected_link >= initial);
-            }
+        if let Some(p) = page
+            && !p.links.is_empty()
+        {
+            assert!(app.selected_link >= initial);
         }
     }
 

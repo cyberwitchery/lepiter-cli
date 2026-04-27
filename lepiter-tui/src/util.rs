@@ -118,3 +118,285 @@ where
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── cache_limit_from_env ───────────────────────────────────────
+
+    #[test]
+    fn cache_limit_from_env_uses_default_when_unset() {
+        // Use a variable name unlikely to be set in the environment.
+        let val = cache_limit_from_env("__LEPITER_TEST_UNSET_12345__", 42);
+        assert_eq!(val, 42);
+    }
+
+    #[test]
+    fn cache_limit_from_env_parses_valid_value() {
+        unsafe { env::set_var("__LEPITER_TEST_CACHE_VALID__", "64") };
+        let val = cache_limit_from_env("__LEPITER_TEST_CACHE_VALID__", 10);
+        assert_eq!(val, 64);
+        unsafe { env::remove_var("__LEPITER_TEST_CACHE_VALID__") };
+    }
+
+    #[test]
+    fn cache_limit_from_env_clamps_zero_to_one() {
+        unsafe { env::set_var("__LEPITER_TEST_CACHE_ZERO__", "0") };
+        let val = cache_limit_from_env("__LEPITER_TEST_CACHE_ZERO__", 10);
+        assert_eq!(val, 1);
+        unsafe { env::remove_var("__LEPITER_TEST_CACHE_ZERO__") };
+    }
+
+    #[test]
+    fn cache_limit_from_env_falls_back_on_non_numeric() {
+        unsafe { env::set_var("__LEPITER_TEST_CACHE_BAD__", "not_a_number") };
+        let val = cache_limit_from_env("__LEPITER_TEST_CACHE_BAD__", 99);
+        assert_eq!(val, 99);
+        unsafe { env::remove_var("__LEPITER_TEST_CACHE_BAD__") };
+    }
+
+    #[test]
+    fn cache_limit_from_env_clamps_default_zero_to_one() {
+        let val = cache_limit_from_env("__LEPITER_TEST_UNSET_99999__", 0);
+        assert_eq!(val, 1);
+    }
+
+    // ── cache_limit_from_env_allow_zero ────────────────────────────
+
+    #[test]
+    fn cache_limit_allow_zero_uses_default_when_unset() {
+        let val = cache_limit_from_env_allow_zero("__LEPITER_TEST_AZ_UNSET__", 50);
+        assert_eq!(val, 50);
+    }
+
+    #[test]
+    fn cache_limit_allow_zero_permits_zero() {
+        unsafe { env::set_var("__LEPITER_TEST_AZ_ZERO__", "0") };
+        let val = cache_limit_from_env_allow_zero("__LEPITER_TEST_AZ_ZERO__", 10);
+        assert_eq!(val, 0);
+        unsafe { env::remove_var("__LEPITER_TEST_AZ_ZERO__") };
+    }
+
+    #[test]
+    fn cache_limit_allow_zero_parses_valid_value() {
+        unsafe { env::set_var("__LEPITER_TEST_AZ_VALID__", "256") };
+        let val = cache_limit_from_env_allow_zero("__LEPITER_TEST_AZ_VALID__", 10);
+        assert_eq!(val, 256);
+        unsafe { env::remove_var("__LEPITER_TEST_AZ_VALID__") };
+    }
+
+    #[test]
+    fn cache_limit_allow_zero_default_zero_stays_zero() {
+        let val = cache_limit_from_env_allow_zero("__LEPITER_TEST_AZ_DEF0__", 0);
+        assert_eq!(val, 0);
+    }
+
+    // ── LruCache::new / capacity / len ─────────────────────────────
+
+    #[test]
+    fn new_cache_is_empty() {
+        let cache: LruCache<String, i32> = LruCache::new(10);
+        assert_eq!(cache.len(), 0);
+        assert_eq!(cache.capacity(), 10);
+    }
+
+    #[test]
+    fn zero_capacity_cache() {
+        let cache: LruCache<String, i32> = LruCache::new(0);
+        assert_eq!(cache.capacity(), 0);
+        assert_eq!(cache.len(), 0);
+    }
+
+    // ── insert / get / peek ────────────────────────────────────────
+
+    #[test]
+    fn insert_and_get() {
+        let mut cache = LruCache::new(10);
+        cache.insert("a".to_string(), 1);
+        assert_eq!(cache.get("a"), Some(&1));
+        assert_eq!(cache.len(), 1);
+    }
+
+    #[test]
+    fn get_missing_returns_none() {
+        let mut cache: LruCache<String, i32> = LruCache::new(10);
+        cache.insert("a".to_string(), 1);
+        assert_eq!(cache.get("b"), None);
+    }
+
+    #[test]
+    fn peek_does_not_change_order() {
+        let mut cache = LruCache::new(3);
+        cache.insert("a".to_string(), 1);
+        cache.insert("b".to_string(), 2);
+        cache.insert("c".to_string(), 3);
+
+        // Peek at "a" — should NOT move it to back.
+        assert_eq!(cache.peek("a"), Some(&1));
+
+        // Insert "d" — should evict "a" (oldest, since peek didn't touch it).
+        cache.insert("d".to_string(), 4);
+        assert_eq!(cache.peek("a"), None);
+        assert_eq!(cache.peek("b"), Some(&2));
+    }
+
+    #[test]
+    fn get_updates_lru_order() {
+        let mut cache = LruCache::new(3);
+        cache.insert("a".to_string(), 1);
+        cache.insert("b".to_string(), 2);
+        cache.insert("c".to_string(), 3);
+
+        // Access "a" via get — moves it to most-recently-used.
+        cache.get("a");
+
+        // Insert "d" — should evict "b" (now the oldest).
+        cache.insert("d".to_string(), 4);
+        assert_eq!(cache.peek("a"), Some(&1));
+        assert_eq!(cache.peek("b"), None);
+        assert_eq!(cache.peek("c"), Some(&3));
+        assert_eq!(cache.peek("d"), Some(&4));
+    }
+
+    // ── insert: update existing key ────────────────────────────────
+
+    #[test]
+    fn insert_existing_key_updates_value() {
+        let mut cache = LruCache::new(10);
+        cache.insert("key".to_string(), 1);
+        cache.insert("key".to_string(), 2);
+        assert_eq!(cache.get("key"), Some(&2));
+        assert_eq!(cache.len(), 1);
+    }
+
+    #[test]
+    fn insert_existing_key_refreshes_order() {
+        let mut cache = LruCache::new(3);
+        cache.insert("a".to_string(), 1);
+        cache.insert("b".to_string(), 2);
+        cache.insert("c".to_string(), 3);
+
+        // Re-insert "a" with a new value — should move it to back.
+        cache.insert("a".to_string(), 10);
+
+        // Insert "d" — should evict "b" (now oldest).
+        cache.insert("d".to_string(), 4);
+        assert_eq!(cache.peek("a"), Some(&10));
+        assert_eq!(cache.peek("b"), None);
+    }
+
+    // ── eviction ───────────────────────────────────────────────────
+
+    #[test]
+    fn eviction_at_capacity() {
+        let mut cache = LruCache::new(2);
+        cache.insert("a".to_string(), 1);
+        cache.insert("b".to_string(), 2);
+        assert_eq!(cache.len(), 2);
+
+        // Third insert should evict "a".
+        cache.insert("c".to_string(), 3);
+        assert_eq!(cache.len(), 2);
+        assert_eq!(cache.peek("a"), None);
+        assert_eq!(cache.peek("b"), Some(&2));
+        assert_eq!(cache.peek("c"), Some(&3));
+    }
+
+    #[test]
+    fn eviction_chain() {
+        let mut cache = LruCache::new(1);
+        cache.insert("a".to_string(), 1);
+        assert_eq!(cache.get("a"), Some(&1));
+
+        cache.insert("b".to_string(), 2);
+        assert_eq!(cache.get("a"), None);
+        assert_eq!(cache.get("b"), Some(&2));
+        assert_eq!(cache.len(), 1);
+
+        cache.insert("c".to_string(), 3);
+        assert_eq!(cache.get("b"), None);
+        assert_eq!(cache.get("c"), Some(&3));
+    }
+
+    // ── zero capacity: inserts rejected ────────────────────────────
+
+    #[test]
+    fn zero_capacity_rejects_inserts() {
+        let mut cache = LruCache::new(0);
+        cache.insert("a".to_string(), 1);
+        assert_eq!(cache.len(), 0);
+        assert_eq!(cache.get("a"), None);
+        assert_eq!(cache.peek("a"), None);
+    }
+
+    // ── touch ──────────────────────────────────────────────────────
+
+    #[test]
+    fn touch_present_key_returns_true() {
+        let mut cache = LruCache::new(10);
+        cache.insert("a".to_string(), 1);
+        assert!(cache.touch("a"));
+    }
+
+    #[test]
+    fn touch_absent_key_returns_false() {
+        let mut cache: LruCache<String, i32> = LruCache::new(10);
+        assert!(!cache.touch("missing"));
+    }
+
+    #[test]
+    fn touch_refreshes_lru_order() {
+        let mut cache = LruCache::new(3);
+        cache.insert("a".to_string(), 1);
+        cache.insert("b".to_string(), 2);
+        cache.insert("c".to_string(), 3);
+
+        // Touch "a" — makes it most-recently-used.
+        cache.touch("a");
+
+        // Insert "d" — should evict "b".
+        cache.insert("d".to_string(), 4);
+        assert_eq!(cache.peek("a"), Some(&1));
+        assert_eq!(cache.peek("b"), None);
+    }
+
+    // ── borrowed key lookups ───────────────────────────────────────
+
+    #[test]
+    fn get_with_str_key() {
+        let mut cache = LruCache::new(10);
+        cache.insert("hello".to_string(), 42);
+        // Look up with &str, not String.
+        assert_eq!(cache.get("hello"), Some(&42));
+    }
+
+    #[test]
+    fn peek_with_str_key() {
+        let mut cache = LruCache::new(10);
+        cache.insert("hello".to_string(), 42);
+        assert_eq!(cache.peek("hello"), Some(&42));
+    }
+
+    #[test]
+    fn touch_with_str_key() {
+        let mut cache = LruCache::new(10);
+        cache.insert("hello".to_string(), 42);
+        assert!(cache.touch("hello"));
+    }
+
+    // ── integer keys ───────────────────────────────────────────────
+
+    #[test]
+    fn integer_keys_work() {
+        let mut cache = LruCache::new(3);
+        cache.insert(1, "one");
+        cache.insert(2, "two");
+        cache.insert(3, "three");
+        assert_eq!(cache.get(&1), Some(&"one"));
+
+        cache.insert(4, "four");
+        assert_eq!(cache.peek(&1), Some(&"one")); // 1 was touched by get
+        assert_eq!(cache.peek(&2), None); // 2 was evicted
+    }
+}

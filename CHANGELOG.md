@@ -2,6 +2,12 @@
 
 all notable changes to this project are documented in this file.
 
+## Unreleased
+
+### fixed
+- transient plugin failures (timeout/crash) are no longer permanently cached in the LRU;
+  subsequent renders for the same snippet retry the plugin instead of returning a stale error
+
 ## 0.7.0 - 2026-04-26
 
 ### changed

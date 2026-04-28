@@ -332,7 +332,10 @@ impl PluginManager {
         }
         let err = last_err.unwrap_or_else(|| "plugin failed".to_string());
         let rendered = PluginRender::Error(format!("{}: {err}", self.processes[idx].name));
-        self.cache.insert(key, rendered.clone());
+        // Don't cache transport-level errors (timeout/crash) — they are
+        // transient and the plugin may recover after respawn.  Plugin-returned
+        // errors (resp.ok == false) are still cached above because they are
+        // deterministic for the same input.
         Some(rendered)
     }
 
@@ -546,6 +549,49 @@ mod tests {
             }
             other => panic!("expected Error, got: {other:?}"),
         }
+    }
+
+    #[test]
+    fn transient_error_not_cached() {
+        // Both attempts fail (hang → timeout → respawn with nonexistent
+        // binary → respawn fails → break).  The error must NOT be cached,
+        // so the same key can succeed on a later render.
+        let hang_script = "read line; sleep infinity";
+        let proc =
+            PluginProcess::spawn("bash", &["-c".to_string(), hang_script.to_string()]).unwrap();
+
+        let work_script =
+            r#"while read line; do echo '{"ok":true,"lines":["recovered"],"error":null}'; done"#;
+
+        let mut mgr = PluginManager::empty();
+        mgr.timeout = Duration::from_millis(100);
+        mgr.retries = 0; // no retries — fail immediately
+        mgr.processes.push(PluginHandle {
+            name: "test".to_string(),
+            binary: "bash".to_string(),
+            args: vec!["-c".to_string(), work_script.to_string()],
+            process: proc,
+        });
+        mgr.by_type.insert("testType".to_string(), 0);
+
+        let snippet = serde_json::json!({"same": "key"});
+
+        // First render: the initial process hangs and times out.  With
+        // retries=0 the loop runs once, respawns, then falls through to
+        // the error path.
+        let r1 = mgr.render("testType", &snippet);
+        assert!(
+            matches!(r1, Some(PluginRender::Error(_))),
+            "first render should fail"
+        );
+
+        // Second render with the SAME key: must retry the (now working)
+        // respawned plugin instead of returning a cached error.
+        let r2 = mgr.render("testType", &snippet);
+        assert!(
+            matches!(r2, Some(PluginRender::Lines(ref lines)) if lines == &["recovered"]),
+            "second render should succeed after recovery, got: {r2:?}"
+        );
     }
 
     #[test]

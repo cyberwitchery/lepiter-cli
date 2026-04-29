@@ -64,20 +64,13 @@ external targets:
 - urls are opened via the system opener (`open` crate)
 - failures are reported in the tui status line
 
-## open in gt
+## open externally
 
-press `O` in page mode to open the current page in GlamorousToolkit. this
-requires the `LEPITER_GT_OPEN_CMD` environment variable to be set to a shell
+press `O` in page mode to open the current page with an external command. this
+requires the `LEPITER_OPEN_CMD` environment variable to be set to a shell
 command. the command receives `LEPITER_PAGE_ID` (page uuid) and
 `LEPITER_PAGE_PATH` (absolute path to the `.lepiter` file) as environment
 variables.
-
-example using gt's http api:
-
-```bash
-export LEPITER_GT_OPEN_CMD='curl -s -X POST http://localhost:1725/api/evaluate \
-  -d "LeDatabasesRegistry defaultLogicalDatabase pageById: '\''$LEPITER_PAGE_ID'\''"'
-```
 
 ## caching
 
@@ -90,7 +83,7 @@ configure limits with env vars:
 
 - `LEPITER_TUI_PARSED_CACHE` (default `128`)
 - `LEPITER_TUI_RENDERED_CACHE` (default `128`)
-- `LEPITER_GT_OPEN_CMD`: shell command to open a page in gt (see "open in gt" above)
+- `LEPITER_OPEN_CMD`: shell command to open a page externally (see "open externally" above)
 
 the list footer shows cache occupancy and full-text index progress.
 
@@ -123,7 +116,7 @@ the list footer shows cache occupancy and full-text index progress.
 | `h` | go back in link history |
 | `b` | back to list |
 | `e` | enter edit mode |
-| `O` | open current page in GlamorousToolkit (`LEPITER_GT_OPEN_CMD`) |
+| `O` | open current page externally (`LEPITER_OPEN_CMD`) |
 | `esc` | back to list |
 | `q` | quit |
 

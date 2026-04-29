@@ -122,7 +122,7 @@ impl App {
                 self.back_in_history();
             }
             KeyCode::Char('O') if self.mode == Mode::Page => {
-                self.open_in_gt();
+                self.open_externally();
             }
             KeyCode::Tab if self.mode == Mode::Page => {
                 self.move_link_selection(1);
@@ -1036,14 +1036,14 @@ mod tests {
         assert_eq!(app.edit.as_ref().unwrap().selected, 0);
     }
 
-    // ── Open in GT ─────────────────────────────────────────────────
+    // ── Open externally ────────────────────────────────────────────
 
     #[test]
-    fn page_shift_o_triggers_open_in_gt() {
+    fn page_shift_o_triggers_open_externally() {
         let mut app = make_app_on_page();
         app.handle_key(key(KeyCode::Char('O')));
-        // Without LEPITER_GT_OPEN_CMD set, the method prompts the user.
-        assert!(app.status.contains("LEPITER_GT_OPEN_CMD"));
+        // Without LEPITER_OPEN_CMD set, the method prompts the user.
+        assert!(app.status.contains("LEPITER_OPEN_CMD"));
     }
 
     #[test]

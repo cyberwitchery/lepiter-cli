@@ -5,8 +5,8 @@ all notable changes to this project are documented in this file.
 ## Unreleased
 
 ### added
-- `O` key in page mode opens the current page in GlamorousToolkit via a user-configured
-  command (`LEPITER_GT_OPEN_CMD`); the command receives the page id and file path as
+- `O` key in page mode opens the current page via a user-configured external
+  command (`LEPITER_OPEN_CMD`); the command receives the page id and file path as
   environment variables (`LEPITER_PAGE_ID`, `LEPITER_PAGE_PATH`)
 
 ### fixed

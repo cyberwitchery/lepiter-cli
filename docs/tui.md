@@ -83,7 +83,6 @@ configure limits with env vars:
 
 - `LEPITER_TUI_PARSED_CACHE` (default `128`)
 - `LEPITER_TUI_RENDERED_CACHE` (default `128`)
-- `LEPITER_OPEN_CMD`: shell command to open a page externally (see "open externally" above)
 
 the list footer shows cache occupancy and full-text index progress.
 

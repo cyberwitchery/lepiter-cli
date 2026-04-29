@@ -368,7 +368,7 @@ impl App {
             return;
         };
         let cmd = match std::env::var("LEPITER_OPEN_CMD") {
-            Ok(cmd) if !cmd.is_empty() => cmd,
+            Ok(cmd) if !cmd.trim().is_empty() => cmd,
             _ => {
                 self.status = "set LEPITER_OPEN_CMD to enable open-externally".to_string();
                 return;

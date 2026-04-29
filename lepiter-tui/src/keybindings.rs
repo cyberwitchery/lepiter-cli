@@ -121,6 +121,9 @@ impl App {
             KeyCode::Char('h') if self.mode == Mode::Page => {
                 self.back_in_history();
             }
+            KeyCode::Char('O') if self.mode == Mode::Page => {
+                self.open_in_gt();
+            }
             KeyCode::Tab if self.mode == Mode::Page => {
                 self.move_link_selection(1);
             }
@@ -1031,6 +1034,23 @@ mod tests {
         app.edit = Some(edit);
         app.handle_key(key(KeyCode::BackTab));
         assert_eq!(app.edit.as_ref().unwrap().selected, 0);
+    }
+
+    // ── Open in GT ─────────────────────────────────────────────────
+
+    #[test]
+    fn page_shift_o_triggers_open_in_gt() {
+        let mut app = make_app_on_page();
+        app.handle_key(key(KeyCode::Char('O')));
+        // Without LEPITER_GT_OPEN_CMD set, the method prompts the user.
+        assert!(app.status.contains("LEPITER_GT_OPEN_CMD"));
+    }
+
+    #[test]
+    fn list_shift_o_is_noop() {
+        let mut app = make_app();
+        app.handle_key(key(KeyCode::Char('O')));
+        assert!(app.status.is_empty());
     }
 
     // ── Mode transitions ───────────────────────────────────────────

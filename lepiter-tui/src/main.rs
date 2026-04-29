@@ -21,6 +21,8 @@
 //! - `LEPITER_TUI_PARSED_CACHE` / `LEPITER_TUI_RENDERED_CACHE`: cache sizes
 //! - `LEPITER_EDIT_AUTOSAVE_MS`: edit autosave delay
 //! - `LEPITER_PLUGIN_CONFIG`: external snippet renderer config
+//! - `LEPITER_GT_OPEN_CMD`: shell command to open a page in gt (receives
+//!   `LEPITER_PAGE_ID` and `LEPITER_PAGE_PATH` as env vars)
 //!
 //! # docs
 //!
@@ -354,6 +356,36 @@ impl App {
         let max = page.links.len() as isize - 1;
         let next = (self.selected_link as isize + delta).clamp(0, max);
         self.selected_link = next as usize;
+    }
+
+    fn open_in_gt(&mut self) {
+        let Some(page_id) = &self.opened else {
+            self.status = "no page open".to_string();
+            return;
+        };
+        let Some(meta) = self.index.pages.get(page_id) else {
+            self.status = "page not found in index".to_string();
+            return;
+        };
+        let cmd = match std::env::var("LEPITER_GT_OPEN_CMD") {
+            Ok(cmd) if !cmd.is_empty() => cmd,
+            _ => {
+                self.status = "set LEPITER_GT_OPEN_CMD to enable open-in-gt".to_string();
+                return;
+            }
+        };
+        match std::process::Command::new("sh")
+            .args(["-c", &cmd])
+            .env("LEPITER_PAGE_ID", page_id)
+            .env("LEPITER_PAGE_PATH", &meta.path)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        {
+            Ok(_) => self.status = "opened in gt".to_string(),
+            Err(err) => self.status = format!("failed to open in gt: {err:#}"),
+        }
     }
 
     fn follow_selected_link(&mut self) {
@@ -1462,6 +1494,7 @@ fn render_help_overlay(frame: &mut Frame, mode: Mode) {
                     ("Tab / Shift+Tab", "next / prev link"),
                     ("Enter", "follow link"),
                     ("e", "edit page"),
+                    ("O", "open in gt"),
                     ("h", "back in history"),
                     ("b", "back to list"),
                 ],

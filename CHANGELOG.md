@@ -4,6 +4,11 @@ all notable changes to this project are documented in this file.
 
 ## Unreleased
 
+### added
+- `O` key in page mode opens the current page via a user-configured external
+  command (`LEPITER_OPEN_CMD`); the command receives the page id and file path as
+  environment variables (`LEPITER_PAGE_ID`, `LEPITER_PAGE_PATH`)
+
 ### fixed
 - transient plugin failures (timeout/crash) are no longer permanently cached in the LRU;
   subsequent renders for the same snippet retry the plugin instead of returning a stale error

@@ -64,6 +64,14 @@ external targets:
 - urls are opened via the system opener (`open` crate)
 - failures are reported in the tui status line
 
+## open externally
+
+press `O` in page mode to open the current page with an external command. this
+requires the `LEPITER_OPEN_CMD` environment variable to be set to a shell
+command. the command receives `LEPITER_PAGE_ID` (page uuid) and
+`LEPITER_PAGE_PATH` (absolute path to the `.lepiter` file) as environment
+variables.
+
 ## caching
 
 tui keeps bounded lru caches:
@@ -107,6 +115,7 @@ the list footer shows cache occupancy and full-text index progress.
 | `h` | go back in link history |
 | `b` | back to list |
 | `e` | enter edit mode |
+| `O` | open current page externally (`LEPITER_OPEN_CMD`) |
 | `esc` | back to list |
 | `q` | quit |
 

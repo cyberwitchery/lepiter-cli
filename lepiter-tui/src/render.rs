@@ -311,16 +311,20 @@ pub fn highlight_code_line(line: &str, language: Option<&str>) -> Line<'static> 
     let spans: Vec<Span<'static>> = tokens
         .into_iter()
         .map(|tok| match tok {
-            CodeToken::Comment(s) => Span::styled(s, Style::default().fg(Color::DarkGray)),
-            CodeToken::StringLit(s) => Span::styled(s, Style::default().fg(Color::Green)),
-            CodeToken::Number(s) => Span::styled(s, Style::default().fg(Color::Yellow)),
+            CodeToken::Comment(s) => {
+                Span::styled(s.to_owned(), Style::default().fg(Color::DarkGray))
+            }
+            CodeToken::StringLit(s) => {
+                Span::styled(s.to_owned(), Style::default().fg(Color::Green))
+            }
+            CodeToken::Number(s) => Span::styled(s.to_owned(), Style::default().fg(Color::Yellow)),
             CodeToken::Keyword(s) => Span::styled(
-                s,
+                s.to_owned(),
                 Style::default()
                     .fg(Color::LightMagenta)
                     .add_modifier(Modifier::BOLD),
             ),
-            CodeToken::Ident(s) => Span::raw(s),
+            CodeToken::Ident(s) => Span::raw(s.to_owned()),
             CodeToken::Punct(c) => Span::raw(c.to_string()),
         })
         .collect();

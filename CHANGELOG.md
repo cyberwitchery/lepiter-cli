@@ -9,6 +9,10 @@ all notable changes to this project are documented in this file.
   command (`LEPITER_OPEN_CMD`); the command receives the page id and file path as
   environment variables (`LEPITER_PAGE_ID`, `LEPITER_PAGE_PATH`)
 
+### changed
+- syntax highlighting tokenizer no longer allocates a `String` per token or a `Vec<char>` per
+  line; `CodeToken` now borrows `&str` slices directly from the source text
+
 ### fixed
 - transient plugin failures (timeout/crash) are no longer permanently cached in the LRU;
   subsequent renders for the same snippet retry the plugin instead of returning a stale error

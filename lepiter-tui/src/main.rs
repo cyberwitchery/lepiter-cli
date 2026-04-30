@@ -1108,11 +1108,11 @@ fn highlight_code_line_ansi(line: &str, language: Option<&str>) -> String {
     let mut out = String::new();
     for tok in tokens {
         match tok {
-            CodeToken::Comment(s) => out.push_str(&ansi("90", &s)),
-            CodeToken::StringLit(s) => out.push_str(&ansi("32", &s)),
-            CodeToken::Number(s) => out.push_str(&ansi("33", &s)),
-            CodeToken::Keyword(s) => out.push_str(&ansi("1;35", &s)),
-            CodeToken::Ident(s) => out.push_str(&s),
+            CodeToken::Comment(s) => out.push_str(&ansi("90", s)),
+            CodeToken::StringLit(s) => out.push_str(&ansi("32", s)),
+            CodeToken::Number(s) => out.push_str(&ansi("33", s)),
+            CodeToken::Keyword(s) => out.push_str(&ansi("1;35", s)),
+            CodeToken::Ident(s) => out.push_str(s),
             CodeToken::Punct(c) => out.push(c),
         }
     }

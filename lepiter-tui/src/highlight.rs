@@ -2,18 +2,21 @@
 //! (ratatui spans) and the cli pretty-printer (ansi escape codes).
 
 /// a single token produced by the code-line tokenizer.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CodeToken {
+///
+/// tokens borrow directly from the input line, avoiding per-token
+/// `String` allocations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CodeToken<'a> {
     /// rest-of-line comment (includes the comment marker).
-    Comment(String),
+    Comment(&'a str),
     /// string literal including its quotes.
-    StringLit(String),
+    StringLit(&'a str),
     /// numeric literal (digits and dots).
-    Number(String),
+    Number(&'a str),
     /// a language keyword.
-    Keyword(String),
+    Keyword(&'a str),
     /// a non-keyword identifier.
-    Ident(String),
+    Ident(&'a str),
     /// a single punctuation / operator / whitespace character.
     Punct(char),
 }
@@ -21,79 +24,83 @@ pub enum CodeToken {
 /// tokenise a single source line into [`CodeToken`]s.
 ///
 /// `language` controls which comment syntax and keyword list to use.
-pub fn tokenize_code_line(line: &str, language: Option<&str>) -> Vec<CodeToken> {
+///
+/// tokens borrow directly from `line` — no per-token `String` is allocated.
+/// all branch conditions test ascii characters, which are single-byte in
+/// utf-8, so byte-level indexing is safe.  only the `Punct` fallback needs
+/// to decode a full `char` (for multi-byte non-ascii punctuation).
+pub fn tokenize_code_line<'a>(line: &'a str, language: Option<&str>) -> Vec<CodeToken<'a>> {
     let keywords = keywords_for_language(language.unwrap_or_default());
-    let chars: Vec<char> = line.chars().collect();
+    let bytes = line.as_bytes();
     let mut tokens = Vec::new();
     let mut i = 0;
 
-    while i < chars.len() {
-        let c = chars[i];
+    while i < bytes.len() {
+        let b = bytes[i];
 
         // line comments: # for python / shell / bash
-        if matches!(language, Some("python") | Some("shell") | Some("bash")) && c == '#' {
-            let rest: String = chars[i..].iter().collect();
-            tokens.push(CodeToken::Comment(rest));
+        if matches!(language, Some("python") | Some("shell") | Some("bash")) && b == b'#' {
+            tokens.push(CodeToken::Comment(&line[i..]));
             return tokens;
         }
 
         // line comments: // for javascript
-        if language == Some("javascript") && i + 1 < chars.len() && c == '/' && chars[i + 1] == '/'
+        if language == Some("javascript")
+            && i + 1 < bytes.len()
+            && b == b'/'
+            && bytes[i + 1] == b'/'
         {
-            let rest: String = chars[i..].iter().collect();
-            tokens.push(CodeToken::Comment(rest));
+            tokens.push(CodeToken::Comment(&line[i..]));
             return tokens;
         }
 
         // string literals
-        if c == '"' || c == '\'' {
-            let quote = c;
+        if b == b'"' || b == b'\'' {
+            let quote = b;
             let start = i;
             i += 1;
             let mut escaped = false;
-            while i < chars.len() {
+            while i < bytes.len() {
                 if escaped {
                     escaped = false;
                     i += 1;
                     continue;
                 }
-                if chars[i] == '\\' {
+                if bytes[i] == b'\\' {
                     escaped = true;
                     i += 1;
                     continue;
                 }
-                if chars[i] == quote {
+                if bytes[i] == quote {
                     i += 1;
                     break;
                 }
                 i += 1;
             }
-            let s: String = chars[start..i].iter().collect();
-            tokens.push(CodeToken::StringLit(s));
+            tokens.push(CodeToken::StringLit(&line[start..i]));
             continue;
         }
 
         // numeric literals
-        if c.is_ascii_digit() {
+        if b.is_ascii_digit() {
             let start = i;
             i += 1;
-            while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '.') {
+            while i < bytes.len() && (bytes[i].is_ascii_digit() || bytes[i] == b'.') {
                 i += 1;
             }
-            let s: String = chars[start..i].iter().collect();
-            tokens.push(CodeToken::Number(s));
+            tokens.push(CodeToken::Number(&line[start..i]));
             continue;
         }
 
         // identifiers and keywords
-        if c.is_ascii_alphabetic() || c == '_' {
+        if b.is_ascii_alphabetic() || b == b'_' {
             let start = i;
             i += 1;
-            while i < chars.len() && (chars[i].is_ascii_alphanumeric() || chars[i] == '_') {
+            while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
                 i += 1;
             }
-            let word: String = chars[start..i].iter().collect();
-            if keywords.contains(&word.as_str()) {
+            let word = &line[start..i];
+            if keywords.contains(&word) {
                 tokens.push(CodeToken::Keyword(word));
             } else {
                 tokens.push(CodeToken::Ident(word));
@@ -101,8 +108,10 @@ pub fn tokenize_code_line(line: &str, language: Option<&str>) -> Vec<CodeToken> 
             continue;
         }
 
-        tokens.push(CodeToken::Punct(c));
-        i += 1;
+        // punctuation / whitespace / non-ascii: decode one full char
+        let ch = line[i..].chars().next().unwrap();
+        tokens.push(CodeToken::Punct(ch));
+        i += ch.len_utf8();
     }
 
     tokens
@@ -160,7 +169,7 @@ mod tests {
         let strings: Vec<_> = tokens
             .iter()
             .filter_map(|t| match t {
-                CodeToken::StringLit(s) => Some(s.as_str()),
+                CodeToken::StringLit(s) => Some(*s),
                 _ => None,
             })
             .collect();
@@ -173,7 +182,7 @@ mod tests {
         let strings: Vec<_> = tokens
             .iter()
             .filter_map(|t| match t {
-                CodeToken::StringLit(s) => Some(s.as_str()),
+                CodeToken::StringLit(s) => Some(*s),
                 _ => None,
             })
             .collect();
@@ -185,7 +194,7 @@ mod tests {
         let tokens = tokenize_code_line("x = 1 # comment", Some("python"));
         assert!(tokens.iter().any(|t| matches!(t, CodeToken::Comment(_))));
         let comment = tokens.last().unwrap();
-        assert_eq!(comment, &CodeToken::Comment("# comment".to_string()));
+        assert_eq!(comment, &CodeToken::Comment("# comment"));
     }
 
     #[test]
@@ -197,8 +206,8 @@ mod tests {
     #[test]
     fn keyword_detection() {
         let tokens = tokenize_code_line("def foo():", Some("python"));
-        assert_eq!(tokens[0], CodeToken::Keyword("def".to_string()));
-        assert_eq!(tokens[2], CodeToken::Ident("foo".to_string()));
+        assert_eq!(tokens[0], CodeToken::Keyword("def"));
+        assert_eq!(tokens[2], CodeToken::Ident("foo"));
     }
 
     #[test]
@@ -207,7 +216,7 @@ mod tests {
         let nums: Vec<_> = tokens
             .iter()
             .filter_map(|t| match t {
-                CodeToken::Number(s) => Some(s.as_str()),
+                CodeToken::Number(s) => Some(*s),
                 _ => None,
             })
             .collect();

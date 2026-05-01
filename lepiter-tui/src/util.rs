@@ -28,7 +28,7 @@ pub struct LruCache<K, V> {
 
 impl<K, V> LruCache<K, V>
 where
-    K: Eq + Hash + Clone,
+    K: Eq + Hash,
 {
     pub fn new(max_entries: usize) -> Self {
         Self {

@@ -1,9 +1,10 @@
 //! small helpers shared across tui modules.
 
 use std::borrow::Borrow;
-use std::collections::{HashMap, VecDeque};
 use std::env;
 use std::hash::Hash;
+
+use indexmap::IndexMap;
 
 pub fn cache_limit_from_env(var: &str, default: usize) -> usize {
     env::var(var)
@@ -21,8 +22,7 @@ pub fn cache_limit_from_env_allow_zero(var: &str, default: usize) -> usize {
 }
 
 pub struct LruCache<K, V> {
-    map: HashMap<K, V>,
-    order: VecDeque<K>,
+    map: IndexMap<K, V>,
     max_entries: usize,
 }
 
@@ -32,8 +32,7 @@ where
 {
     pub fn new(max_entries: usize) -> Self {
         Self {
-            map: HashMap::new(),
-            order: VecDeque::new(),
+            map: IndexMap::new(),
             max_entries,
         }
     }
@@ -44,8 +43,8 @@ where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        if self.map.contains_key(key) {
-            self.touch_order(key);
+        if let Some(index) = self.map.get_index_of(key) {
+            self.move_to_back(index);
             self.map.get(key)
         } else {
             None
@@ -67,8 +66,8 @@ where
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        if self.map.contains_key(key) {
-            self.touch_order(key);
+        if let Some(index) = self.map.get_index_of(key) {
+            self.move_to_back(index);
             true
         } else {
             false
@@ -82,19 +81,16 @@ where
             return;
         }
 
-        if self.map.contains_key(&key) {
-            self.map.insert(key.clone(), value);
-            self.touch_order(&key);
+        if let Some(index) = self.map.get_index_of(&key) {
+            *self.map.get_index_mut(index).unwrap().1 = value;
+            self.move_to_back(index);
             return;
         }
 
-        if self.map.len() >= self.max_entries
-            && let Some(oldest) = self.order.pop_front()
-        {
-            self.map.remove(&oldest);
+        if self.map.len() >= self.max_entries {
+            self.map.shift_remove_index(0);
         }
 
-        self.order.push_back(key.clone());
         self.map.insert(key, value);
     }
 
@@ -107,14 +103,10 @@ where
         self.max_entries
     }
 
-    fn touch_order<Q>(&mut self, key: &Q)
-    where
-        K: Borrow<Q>,
-        Q: Eq + ?Sized,
-    {
-        if let Some(pos) = self.order.iter().position(|x| x.borrow() == key) {
-            let k = self.order.remove(pos).unwrap();
-            self.order.push_back(k);
+    fn move_to_back(&mut self, index: usize) {
+        let last = self.map.len() - 1;
+        if index != last {
+            self.map.move_index(index, last);
         }
     }
 }

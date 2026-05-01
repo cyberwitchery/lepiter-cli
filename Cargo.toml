@@ -11,6 +11,7 @@ homepage = "https://github.com/cyberwitchery/lepiter-cli"
 
 [workspace.dependencies]
 anyhow = "1"
+indexmap = "2"
 chrono = { version = "0.4", features = ["serde"] }
 crossterm = "0.29"
 lepiter-core = { version = "0.7.0", path = "lepiter-core" }

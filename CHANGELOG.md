@@ -10,6 +10,8 @@ all notable changes to this project are documented in this file.
   environment variables (`LEPITER_PAGE_ID`, `LEPITER_PAGE_PATH`)
 
 ### changed
+- `LruCache` internals replaced: `HashMap` + `VecDeque` consolidated into a single `IndexMap`,
+  eliminating duplicate key storage and improving cache-line behaviour for LRU promotion
 - syntax highlighting tokenizer no longer allocates a `String` per token or a `Vec<char>` per
   line; `CodeToken` now borrows `&str` slices directly from the source text
 

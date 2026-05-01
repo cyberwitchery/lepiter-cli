@@ -12,6 +12,11 @@ all notable changes to this project are documented in this file.
 ### changed
 - `LruCache` internals replaced: `HashMap` + `VecDeque` consolidated into a single `IndexMap`,
   eliminating duplicate key storage and improving cache-line behaviour for LRU promotion
+- `extract_type`, `parse_heading`, and `is_code_snippet` are now public in lepiter-core;
+  the TUI reuses them instead of maintaining separate copies
+- the TUI now recognises `exampleSnippet`, `changesSnippet`, and
+  `robocoderMetamodelSnippet` as editable code snippets (previously only 5 of 8 code
+  snippet types were handled)
 - syntax highlighting tokenizer no longer allocates a `String` per token or a `Vec<char>` per
   line; `CodeToken` now borrows `&str` slices directly from the source text
 

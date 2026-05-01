@@ -12,11 +12,13 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use serde_json::Value;
 
-use lepiter_core::{Node, PageId, normalize_text, parse_node_from_raw};
+use lepiter_core::{
+    Node, PageId, extract_type, is_code_snippet, normalize_text, parse_heading, parse_node_from_raw,
+};
 
 use crate::plugins::PluginManager;
 use crate::render::{
-    highlight_code_line, parse_inline_annotations, render_node, sanitize_for_terminal,
+    parse_inline_annotations, render_code_block, render_node, sanitize_for_terminal,
 };
 
 pub struct EditState {
@@ -261,14 +263,7 @@ pub fn editable_field(typ: &str, item: &Value) -> (bool, Option<String>) {
         return (true, Some(field.to_string()));
     }
 
-    if matches!(
-        typ,
-        "pharoSnippet"
-            | "pythonSnippet"
-            | "javascriptSnippet"
-            | "shellCommandSnippet"
-            | "gemstoneSnippet"
-    ) {
+    if is_code_snippet(typ) {
         let field = pick_first_field(item, CODE_FIELDS).unwrap_or("code");
         return (true, Some(field.to_string()));
     }
@@ -486,38 +481,8 @@ pub fn wrap_lines_with_cursor_and_highlight(
     (out, cursor_out, highlight_out)
 }
 
-fn extract_type_raw(item: &Value) -> Option<&str> {
-    item.get("type")
-        .and_then(Value::as_str)
-        .or_else(|| item.get("__type").and_then(Value::as_str))
-}
-
 fn is_list_snippet(item: &Value) -> bool {
-    matches!(extract_type_raw(item), Some("listSnippet"))
-}
-
-fn is_code_snippet(typ: &str) -> bool {
-    matches!(
-        typ,
-        "pharoSnippet"
-            | "pythonSnippet"
-            | "javascriptSnippet"
-            | "shellCommandSnippet"
-            | "gemstoneSnippet"
-    )
-}
-
-fn parse_heading_line(input: &str) -> Option<u8> {
-    let trimmed = input.trim_start();
-    let hashes = trimmed.chars().take_while(|c| *c == '#').count();
-    if hashes == 0 {
-        return None;
-    }
-    let rest = trimmed[hashes..].trim_start();
-    if rest.is_empty() {
-        return None;
-    }
-    Some(hashes.min(6) as u8)
+    matches!(extract_type(item), Some("listSnippet"))
 }
 
 fn render_edit_text_lines(
@@ -529,7 +494,7 @@ fn render_edit_text_lines(
     for raw_line in normalize_text(text).lines() {
         has_line = true;
         let line = sanitize_for_terminal(raw_line);
-        if let Some(level) = parse_heading_line(&line) {
+        if let Some((level, _)) = parse_heading(&line) {
             let style = match level {
                 1 => Style::default()
                     .fg(Color::Cyan)
@@ -556,22 +521,6 @@ fn render_edit_text_lines(
     if !has_line {
         out.push(Line::raw(""));
     }
-    out.push(Line::raw(""));
-}
-
-fn render_code_block(language: Option<&str>, code: &str, out: &mut Vec<Line<'static>>) {
-    let title = language.unwrap_or("code");
-    out.push(Line::from(Span::styled(
-        format!("```{title}"),
-        Style::default().fg(Color::DarkGray),
-    )));
-    for line in normalize_text(code).lines() {
-        out.push(highlight_code_line(&sanitize_for_terminal(line), language));
-    }
-    out.push(Line::from(Span::styled(
-        "```".to_string(),
-        Style::default().fg(Color::DarkGray),
-    )));
     out.push(Line::raw(""));
 }
 
@@ -727,7 +676,7 @@ fn render_raw_item_with_highlight(
         let current = edit.current();
         let typ = current
             .map(|s| s.typ.as_str())
-            .or_else(|| extract_type_raw(item))
+            .or_else(|| extract_type(item))
             .unwrap_or("");
         if typ == "textSnippet" {
             render_edit_text_lines(&edit.buffer, ctx.links, ctx.out);

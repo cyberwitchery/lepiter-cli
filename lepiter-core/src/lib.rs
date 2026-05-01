@@ -708,7 +708,7 @@ fn parse_tags(value: Option<&Value>) -> Vec<String> {
 fn parse_item_recursive(item: &Value, out: &mut Vec<Node>) {
     let typ = extract_type(item);
     out.push(parse_node(item));
-    if matches!(typ.as_deref(), Some("listSnippet")) {
+    if matches!(typ, Some("listSnippet")) {
         // list snippets already materialize children into Node::List items.
         return;
     }
@@ -726,7 +726,7 @@ fn parse_item_recursive(item: &Value, out: &mut Vec<Node>) {
 fn parse_node(item: &Value) -> Node {
     let typ = extract_type(item);
 
-    match typ.as_deref() {
+    match typ {
         Some("textSnippet") => parse_text_like_node(item),
         Some("quoteSnippet") | Some("blockQuoteSnippet") | Some("commentSnippet") => Node::Quote {
             text: extract_text(item).unwrap_or_default(),
@@ -737,16 +737,7 @@ fn parse_node(item: &Value) -> Node {
         Some("elementSnippet") => parse_element_node(item),
         Some("pharoRewrite") => parse_rewrite_node(item),
         Some("wordSnippet") => parse_word_node(item),
-        Some(
-            t @ ("pharoSnippet"
-            | "pythonSnippet"
-            | "javascriptSnippet"
-            | "shellCommandSnippet"
-            | "gemstoneSnippet"
-            | "exampleSnippet"
-            | "changesSnippet"
-            | "robocoderMetamodelSnippet"),
-        ) => Node::Code {
+        Some(t) if is_code_snippet(t) => Node::Code {
             language: infer_language(Some(t)),
             code: extract_code(item)
                 .or_else(|| extract_text(item))
@@ -983,7 +974,8 @@ fn collect_text_fragments(value: &Value, out: &mut Vec<String>, depth: usize, re
     }
 }
 
-fn parse_heading(input: &str) -> Option<(u8, String)> {
+/// Parses a markdown-style heading line, returning the level (1–6) and text.
+pub fn parse_heading(input: &str) -> Option<(u8, String)> {
     let trimmed = input.trim();
     let hashes = trimmed.chars().take_while(|c| *c == '#').count();
     if hashes == 0 {
@@ -996,15 +988,26 @@ fn parse_heading(input: &str) -> Option<(u8, String)> {
     Some((hashes.min(6) as u8, rest.to_string()))
 }
 
-fn extract_type(item: &Value) -> Option<String> {
+/// Extracts the snippet type from a JSON value, checking `"type"` then `"__type"`.
+pub fn extract_type(item: &Value) -> Option<&str> {
     item.get("type")
         .and_then(Value::as_str)
-        .map(ToOwned::to_owned)
-        .or_else(|| {
-            item.get("__type")
-                .and_then(Value::as_str)
-                .map(ToOwned::to_owned)
-        })
+        .or_else(|| item.get("__type").and_then(Value::as_str))
+}
+
+/// Returns `true` if the given snippet type name is a code snippet.
+pub fn is_code_snippet(typ: &str) -> bool {
+    matches!(
+        typ,
+        "pharoSnippet"
+            | "pythonSnippet"
+            | "javascriptSnippet"
+            | "shellCommandSnippet"
+            | "gemstoneSnippet"
+            | "exampleSnippet"
+            | "changesSnippet"
+            | "robocoderMetamodelSnippet"
+    )
 }
 
 fn extract_text(item: &Value) -> Option<String> {
@@ -1168,11 +1171,7 @@ pub fn collect_node_types_in_file(path: &Path) -> Result<HashMap<String, usize>>
 fn collect_node_types_value(value: &Value, out: &mut HashMap<String, usize>) {
     match value {
         Value::Object(map) => {
-            if let Some(typ) = map
-                .get("type")
-                .and_then(Value::as_str)
-                .or_else(|| map.get("__type").and_then(Value::as_str))
-            {
+            if let Some(typ) = extract_type(value) {
                 *out.entry(typ.to_string()).or_insert(0) += 1;
             }
             for v in map.values() {

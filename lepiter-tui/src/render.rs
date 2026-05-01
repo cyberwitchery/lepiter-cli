@@ -85,22 +85,7 @@ pub fn render_node(
             out.push(Line::raw(""));
         }
         Node::Code { language, code } => {
-            let title = language.clone().unwrap_or_else(|| "code".to_string());
-            out.push(Line::from(Span::styled(
-                format!("```{title}"),
-                Style::default().fg(Color::DarkGray),
-            )));
-            for line in normalize_text(code).lines() {
-                out.push(highlight_code_line(
-                    &sanitize_for_terminal(line),
-                    language.as_deref(),
-                ));
-            }
-            out.push(Line::from(Span::styled(
-                "```".to_string(),
-                Style::default().fg(Color::DarkGray),
-            )));
-            out.push(Line::raw(""));
+            render_code_block(language.as_deref(), code, out);
         }
         Node::Rewrite {
             language,
@@ -304,6 +289,22 @@ fn parse_inline_markdown(text: &str, links: &mut Vec<LinkTarget>) -> Line<'stati
 
 pub fn parse_inline_annotations(text: &str) -> Line<'static> {
     Line::from(render_inline_to_spans(parse_inline(text), None))
+}
+
+pub fn render_code_block(language: Option<&str>, code: &str, out: &mut Vec<Line<'static>>) {
+    let title = language.unwrap_or("code");
+    out.push(Line::from(Span::styled(
+        format!("```{title}"),
+        Style::default().fg(Color::DarkGray),
+    )));
+    for line in normalize_text(code).lines() {
+        out.push(highlight_code_line(&sanitize_for_terminal(line), language));
+    }
+    out.push(Line::from(Span::styled(
+        "```".to_string(),
+        Style::default().fg(Color::DarkGray),
+    )));
+    out.push(Line::raw(""));
 }
 
 pub fn highlight_code_line(line: &str, language: Option<&str>) -> Line<'static> {

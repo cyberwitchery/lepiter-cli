@@ -1097,9 +1097,18 @@ pub fn render_nodes_to_text(nodes: &[Node]) -> String {
             }
             Node::List { items } => {
                 for item in items {
-                    out.push_str("- ");
-                    out.push_str(render_nodes_to_text(item).trim());
-                    out.push('\n');
+                    let rendered = render_nodes_to_text(item);
+                    let mut lines = rendered.trim().lines();
+                    if let Some(first) = lines.next() {
+                        out.push_str("- ");
+                        out.push_str(first);
+                        out.push('\n');
+                        for line in lines {
+                            out.push_str("  ");
+                            out.push_str(line);
+                            out.push('\n');
+                        }
+                    }
                 }
                 out.push('\n');
             }
@@ -1315,6 +1324,56 @@ mod tests {
         assert!(text.contains("-a"));
         assert!(text.contains("+b"));
         assert!(text.contains("[[unknown: weird]]"));
+    }
+
+    #[test]
+    fn render_list_single_line_items() {
+        let text = render_nodes_to_text(&[Node::List {
+            items: vec![
+                vec![Node::Paragraph {
+                    text: "first".to_string(),
+                }],
+                vec![Node::Paragraph {
+                    text: "second".to_string(),
+                }],
+            ],
+        }]);
+        assert_eq!(text, "- first\n- second\n\n");
+    }
+
+    #[test]
+    fn render_list_item_with_code_block() {
+        let text = render_nodes_to_text(&[Node::List {
+            items: vec![vec![Node::Code {
+                language: Some("py".to_string()),
+                code: "x = 1\ny = 2".to_string(),
+            }]],
+        }]);
+        assert_eq!(text, "- ```py\n  x = 1\n  y = 2\n  ```\n\n");
+    }
+
+    #[test]
+    fn render_list_item_with_multiple_nodes() {
+        let text = render_nodes_to_text(&[Node::List {
+            items: vec![vec![
+                Node::Paragraph {
+                    text: "intro".to_string(),
+                },
+                Node::Code {
+                    language: None,
+                    code: "code".to_string(),
+                },
+            ]],
+        }]);
+        // First line starts with "- ", continuation lines with "  "
+        let lines: Vec<&str> = text.trim().lines().collect();
+        assert_eq!(lines[0], "- intro");
+        for line in &lines[1..] {
+            assert!(
+                line.starts_with("  "),
+                "continuation line not indented: {line:?}"
+            );
+        }
     }
 
     #[test]

@@ -212,6 +212,9 @@ impl EditState {
             .with_context(|| format!("failed to create temp file in {}", dir.display()))?;
         tmp.write_all(&bytes)
             .with_context(|| format!("failed to write temp file for {}", self.path.display()))?;
+        tmp.as_file()
+            .sync_all()
+            .with_context(|| format!("failed to fsync temp file for {}", self.path.display()))?;
         tmp.persist(&self.path)
             .with_context(|| format!("failed to persist temp file to {}", self.path.display()))?;
 

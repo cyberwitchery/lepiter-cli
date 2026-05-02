@@ -3,7 +3,7 @@
 
 use std::collections::VecDeque;
 use std::fs::File;
-use std::io::BufReader;
+use std::io::{BufReader, Write};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -196,8 +196,25 @@ impl EditState {
 
     pub fn save_to_disk(&mut self) -> Result<()> {
         let bytes = serde_json::to_vec_pretty(&self.raw)?;
-        std::fs::write(&self.path, bytes)
-            .with_context(|| format!("failed to save {}", self.path.display()))?;
+
+        // Validate the serialized JSON before writing to disk.
+        serde_json::from_slice::<Value>(&bytes)
+            .context("BUG: serialized page JSON failed re-parse validation")?;
+
+        // Write to a temporary file in the same directory (same filesystem),
+        // then atomically rename over the target path.  This avoids corruption
+        // if the process crashes or the disk fills mid-write.
+        let dir = self
+            .path
+            .parent()
+            .context("page path has no parent directory")?;
+        let mut tmp = tempfile::NamedTempFile::new_in(dir)
+            .with_context(|| format!("failed to create temp file in {}", dir.display()))?;
+        tmp.write_all(&bytes)
+            .with_context(|| format!("failed to write temp file for {}", self.path.display()))?;
+        tmp.persist(&self.path)
+            .with_context(|| format!("failed to persist temp file to {}", self.path.display()))?;
+
         self.dirty = false;
         Ok(())
     }

@@ -29,6 +29,8 @@ all notable changes to this project are documented in this file.
   were collected
 - list items with multi-line content (code blocks, multiple paragraphs) now render all lines
   with proper indentation instead of truncating to the first line (TUI and plain-text renderers)
+- edit-mode autosave now uses atomic writes (temp file + rename) to prevent page JSON
+  corruption on crash or disk-full conditions
 - transient plugin failures (timeout/crash) are no longer permanently cached in the LRU;
   subsequent renders for the same snippet retry the plugin instead of returning a stale error
 

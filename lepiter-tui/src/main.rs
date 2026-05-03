@@ -1540,6 +1540,12 @@ fn collect_page_links(nodes: &[Node]) -> Vec<(String, String)> {
     for node in nodes {
         match node {
             Node::Link { text, url } => out.push((text.clone(), url.clone())),
+            Node::Paragraph { text } | Node::Text { text } | Node::Quote { text } => {
+                collect_inline_links(text, &mut out);
+            }
+            Node::Heading { text, .. } => {
+                collect_inline_links(text, &mut out);
+            }
             Node::List { items } => {
                 for item in items {
                     out.extend(collect_page_links(item));
@@ -1551,7 +1557,157 @@ fn collect_page_links(nodes: &[Node]) -> Vec<(String, String)> {
     out
 }
 
+fn collect_inline_links(text: &str, out: &mut Vec<(String, String)>) {
+    for elem in inline::parse_inline(text) {
+        match elem {
+            inline::InlineElement::Link { label, target } => {
+                out.push((label, target));
+            }
+            inline::InlineElement::WikiLink { text } => {
+                out.push((text.clone(), text));
+            }
+            _ => {}
+        }
+    }
+}
+
 fn open_with_system(target: &str) -> Result<()> {
     open::that(target).with_context(|| format!("failed to open target `{target}`"))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lepiter_core::Node;
+
+    #[test]
+    fn collect_page_links_standalone_link_node() {
+        let nodes = vec![Node::Link {
+            text: "example".into(),
+            url: "https://example.com".into(),
+        }];
+        let links = collect_page_links(&nodes);
+        assert_eq!(
+            links,
+            vec![("example".into(), "https://example.com".into())]
+        );
+    }
+
+    #[test]
+    fn collect_page_links_inline_link_in_paragraph() {
+        let nodes = vec![Node::Paragraph {
+            text: "see [docs](https://docs.rs) here".into(),
+        }];
+        let links = collect_page_links(&nodes);
+        assert_eq!(links, vec![("docs".into(), "https://docs.rs".into())]);
+    }
+
+    #[test]
+    fn collect_page_links_inline_link_in_text() {
+        let nodes = vec![Node::Text {
+            text: "click [here](https://example.com)".into(),
+        }];
+        let links = collect_page_links(&nodes);
+        assert_eq!(links, vec![("here".into(), "https://example.com".into())]);
+    }
+
+    #[test]
+    fn collect_page_links_inline_link_in_heading() {
+        let nodes = vec![Node::Heading {
+            level: 2,
+            text: "see [API](https://api.example.com)".into(),
+        }];
+        let links = collect_page_links(&nodes);
+        assert_eq!(
+            links,
+            vec![("API".into(), "https://api.example.com".into())]
+        );
+    }
+
+    #[test]
+    fn collect_page_links_inline_link_in_quote() {
+        let nodes = vec![Node::Quote {
+            text: "as noted in [RFC 123](https://rfc.example.com)".into(),
+        }];
+        let links = collect_page_links(&nodes);
+        assert_eq!(
+            links,
+            vec![("RFC 123".into(), "https://rfc.example.com".into())]
+        );
+    }
+
+    #[test]
+    fn collect_page_links_wiki_link_in_paragraph() {
+        let nodes = vec![Node::Paragraph {
+            text: "see also [[My Other Page]]".into(),
+        }];
+        let links = collect_page_links(&nodes);
+        assert_eq!(
+            links,
+            vec![("My Other Page".into(), "My Other Page".into())]
+        );
+    }
+
+    #[test]
+    fn collect_page_links_multiple_inline_links() {
+        let nodes = vec![Node::Paragraph {
+            text: "[first](url1) and [second](url2) and [[wiki]]".into(),
+        }];
+        let links = collect_page_links(&nodes);
+        assert_eq!(links.len(), 3);
+        assert_eq!(links[0], ("first".into(), "url1".into()));
+        assert_eq!(links[1], ("second".into(), "url2".into()));
+        assert_eq!(links[2], ("wiki".into(), "wiki".into()));
+    }
+
+    #[test]
+    fn collect_page_links_mixed_standalone_and_inline() {
+        let nodes = vec![
+            Node::Link {
+                text: "standalone".into(),
+                url: "https://standalone.com".into(),
+            },
+            Node::Paragraph {
+                text: "text with [inline](https://inline.com) link".into(),
+            },
+        ];
+        let links = collect_page_links(&nodes);
+        assert_eq!(links.len(), 2);
+        assert_eq!(
+            links[0],
+            ("standalone".into(), "https://standalone.com".into())
+        );
+        assert_eq!(links[1], ("inline".into(), "https://inline.com".into()));
+    }
+
+    #[test]
+    fn collect_page_links_no_links_in_plain_text() {
+        let nodes = vec![Node::Paragraph {
+            text: "just plain text, no links".into(),
+        }];
+        let links = collect_page_links(&nodes);
+        assert!(links.is_empty());
+    }
+
+    #[test]
+    fn collect_page_links_list_items_with_inline_links() {
+        let nodes = vec![Node::List {
+            items: vec![vec![Node::Paragraph {
+                text: "item with [link](url)".into(),
+            }]],
+        }];
+        let links = collect_page_links(&nodes);
+        assert_eq!(links, vec![("link".into(), "url".into())]);
+    }
+
+    #[test]
+    fn collect_page_links_code_nodes_ignored() {
+        let nodes = vec![Node::Code {
+            language: Some("rust".into()),
+            code: "[not_a_link](http://example.com)".into(),
+        }];
+        let links = collect_page_links(&nodes);
+        assert!(links.is_empty());
+    }
 }

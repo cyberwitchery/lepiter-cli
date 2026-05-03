@@ -21,6 +21,9 @@ all notable changes to this project are documented in this file.
   line; `CodeToken` now borrows `&str` slices directly from the source text
 
 ### fixed
+- `show --open-links` now captures inline `[text](url)` and `[[wiki]]` links embedded
+  in paragraph, heading, quote, and text nodes; previously only standalone link blocks
+  were collected
 - transient plugin failures (timeout/crash) are no longer permanently cached in the LRU;
   subsequent renders for the same snippet retry the plugin instead of returning a stale error
 

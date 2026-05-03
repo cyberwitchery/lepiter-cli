@@ -29,6 +29,9 @@ all notable changes to this project are documented in this file.
   were collected
 - list items with multi-line content (code blocks, multiple paragraphs) now render all lines
   with proper indentation instead of truncating to the first line (TUI and plain-text renderers)
+- `collect_snippets` and `render_item` now use `extract_type()` instead of hardcoded
+  `get("__type")`, so snippets whose type is stored under the `"type"` key are correctly
+  recognised as editable
 - transient plugin failures (timeout/crash) are no longer permanently cached in the LRU;
   subsequent renders for the same snippet retry the plugin instead of returning a stale error
 

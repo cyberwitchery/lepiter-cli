@@ -224,11 +224,7 @@ pub fn collect_snippets(raw: &Value, path: Vec<usize>, out: &mut Vec<SnippetEntr
     for (idx, item) in items.iter().enumerate() {
         let mut current_path = path.clone();
         current_path.push(idx);
-        let typ = item
-            .get("__type")
-            .and_then(Value::as_str)
-            .unwrap_or("<missing-type>")
-            .to_string();
+        let typ = extract_type(item).unwrap_or("<missing-type>").to_string();
         let (editable, field) = editable_field(&typ, item);
         let text = if let Some(field) = field.as_ref() {
             item.get(field)
@@ -662,10 +658,7 @@ fn render_raw_item_with_highlight(
         .unwrap_or(false);
     let start = ctx.out.len();
     let mut cursor_offset = 0usize;
-    let typ = item
-        .get("__type")
-        .and_then(Value::as_str)
-        .unwrap_or("<missing-type>");
+    let typ = extract_type(item).unwrap_or("<missing-type>");
     let (editable, _) = editable_field(typ, item);
 
     if is_highlight && ctx.highlight_start.is_none() {
@@ -1229,6 +1222,27 @@ mod tests {
         let mut out = Vec::new();
         collect_snippets(&raw, Vec::new(), &mut out);
         assert_eq!(out[0].text, "line1\nline2");
+    }
+
+    #[test]
+    fn collect_snippets_type_key() {
+        let raw = json!({
+            "children": {
+                "items": [
+                    {"type": "textSnippet", "string": "via type"},
+                    {"__type": "textSnippet", "string": "via __type"}
+                ]
+            }
+        });
+        let mut out = Vec::new();
+        collect_snippets(&raw, Vec::new(), &mut out);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].typ, "textSnippet");
+        assert!(out[0].editable);
+        assert_eq!(out[0].text, "via type");
+        assert_eq!(out[1].typ, "textSnippet");
+        assert!(out[1].editable);
+        assert_eq!(out[1].text, "via __type");
     }
 
     // ── editable_field ──────────────────────────────────────────────

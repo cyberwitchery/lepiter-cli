@@ -136,13 +136,26 @@ pub fn render_node(
                 for n in item {
                     render_node(n, &mut rendered, links, plugins);
                 }
-                if let Some(first) = rendered.first() {
+                // Strip trailing empty lines added by individual node renderers;
+                // the list manages its own spacing.
+                while rendered
+                    .last()
+                    .is_some_and(|l| l.spans.iter().all(|s| s.content.is_empty()))
+                {
+                    rendered.pop();
+                }
+                if let Some((first, rest)) = rendered.split_first() {
                     let mut spans = vec![Span::styled(
                         "- ".to_string(),
                         Style::default().fg(Color::DarkGray),
                     )];
                     spans.extend(first.spans.iter().cloned());
                     out.push(Line::from(spans));
+                    for line in rest {
+                        let mut spans = vec![Span::raw("  ".to_string())];
+                        spans.extend(line.spans.iter().cloned());
+                        out.push(Line::from(spans));
+                    }
                 } else {
                     out.push(Line::from(Span::raw("-")));
                 }
@@ -699,5 +712,109 @@ mod tests {
         assert_eq!(result[0].spans[0].content.as_ref(), "leading ");
         assert_eq!(result[0].spans[1].content.as_ref(), "[3]");
         assert_eq!(result[0].spans[1].style.bg, Some(Color::Yellow));
+    }
+
+    // --- list rendering ---
+
+    #[test]
+    fn list_single_line_items() {
+        use crate::plugins::PluginManager;
+        let node = Node::List {
+            items: vec![
+                vec![Node::Paragraph {
+                    text: "first".into(),
+                }],
+                vec![Node::Paragraph {
+                    text: "second".into(),
+                }],
+            ],
+        };
+        let mut out = Vec::new();
+        let mut links = Vec::new();
+        let mut plugins = PluginManager::empty();
+        render_node(&node, &mut out, &mut links, &mut plugins);
+        // "- first", "- second", trailing blank
+        assert_eq!(out.len(), 3);
+        assert_eq!(span_texts(&out[0]), vec!["- ", "first"]);
+        assert!(has_fg(&out[0], 0, Color::DarkGray));
+        assert_eq!(span_texts(&out[1]), vec!["- ", "second"]);
+        assert!(out[2].spans.iter().all(|s| s.content.is_empty()));
+    }
+
+    #[test]
+    fn list_item_with_code_block() {
+        use crate::plugins::PluginManager;
+        let node = Node::List {
+            items: vec![vec![Node::Code {
+                language: Some("rust".into()),
+                code: "let x = 1;\nlet y = 2;".into(),
+            }]],
+        };
+        let mut out = Vec::new();
+        let mut links = Vec::new();
+        let mut plugins = PluginManager::empty();
+        render_node(&node, &mut out, &mut links, &mut plugins);
+        // "- ```rust", "  let x = 1;", "  let y = 2;", "  ```", trailing blank
+        assert_eq!(out.len(), 5);
+        assert_eq!(out[0].spans[0].content.as_ref(), "- ");
+        // continuation lines have "  " indent
+        assert_eq!(out[1].spans[0].content.as_ref(), "  ");
+        assert_eq!(out[2].spans[0].content.as_ref(), "  ");
+        assert_eq!(out[3].spans[0].content.as_ref(), "  ");
+    }
+
+    #[test]
+    fn list_empty_item() {
+        use crate::plugins::PluginManager;
+        let node = Node::List {
+            items: vec![vec![Node::Text { text: "".into() }]],
+        };
+        let mut out = Vec::new();
+        let mut links = Vec::new();
+        let mut plugins = PluginManager::empty();
+        render_node(&node, &mut out, &mut links, &mut plugins);
+        // Empty text produces no visible spans, so falls back to bare "-"
+        // plus trailing blank
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].spans[0].content.as_ref(), "-");
+    }
+
+    #[test]
+    fn list_item_with_multiple_nodes() {
+        use crate::plugins::PluginManager;
+        let node = Node::List {
+            items: vec![vec![
+                Node::Paragraph {
+                    text: "intro text".into(),
+                },
+                Node::Code {
+                    language: None,
+                    code: "x = 1".into(),
+                },
+            ]],
+        };
+        let mut out = Vec::new();
+        let mut links = Vec::new();
+        let mut plugins = PluginManager::empty();
+        render_node(&node, &mut out, &mut links, &mut plugins);
+        // First line: "- intro text"
+        assert_eq!(out[0].spans[0].content.as_ref(), "- ");
+        // Continuation lines should all have "  " indent
+        for line in &out[1..out.len() - 1] {
+            assert_eq!(
+                line.spans[0].content.as_ref(),
+                "  ",
+                "continuation line missing indent: {:?}",
+                span_texts(line)
+            );
+        }
+        // Last line is trailing blank
+        assert!(
+            out.last()
+                .unwrap()
+                .spans
+                .iter()
+                .all(|s| s.content.is_empty())
+        );
     }
 }

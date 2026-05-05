@@ -99,6 +99,19 @@ impl App {
             return KeyResult::Tick;
         }
 
+        if self.mode == Mode::Backlinks {
+            match key.code {
+                KeyCode::Char('q') => return KeyResult::Quit,
+                KeyCode::Char('?') => self.show_help = true,
+                KeyCode::Esc => self.mode = Mode::Page,
+                KeyCode::Enter => self.open_selected_backlink(),
+                KeyCode::Up | KeyCode::Char('k') => self.move_backlink_selection(-1),
+                KeyCode::Down | KeyCode::Char('j') => self.move_backlink_selection(1),
+                _ => {}
+            }
+            return KeyResult::Tick;
+        }
+
         match key.code {
             KeyCode::Char('q') => return KeyResult::Quit,
             KeyCode::Char('?') => {
@@ -130,7 +143,7 @@ impl App {
                     self.open_selected_page();
                 }
                 Mode::Page => self.follow_selected_link(),
-                Mode::Search | Mode::PageSearch | Mode::Edit => {}
+                Mode::Search | Mode::PageSearch | Mode::Edit | Mode::Backlinks => {}
             },
             KeyCode::Char('n') if self.mode == Mode::Page => {
                 self.page_search_next();
@@ -141,31 +154,34 @@ impl App {
             KeyCode::Up | KeyCode::Char('k') => match self.mode {
                 Mode::List => self.move_selection(-1),
                 Mode::Page => self.scroll_page(-1),
-                Mode::Search | Mode::PageSearch | Mode::Edit => {}
+                Mode::Search | Mode::PageSearch | Mode::Edit | Mode::Backlinks => {}
             },
             KeyCode::Down | KeyCode::Char('j') => match self.mode {
                 Mode::List => self.move_selection(1),
                 Mode::Page => self.scroll_page(1),
-                Mode::Search | Mode::PageSearch | Mode::Edit => {}
+                Mode::Search | Mode::PageSearch | Mode::Edit | Mode::Backlinks => {}
             },
             KeyCode::PageUp => match self.mode {
                 Mode::Page => self.scroll_page(-page_scroll_half()),
-                Mode::List | Mode::Search | Mode::PageSearch | Mode::Edit => {}
+                Mode::List | Mode::Search | Mode::PageSearch | Mode::Edit | Mode::Backlinks => {}
             },
             KeyCode::PageDown => match self.mode {
                 Mode::Page => self.scroll_page(page_scroll_half()),
-                Mode::List | Mode::Search | Mode::PageSearch | Mode::Edit => {}
+                Mode::List | Mode::Search | Mode::PageSearch | Mode::Edit | Mode::Backlinks => {}
             },
             KeyCode::Char('g') => match self.mode {
                 Mode::Page => self.page_scroll = 0,
-                Mode::List | Mode::Search | Mode::PageSearch | Mode::Edit => {}
+                Mode::List | Mode::Search | Mode::PageSearch | Mode::Edit | Mode::Backlinks => {}
             },
             KeyCode::Char('G') => match self.mode {
                 Mode::Page => self.page_scroll = usize::MAX / 2,
-                Mode::List | Mode::Search | Mode::PageSearch | Mode::Edit => {}
+                Mode::List | Mode::Search | Mode::PageSearch | Mode::Edit | Mode::Backlinks => {}
             },
             KeyCode::Char('b') if self.mode == Mode::Page => {
                 self.back_to_list();
+            }
+            KeyCode::Char('B') if self.mode == Mode::Page => {
+                self.show_backlinks();
             }
             KeyCode::Char('e') if self.mode == Mode::Page => {
                 self.enter_edit_mode();
@@ -372,8 +388,10 @@ mod tests {
 
     /// Build a minimal App with no pages for testing key routing logic.
     fn make_app() -> App {
+        let mut index = lepiter_core::KnowledgeBase::open(fixtures_dir()).unwrap();
+        index.build_backlinks();
         App {
-            index: lepiter_core::KnowledgeBase::open(fixtures_dir()).unwrap(),
+            index,
             plugins: PluginManager::empty(),
             edit: None,
             visible_ids: Vec::new(),
@@ -393,6 +411,8 @@ mod tests {
             page_search_needle: String::new(),
             page_search_match_lines: Vec::new(),
             page_search_current: 0,
+            backlink_ids: Vec::new(),
+            backlink_selected: 0,
             mode: Mode::List,
             show_help: false,
             status: String::new(),
@@ -1319,5 +1339,77 @@ mod tests {
         assert!(app.page_search_needle.is_empty());
         assert!(app.page_search_match_lines.is_empty());
         assert_eq!(app.page_search_current, 0);
+    }
+
+    // ── Backlinks mode ─────────────────────────────────────────────
+
+    #[test]
+    fn page_shift_b_shows_backlinks_or_status() {
+        let mut app = make_app_on_page();
+        app.handle_key(key(KeyCode::Char('B')));
+        // Either enters Backlinks mode (if backlinks exist) or stays
+        // in Page mode with a status message.
+        assert!(app.mode == Mode::Backlinks || app.status.contains("no backlinks"));
+    }
+
+    #[test]
+    fn backlinks_esc_returns_to_page() {
+        let mut app = make_app_on_page();
+        app.mode = Mode::Backlinks;
+        app.backlink_ids = vec!["dummy".to_string()];
+        app.handle_key(key(KeyCode::Esc));
+        assert_eq!(app.mode, Mode::Page);
+    }
+
+    #[test]
+    fn backlinks_q_quits() {
+        let mut app = make_app();
+        app.mode = Mode::Backlinks;
+        let result = app.handle_key(key(KeyCode::Char('q')));
+        assert!(matches!(result, KeyResult::Quit));
+    }
+
+    #[test]
+    fn backlinks_j_k_navigate() {
+        let mut app = make_app();
+        app.mode = Mode::Backlinks;
+        app.backlink_ids = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        app.backlink_selected = 0;
+
+        app.handle_key(key(KeyCode::Char('j')));
+        assert_eq!(app.backlink_selected, 1);
+
+        app.handle_key(key(KeyCode::Char('k')));
+        assert_eq!(app.backlink_selected, 0);
+    }
+
+    #[test]
+    fn backlinks_selection_clamps() {
+        let mut app = make_app();
+        app.mode = Mode::Backlinks;
+        app.backlink_ids = vec!["a".to_string()];
+        app.backlink_selected = 0;
+
+        app.handle_key(key(KeyCode::Char('k')));
+        assert_eq!(app.backlink_selected, 0);
+
+        app.handle_key(key(KeyCode::Char('j')));
+        assert_eq!(app.backlink_selected, 0); // only 1 item
+    }
+
+    #[test]
+    fn backlinks_question_mark_shows_help() {
+        let mut app = make_app();
+        app.mode = Mode::Backlinks;
+        app.handle_key(key(KeyCode::Char('?')));
+        assert!(app.show_help);
+    }
+
+    #[test]
+    fn backlinks_returns_tick() {
+        let mut app = make_app();
+        app.mode = Mode::Backlinks;
+        let result = app.handle_key(key(KeyCode::Char('j')));
+        assert!(matches!(result, KeyResult::Tick));
     }
 }

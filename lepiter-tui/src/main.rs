@@ -74,6 +74,7 @@ enum Mode {
     Search,
     Page,
     PageSearch,
+    Backlinks,
     Edit,
 }
 
@@ -104,13 +105,16 @@ struct App {
     page_search_needle: String,
     page_search_match_lines: Vec<usize>,
     page_search_current: usize,
+    backlink_ids: Vec<PageId>,
+    backlink_selected: usize,
     mode: Mode,
     show_help: bool,
     status: String,
 }
 
 impl App {
-    fn new(index: KnowledgeBaseIndex) -> Self {
+    fn new(mut index: KnowledgeBaseIndex) -> Self {
+        index.build_backlinks();
         let plugins = PluginManager::from_env();
         let max_parsed_cache = cache_limit_from_env("LEPITER_TUI_PARSED_CACHE", 128);
         let max_rendered_cache = cache_limit_from_env("LEPITER_TUI_RENDERED_CACHE", 128);
@@ -135,6 +139,8 @@ impl App {
             page_search_needle: String::new(),
             page_search_match_lines: Vec::new(),
             page_search_current: 0,
+            backlink_ids: Vec::new(),
+            backlink_selected: 0,
             mode: Mode::List,
             show_help: false,
             status: String::new(),
@@ -333,6 +339,38 @@ impl App {
         } else {
             self.mode = Mode::List;
         }
+    }
+
+    fn show_backlinks(&mut self) {
+        let Some(page_id) = &self.opened else {
+            self.status = "no page open".to_string();
+            return;
+        };
+        let backlinks = self.index.backlinks_for(page_id).to_vec();
+        if backlinks.is_empty() {
+            self.status = "no backlinks for this page".to_string();
+            return;
+        }
+        self.backlink_ids = backlinks;
+        self.backlink_selected = 0;
+        self.mode = Mode::Backlinks;
+    }
+
+    fn move_backlink_selection(&mut self, delta: isize) {
+        if self.backlink_ids.is_empty() {
+            self.backlink_selected = 0;
+            return;
+        }
+        let max = self.backlink_ids.len() as isize - 1;
+        let next = (self.backlink_selected as isize + delta).clamp(0, max);
+        self.backlink_selected = next as usize;
+    }
+
+    fn open_selected_backlink(&mut self) {
+        let Some(id) = self.backlink_ids.get(self.backlink_selected).cloned() else {
+            return;
+        };
+        self.open_page(&id, true);
     }
 
     fn scroll_page(&mut self, delta: isize) {
@@ -1225,6 +1263,7 @@ fn ui(frame: &mut Frame, app: &mut App) {
     match app.mode {
         Mode::List | Mode::Search => render_list_view(frame, app),
         Mode::Page | Mode::PageSearch => render_page_view(frame, app),
+        Mode::Backlinks => render_backlinks_view(frame, app),
         Mode::Edit => render_edit_view(frame, app),
     }
     if app.show_help {
@@ -1394,7 +1433,7 @@ fn render_page_view(frame: &mut Frame, app: &App) {
             "no matches | / search | Esc clear | ? help | q quit".to_string()
         }
     } else {
-        "j/k scroll | tab/backtab link | enter follow | / search | h back | b list | ? help | q quit".to_string()
+        "j/k scroll | tab/backtab link | enter follow | / search | B backlinks | h back | b list | ? help | q quit".to_string()
     };
     if let Some(page) = app.current_rendered_page() {
         if let Some(link) = page.links.get(app.selected_link) {
@@ -1428,6 +1467,65 @@ fn render_page_view(frame: &mut Frame, app: &App) {
             chunks[3],
         );
     }
+}
+
+fn render_backlinks_view(frame: &mut Frame, app: &App) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(1),
+            Constraint::Length(2),
+        ])
+        .split(frame.area());
+
+    let source_title = app
+        .opened
+        .as_ref()
+        .and_then(|id| app.index.pages.get(id))
+        .map(|m| m.title.as_str())
+        .unwrap_or("?");
+    let header = Paragraph::new(format!("Backlinks to: {source_title}")).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title("Backlinks (B)")
+            .border_style(Style::default().fg(Color::Magenta)),
+    );
+    frame.render_widget(header, chunks[0]);
+
+    let items = app
+        .backlink_ids
+        .iter()
+        .map(|id| {
+            let meta = &app.index.pages[id];
+            let text = format!("{}  [{}]", meta.title, meta.id);
+            ListItem::new(sanitize_for_terminal(&text))
+        })
+        .collect::<Vec<_>>();
+
+    let mut state = ListState::default();
+    state.select(if app.backlink_ids.is_empty() {
+        None
+    } else {
+        Some(app.backlink_selected)
+    });
+
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(format!("{} incoming links", app.backlink_ids.len()))
+                .border_style(Style::default().fg(Color::Blue)),
+        )
+        .highlight_style(Style::default().bg(Color::DarkGray));
+    frame.render_stateful_widget(list, chunks[1], &mut state);
+
+    let footer = "j/k navigate | enter open | esc back to page | q quit";
+    let dashboard = format!("{}\n{}", app.plugins.status_line(), footer);
+    frame.render_widget(
+        Paragraph::new(dashboard).style(Style::default().fg(Color::Gray)),
+        chunks[2],
+    );
 }
 
 fn render_edit_view(frame: &mut Frame, app: &mut App) {
@@ -1609,6 +1707,7 @@ fn render_help_overlay(frame: &mut Frame, mode: Mode) {
                     ("n / N", "next / prev match"),
                     ("Tab / Shift+Tab", "next / prev link"),
                     ("Enter", "follow link"),
+                    ("B", "show backlinks"),
                     ("e", "edit page"),
                     ("O", "open externally"),
                     ("h", "back in history"),
@@ -1626,6 +1725,18 @@ fn render_help_overlay(frame: &mut Frame, mode: Mode) {
                     ("Backspace", "delete character"),
                     ("Enter", "confirm search"),
                     ("Esc", "cancel search"),
+                ],
+            );
+        }
+        Mode::Backlinks => {
+            add_section(
+                &mut lines,
+                "Backlinks",
+                &[
+                    ("j / Down", "move down"),
+                    ("k / Up", "move up"),
+                    ("Enter", "open page"),
+                    ("Esc", "back to page"),
                 ],
             );
         }

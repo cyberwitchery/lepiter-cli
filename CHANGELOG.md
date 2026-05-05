@@ -8,6 +8,13 @@ all notable changes to this project are documented in this file.
 - within-page content search: press `/` in page mode to search, `n`/`N` to
   cycle through matches, `Esc` to clear; matches are highlighted in the
   rendered page with the current match distinguished from other matches
+- backlinks index: `KnowledgeBaseIndex::build_backlinks()` computes a reverse
+  link index at load time, mapping each page to the set of pages that reference
+  it via link nodes, inline `[label](target)` links, or `[[wiki]]` links
+- `B` key in page mode displays incoming links (backlinks) for the current page
+  in a navigable list; press Enter to open a linking page or Esc to return
+- `extract_link_targets()` public function in lepiter-core extracts raw link
+  target strings from a node tree (explicit links and inline markdown links)
 - `O` key in page mode opens the current page via a user-configured external
   command (`LEPITER_OPEN_CMD`); the command receives the page id and file path as
   environment variables (`LEPITER_PAGE_ID`, `LEPITER_PAGE_PATH`)

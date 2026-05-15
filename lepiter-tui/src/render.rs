@@ -392,6 +392,147 @@ pub fn highlight_selected_link_markers(
     out
 }
 
+/// Highlight all occurrences of `needle` (case-insensitive) in the rendered
+/// lines.  The match at `current_idx` gets a distinct "active" style while all
+/// other matches share a dimmer highlight.
+pub fn highlight_page_search(
+    lines: &[Line<'static>],
+    needle: &str,
+    current_match_line: Option<usize>,
+) -> Vec<Line<'static>> {
+    if needle.is_empty() {
+        return lines.to_vec();
+    }
+    let lower_needle = needle.to_lowercase();
+    let active_style = Style::default()
+        .bg(Color::Yellow)
+        .fg(Color::Black)
+        .add_modifier(Modifier::BOLD);
+    let passive_style = Style::default().bg(Color::DarkGray).fg(Color::White);
+
+    let mut out = Vec::with_capacity(lines.len());
+    for (line_idx, line) in lines.iter().enumerate() {
+        let full_text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        let lower_text = full_text.to_lowercase();
+        if !lower_text.contains(&lower_needle) {
+            out.push(line.clone());
+            continue;
+        }
+        let is_current = current_match_line == Some(line_idx);
+        let style = if is_current {
+            active_style
+        } else {
+            passive_style
+        };
+        out.push(highlight_all_in_line(line, &lower_needle, style));
+    }
+    out
+}
+
+/// Highlight every occurrence of `needle` (lowercase) within a single line.
+fn highlight_all_in_line(
+    line: &Line<'static>,
+    lower_needle: &str,
+    match_style: Style,
+) -> Line<'static> {
+    // Flatten spans into (char_offset, byte_range_in_full_text, original_style).
+    // Then find all needle positions in the full text and split spans around them.
+    let full_text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+    let lower_text = full_text.to_lowercase();
+
+    // Collect match byte ranges in the original text.
+    let mut match_ranges: Vec<(usize, usize)> = Vec::new();
+    let mut search_start = 0;
+    while let Some(pos) = lower_text[search_start..].find(lower_needle) {
+        let abs_start = search_start + pos;
+        let abs_end = abs_start + lower_needle.len();
+        // Map lowered byte offsets back to original text byte offsets.
+        let raw_start = lower_byte_to_raw_byte(&full_text, abs_start);
+        let raw_end = lower_byte_to_raw_byte(&full_text, abs_end);
+        match_ranges.push((raw_start, raw_end));
+        search_start = abs_end;
+    }
+    if match_ranges.is_empty() {
+        return line.clone();
+    }
+
+    // Walk through original spans, splitting them wherever a match range
+    // intersects.
+    let mut result_spans: Vec<Span<'static>> = Vec::new();
+    let mut global_byte = 0usize;
+    let mut match_idx = 0;
+
+    for span in &line.spans {
+        let span_text = span.content.as_ref();
+        let span_start = global_byte;
+        let span_end = global_byte + span_text.len();
+        let mut local_byte = 0usize;
+
+        while local_byte < span_text.len() && match_idx < match_ranges.len() {
+            let (m_start, m_end) = match_ranges[match_idx];
+
+            if m_end <= span_start + local_byte {
+                match_idx += 1;
+                continue;
+            }
+            if m_start >= span_end {
+                break;
+            }
+
+            // Portion before match
+            let before_end = m_start.saturating_sub(span_start).max(local_byte);
+            if before_end > local_byte {
+                let s = &span_text[local_byte..before_end];
+                if !s.is_empty() {
+                    result_spans.push(Span::styled(s.to_string(), span.style));
+                }
+                local_byte = before_end;
+            }
+
+            // Highlighted portion within this span
+            let hl_start = m_start.saturating_sub(span_start).max(local_byte);
+            let hl_end = m_end.min(span_end) - span_start;
+            if hl_end > hl_start {
+                let s = &span_text[hl_start..hl_end];
+                result_spans.push(Span::styled(s.to_string(), match_style));
+                local_byte = hl_end;
+            }
+
+            if span_start + local_byte >= m_end {
+                match_idx += 1;
+            }
+        }
+
+        // Remainder of span after all matches
+        if local_byte < span_text.len() {
+            result_spans.push(Span::styled(
+                span_text[local_byte..].to_string(),
+                span.style,
+            ));
+        }
+        global_byte = span_end;
+    }
+
+    Line::from(result_spans)
+}
+
+/// Map a byte offset in `raw.to_lowercase()` to the corresponding byte offset
+/// in `raw`.
+fn lower_byte_to_raw_byte(raw: &str, lower_pos: usize) -> usize {
+    let mut raw_byte = 0usize;
+    let mut lower_byte = 0usize;
+    for ch in raw.chars() {
+        if lower_byte >= lower_pos {
+            return raw_byte;
+        }
+        raw_byte += ch.len_utf8();
+        for lch in ch.to_lowercase() {
+            lower_byte += lch.len_utf8();
+        }
+    }
+    raw_byte
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -816,5 +957,81 @@ mod tests {
                 .iter()
                 .all(|s| s.content.is_empty())
         );
+    }
+
+    // --- highlight_page_search ---
+
+    #[test]
+    fn page_search_empty_needle_returns_clone() {
+        let lines = vec![Line::raw("hello world")];
+        let result = highlight_page_search(&lines, "", None);
+        assert_eq!(result.len(), 1);
+        assert_eq!(span_texts(&result[0]), vec!["hello world"]);
+    }
+
+    #[test]
+    fn page_search_highlights_matching_line() {
+        let lines = vec![
+            Line::raw("no match here"),
+            Line::raw("find the needle in this line"),
+        ];
+        let result = highlight_page_search(&lines, "needle", Some(1));
+        // First line: unchanged.
+        assert_eq!(span_texts(&result[0]), vec!["no match here"]);
+        // Second line: split around "needle".
+        let texts = span_texts(&result[1]);
+        assert_eq!(texts, vec!["find the ", "needle", " in this line"]);
+        // Active match gets yellow bg.
+        assert_eq!(result[1].spans[1].style.bg, Some(Color::Yellow));
+        assert_eq!(result[1].spans[1].style.fg, Some(Color::Black));
+    }
+
+    #[test]
+    fn page_search_passive_highlight_for_non_current() {
+        let lines = vec![Line::raw("needle first"), Line::raw("needle second")];
+        // Current match is line 0; line 1 should get passive style.
+        let result = highlight_page_search(&lines, "needle", Some(0));
+        assert_eq!(result[0].spans[0].style.bg, Some(Color::Yellow)); // active
+        assert_eq!(result[1].spans[0].style.bg, Some(Color::DarkGray)); // passive
+    }
+
+    #[test]
+    fn page_search_case_insensitive() {
+        let lines = vec![Line::raw("Hello World")];
+        let result = highlight_page_search(&lines, "hello", Some(0));
+        let texts = span_texts(&result[0]);
+        assert_eq!(texts, vec!["Hello", " World"]);
+        assert_eq!(result[0].spans[0].style.bg, Some(Color::Yellow));
+    }
+
+    #[test]
+    fn page_search_multiple_occurrences_in_line() {
+        let lines = vec![Line::raw("aa bb aa")];
+        let result = highlight_page_search(&lines, "aa", Some(0));
+        let texts = span_texts(&result[0]);
+        assert_eq!(texts, vec!["aa", " bb ", "aa"]);
+        assert_eq!(result[0].spans[0].style.bg, Some(Color::Yellow));
+        assert_eq!(result[0].spans[2].style.bg, Some(Color::Yellow));
+    }
+
+    #[test]
+    fn page_search_across_styled_spans() {
+        let lines = vec![Line::from(vec![
+            Span::styled("hel", Style::default().fg(Color::Cyan)),
+            Span::raw("lo world"),
+        ])];
+        let result = highlight_page_search(&lines, "hello", Some(0));
+        // "hel" and "lo" should be highlighted, " world" plain.
+        let texts = span_texts(&result[0]);
+        assert_eq!(texts, vec!["hel", "lo", " world"]);
+        assert_eq!(result[0].spans[0].style.bg, Some(Color::Yellow));
+        assert_eq!(result[0].spans[1].style.bg, Some(Color::Yellow));
+    }
+
+    #[test]
+    fn page_search_no_current_all_passive() {
+        let lines = vec![Line::raw("needle here")];
+        let result = highlight_page_search(&lines, "needle", None);
+        assert_eq!(result[0].spans[0].style.bg, Some(Color::DarkGray));
     }
 }

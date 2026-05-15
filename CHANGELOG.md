@@ -5,6 +5,9 @@ all notable changes to this project are documented in this file.
 ## Unreleased
 
 ### added
+- within-page content search: press `/` in page mode to search, `n`/`N` to
+  cycle through matches, `Esc` to clear; matches are highlighted in the
+  rendered page with the current match distinguished from other matches
 - `O` key in page mode opens the current page via a user-configured external
   command (`LEPITER_OPEN_CMD`); the command receives the page id and file path as
   environment variables (`LEPITER_PAGE_ID`, `LEPITER_PAGE_PATH`)

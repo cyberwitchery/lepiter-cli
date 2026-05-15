@@ -61,6 +61,39 @@ impl App {
             return KeyResult::SearchTick;
         }
 
+        if self.mode == Mode::PageSearch {
+            match key.code {
+                KeyCode::Esc => {
+                    self.clear_page_search();
+                    self.mode = Mode::Page;
+                }
+                KeyCode::Enter => {
+                    self.mode = Mode::Page;
+                    if !self.page_search_match_lines.is_empty() {
+                        self.page_scroll = self.page_search_match_lines[self.page_search_current];
+                    }
+                }
+                KeyCode::Backspace => {
+                    self.page_search.pop();
+                    self.update_page_search_needle();
+                    self.rebuild_page_search_matches();
+                    if let Some(&line) = self.page_search_match_lines.first() {
+                        self.page_scroll = line;
+                    }
+                }
+                KeyCode::Char(c) => {
+                    self.page_search.push(c);
+                    self.update_page_search_needle();
+                    self.rebuild_page_search_matches();
+                    if let Some(&line) = self.page_search_match_lines.first() {
+                        self.page_scroll = line;
+                    }
+                }
+                _ => {}
+            }
+            return KeyResult::Continue;
+        }
+
         if self.mode == Mode::Edit {
             self.handle_edit_key(key);
             return KeyResult::Tick;
@@ -71,46 +104,65 @@ impl App {
             KeyCode::Char('?') => {
                 self.show_help = true;
             }
-            KeyCode::Char('/') => {
-                self.search.clear();
-                self.update_search_needle();
-                self.rebuild_visible_ids();
-                self.mode = Mode::Search;
-            }
-            KeyCode::Esc => self.mode = Mode::List,
+            KeyCode::Char('/') => match self.mode {
+                Mode::Page => {
+                    self.page_search.clear();
+                    self.update_page_search_needle();
+                    self.rebuild_page_search_matches();
+                    self.mode = Mode::PageSearch;
+                }
+                _ => {
+                    self.search.clear();
+                    self.update_search_needle();
+                    self.rebuild_visible_ids();
+                    self.mode = Mode::Search;
+                }
+            },
+            KeyCode::Esc => match self.mode {
+                Mode::Page if !self.page_search_needle.is_empty() => {
+                    self.clear_page_search();
+                }
+                _ => self.mode = Mode::List,
+            },
             KeyCode::Enter => match self.mode {
                 Mode::List => {
                     self.mode = Mode::List;
                     self.open_selected_page();
                 }
                 Mode::Page => self.follow_selected_link(),
-                Mode::Search | Mode::Edit => {}
+                Mode::Search | Mode::PageSearch | Mode::Edit => {}
             },
+            KeyCode::Char('n') if self.mode == Mode::Page => {
+                self.page_search_next();
+            }
+            KeyCode::Char('N') if self.mode == Mode::Page => {
+                self.page_search_prev();
+            }
             KeyCode::Up | KeyCode::Char('k') => match self.mode {
                 Mode::List => self.move_selection(-1),
                 Mode::Page => self.scroll_page(-1),
-                Mode::Search | Mode::Edit => {}
+                Mode::Search | Mode::PageSearch | Mode::Edit => {}
             },
             KeyCode::Down | KeyCode::Char('j') => match self.mode {
                 Mode::List => self.move_selection(1),
                 Mode::Page => self.scroll_page(1),
-                Mode::Search | Mode::Edit => {}
+                Mode::Search | Mode::PageSearch | Mode::Edit => {}
             },
             KeyCode::PageUp => match self.mode {
                 Mode::Page => self.scroll_page(-page_scroll_half()),
-                Mode::List | Mode::Search | Mode::Edit => {}
+                Mode::List | Mode::Search | Mode::PageSearch | Mode::Edit => {}
             },
             KeyCode::PageDown => match self.mode {
                 Mode::Page => self.scroll_page(page_scroll_half()),
-                Mode::List | Mode::Search | Mode::Edit => {}
+                Mode::List | Mode::Search | Mode::PageSearch | Mode::Edit => {}
             },
             KeyCode::Char('g') => match self.mode {
                 Mode::Page => self.page_scroll = 0,
-                Mode::List | Mode::Search | Mode::Edit => {}
+                Mode::List | Mode::Search | Mode::PageSearch | Mode::Edit => {}
             },
             KeyCode::Char('G') => match self.mode {
                 Mode::Page => self.page_scroll = usize::MAX / 2,
-                Mode::List | Mode::Search | Mode::Edit => {}
+                Mode::List | Mode::Search | Mode::PageSearch | Mode::Edit => {}
             },
             KeyCode::Char('b') if self.mode == Mode::Page => {
                 self.back_to_list();
@@ -337,6 +389,10 @@ mod tests {
             text_index: HashMap::new(),
             text_index_queue: VecDeque::new(),
             history: Vec::new(),
+            page_search: String::new(),
+            page_search_needle: String::new(),
+            page_search_match_lines: Vec::new(),
+            page_search_current: 0,
             mode: Mode::List,
             show_help: false,
             status: String::new(),
@@ -698,10 +754,10 @@ mod tests {
     }
 
     #[test]
-    fn page_slash_enters_search() {
+    fn page_slash_enters_page_search() {
         let mut app = make_app_on_page();
         app.handle_key(key(KeyCode::Char('/')));
-        assert_eq!(app.mode, Mode::Search);
+        assert_eq!(app.mode, Mode::PageSearch);
     }
 
     #[test]
@@ -1126,5 +1182,142 @@ mod tests {
         app.handle_key(key(KeyCode::Char('g')));
         // 'g' only works in Page mode; in List, it's a no-op.
         assert_eq!(app.page_scroll, 42);
+    }
+
+    // ── Page search mode ──────────────────────────────────────────
+
+    #[test]
+    fn page_search_accumulates_chars() {
+        let mut app = make_app_on_page();
+        app.handle_key(key(KeyCode::Char('/')));
+        app.handle_key(key(KeyCode::Char('h')));
+        app.handle_key(key(KeyCode::Char('e')));
+        assert_eq!(app.page_search, "he");
+        assert_eq!(app.page_search_needle, "he");
+    }
+
+    #[test]
+    fn page_search_backspace_removes_char() {
+        let mut app = make_app_on_page();
+        app.handle_key(key(KeyCode::Char('/')));
+        app.handle_key(key(KeyCode::Char('a')));
+        app.handle_key(key(KeyCode::Char('b')));
+        app.handle_key(key(KeyCode::Backspace));
+        assert_eq!(app.page_search, "a");
+    }
+
+    #[test]
+    fn page_search_esc_clears_and_returns_to_page() {
+        let mut app = make_app_on_page();
+        app.handle_key(key(KeyCode::Char('/')));
+        app.handle_key(key(KeyCode::Char('x')));
+        app.handle_key(key(KeyCode::Esc));
+        assert_eq!(app.mode, Mode::Page);
+        assert!(app.page_search.is_empty());
+        assert!(app.page_search_needle.is_empty());
+    }
+
+    #[test]
+    fn page_search_enter_returns_to_page_with_search_active() {
+        let mut app = make_app_on_page();
+        app.handle_key(key(KeyCode::Char('/')));
+        app.handle_key(key(KeyCode::Char('t')));
+        app.handle_key(key(KeyCode::Enter));
+        assert_eq!(app.mode, Mode::Page);
+        // Search needle should be preserved after Enter.
+        assert_eq!(app.page_search_needle, "t");
+    }
+
+    #[test]
+    fn page_search_returns_continue() {
+        let mut app = make_app_on_page();
+        app.handle_key(key(KeyCode::Char('/')));
+        let result = app.handle_key(key(KeyCode::Char('x')));
+        assert!(matches!(result, KeyResult::Continue));
+    }
+
+    #[test]
+    fn page_esc_clears_active_search_before_going_to_list() {
+        let mut app = make_app_on_page();
+        // Enter page search and confirm with Enter
+        app.handle_key(key(KeyCode::Char('/')));
+        app.handle_key(key(KeyCode::Char('t')));
+        app.handle_key(key(KeyCode::Enter));
+        assert_eq!(app.mode, Mode::Page);
+        assert!(!app.page_search_needle.is_empty());
+        // First Esc clears the search but stays in Page mode.
+        app.handle_key(key(KeyCode::Esc));
+        assert_eq!(app.mode, Mode::Page);
+        assert!(app.page_search_needle.is_empty());
+        // Second Esc goes to list.
+        app.handle_key(key(KeyCode::Esc));
+        assert_eq!(app.mode, Mode::List);
+    }
+
+    #[test]
+    fn page_n_without_search_is_noop() {
+        let mut app = make_app_on_page();
+        let scroll_before = app.page_scroll;
+        app.handle_key(key(KeyCode::Char('n')));
+        assert_eq!(app.page_scroll, scroll_before);
+    }
+
+    #[test]
+    fn page_search_n_cycles_forward() {
+        let mut app = make_app_on_page();
+        // Set up a fake match list to test cycling.
+        app.page_search_needle = "test".to_string();
+        app.page_search_match_lines = vec![5, 10, 20];
+        app.page_search_current = 0;
+        app.handle_key(key(KeyCode::Char('n')));
+        assert_eq!(app.page_search_current, 1);
+        assert_eq!(app.page_scroll, 10);
+        app.handle_key(key(KeyCode::Char('n')));
+        assert_eq!(app.page_search_current, 2);
+        assert_eq!(app.page_scroll, 20);
+        // Wraps around.
+        app.handle_key(key(KeyCode::Char('n')));
+        assert_eq!(app.page_search_current, 0);
+        assert_eq!(app.page_scroll, 5);
+    }
+
+    #[test]
+    fn page_search_shift_n_cycles_backward() {
+        let mut app = make_app_on_page();
+        app.page_search_needle = "test".to_string();
+        app.page_search_match_lines = vec![5, 10, 20];
+        app.page_search_current = 0;
+        // N (shift-n) goes backward, wrapping to end.
+        app.handle_key(key(KeyCode::Char('N')));
+        assert_eq!(app.page_search_current, 2);
+        assert_eq!(app.page_scroll, 20);
+        app.handle_key(key(KeyCode::Char('N')));
+        assert_eq!(app.page_search_current, 1);
+        assert_eq!(app.page_scroll, 10);
+    }
+
+    #[test]
+    fn list_slash_still_enters_list_search() {
+        let mut app = make_app();
+        app.handle_key(key(KeyCode::Char('/')));
+        assert_eq!(app.mode, Mode::Search);
+    }
+
+    #[test]
+    fn open_page_clears_page_search() {
+        let mut app = make_app_on_page();
+        app.page_search = "something".to_string();
+        app.page_search_needle = "something".to_string();
+        app.page_search_match_lines = vec![1, 2];
+        app.page_search_current = 1;
+        // Go back and reopen.
+        app.handle_key(key(KeyCode::Esc));
+        if let Some(id) = app.visible_ids.first().cloned() {
+            app.open_page(&id, false);
+        }
+        assert!(app.page_search.is_empty());
+        assert!(app.page_search_needle.is_empty());
+        assert!(app.page_search_match_lines.is_empty());
+        assert_eq!(app.page_search_current, 0);
     }
 }

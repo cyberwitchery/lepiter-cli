@@ -52,7 +52,8 @@ use crate::highlight::{CodeToken, tokenize_code_line};
 use crate::keybindings::KeyResult;
 use crate::plugins::PluginManager;
 use crate::render::{
-    RenderedPage, highlight_selected_link_markers, render_page, sanitize_for_terminal,
+    RenderedPage, highlight_page_search, highlight_selected_link_markers, render_page,
+    sanitize_for_terminal,
 };
 use crate::util::{LruCache, cache_limit_from_env};
 use anyhow::{Context, Result, bail};
@@ -72,6 +73,7 @@ enum Mode {
     List,
     Search,
     Page,
+    PageSearch,
     Edit,
 }
 
@@ -98,6 +100,10 @@ struct App {
     text_index: HashMap<PageId, IndexedPageText>,
     text_index_queue: VecDeque<PageId>,
     history: Vec<PageId>,
+    page_search: String,
+    page_search_needle: String,
+    page_search_match_lines: Vec<usize>,
+    page_search_current: usize,
     mode: Mode,
     show_help: bool,
     status: String,
@@ -125,6 +131,10 @@ impl App {
             text_index: HashMap::new(),
             text_index_queue: VecDeque::new(),
             history: Vec::new(),
+            page_search: String::new(),
+            page_search_needle: String::new(),
+            page_search_match_lines: Vec::new(),
+            page_search_current: 0,
             mode: Mode::List,
             show_help: false,
             status: String::new(),
@@ -236,6 +246,7 @@ impl App {
         self.opened = Some(id.to_string());
         self.page_scroll = 0;
         self.selected_link = 0;
+        self.clear_page_search();
         self.mode = Mode::Page;
         self.status.clear();
     }
@@ -501,6 +512,70 @@ impl App {
             }
         }
         self.page_scroll = line_idx;
+    }
+
+    fn update_page_search_needle(&mut self) {
+        self.page_search_needle = self.page_search.trim().to_lowercase();
+    }
+
+    fn rebuild_page_search_matches(&mut self) {
+        self.page_search_match_lines.clear();
+        self.page_search_current = 0;
+        if self.page_search_needle.is_empty() {
+            return;
+        }
+        let id = match self.opened.as_ref() {
+            Some(id) => id.clone(),
+            None => return,
+        };
+        let Some(page) = self.rendered_cache.peek(&id) else {
+            return;
+        };
+        let needle = self.page_search_needle.clone();
+        let matches: Vec<usize> = page
+            .lines
+            .iter()
+            .enumerate()
+            .filter(|(_, line)| {
+                let text = line
+                    .spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+                    .to_lowercase();
+                text.contains(&needle)
+            })
+            .map(|(idx, _)| idx)
+            .collect();
+        self.page_search_match_lines = matches;
+    }
+
+    fn page_search_next(&mut self) {
+        if self.page_search_match_lines.is_empty() {
+            return;
+        }
+        self.page_search_current =
+            (self.page_search_current + 1) % self.page_search_match_lines.len();
+        self.page_scroll = self.page_search_match_lines[self.page_search_current];
+    }
+
+    fn page_search_prev(&mut self) {
+        if self.page_search_match_lines.is_empty() {
+            return;
+        }
+        if self.page_search_current == 0 {
+            self.page_search_current = self.page_search_match_lines.len() - 1;
+        } else {
+            self.page_search_current -= 1;
+        }
+        self.page_scroll = self.page_search_match_lines[self.page_search_current];
+    }
+
+    fn clear_page_search(&mut self) {
+        self.page_search.clear();
+        self.page_search_needle.clear();
+        self.page_search_match_lines.clear();
+        self.page_search_current = 0;
     }
 }
 
@@ -1149,7 +1224,7 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> Result<()> {
 fn ui(frame: &mut Frame, app: &mut App) {
     match app.mode {
         Mode::List | Mode::Search => render_list_view(frame, app),
-        Mode::Page => render_page_view(frame, app),
+        Mode::Page | Mode::PageSearch => render_page_view(frame, app),
         Mode::Edit => render_edit_view(frame, app),
     }
     if app.show_help {
@@ -1254,13 +1329,18 @@ fn render_list_view(frame: &mut Frame, app: &App) {
 }
 
 fn render_page_view(frame: &mut Frame, app: &App) {
+    let has_search_bar = app.mode == Mode::PageSearch;
+    let mut constraints = vec![
+        Constraint::Length(1),
+        Constraint::Min(1),
+        Constraint::Length(3),
+    ];
+    if has_search_bar {
+        constraints.push(Constraint::Length(1));
+    }
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Min(1),
-            Constraint::Length(3),
-        ])
+        .constraints(constraints)
         .split(frame.area());
 
     let header = if let Some(page) = app.current_rendered_page() {
@@ -1274,11 +1354,18 @@ fn render_page_view(frame: &mut Frame, app: &App) {
     );
 
     let text = if let Some(page) = app.current_rendered_page() {
-        let lines = if page.links.is_empty() {
+        let mut lines = if page.links.is_empty() {
             page.lines.clone()
         } else {
             highlight_selected_link_markers(&page.lines, app.selected_link + 1)
         };
+        if !app.page_search_needle.is_empty() {
+            let current_line = app
+                .page_search_match_lines
+                .get(app.page_search_current)
+                .copied();
+            lines = highlight_page_search(&lines, &app.page_search_needle, current_line);
+        }
         Text::from(lines)
     } else {
         Text::from(vec![Line::raw("Press Enter on a page from the list")])
@@ -1295,9 +1382,20 @@ fn render_page_view(frame: &mut Frame, app: &App) {
         .scroll((app.page_scroll.min(u16::MAX as usize) as u16, 0));
     frame.render_widget(paragraph, chunks[1]);
 
-    let mut footer = String::from(
-        "j/k scroll | tab/backtab link | enter follow | h back | b list | ? help | q quit",
-    );
+    let mut footer = if !app.page_search_needle.is_empty() {
+        let total = app.page_search_match_lines.len();
+        if total > 0 {
+            format!(
+                "match {}/{} | n/N next/prev | / search | Esc clear | ? help | q quit",
+                app.page_search_current + 1,
+                total
+            )
+        } else {
+            "no matches | / search | Esc clear | ? help | q quit".to_string()
+        }
+    } else {
+        "j/k scroll | tab/backtab link | enter follow | / search | h back | b list | ? help | q quit".to_string()
+    };
     if let Some(page) = app.current_rendered_page() {
         if let Some(link) = page.links.get(app.selected_link) {
             footer.push('\n');
@@ -1314,6 +1412,22 @@ fn render_page_view(frame: &mut Frame, app: &App) {
     }
     let dashboard = format!("{}\n{}", app.plugins.status_line(), footer);
     frame.render_widget(Paragraph::new(dashboard), chunks[2]);
+
+    if has_search_bar {
+        let search_input = Line::from(vec![
+            Span::styled(
+                "/",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(app.page_search.clone(), Style::default().fg(Color::White)),
+        ]);
+        frame.render_widget(
+            Paragraph::new(search_input).style(Style::default().bg(Color::Black)),
+            chunks[3],
+        );
+    }
 }
 
 fn render_edit_view(frame: &mut Frame, app: &mut App) {
@@ -1450,9 +1564,8 @@ fn render_help_overlay(frame: &mut Frame, mode: Mode) {
         "Global",
         &[
             ("q", "quit"),
-            ("/", "search"),
             ("?", "toggle this help"),
-            ("Esc", "back to list / dismiss"),
+            ("Esc", "back / dismiss"),
         ],
     );
 
@@ -1465,6 +1578,7 @@ fn render_help_overlay(frame: &mut Frame, mode: Mode) {
                     ("j / Down", "move down"),
                     ("k / Up", "move up"),
                     ("Enter", "open page"),
+                    ("/", "search pages"),
                 ],
             );
         }
@@ -1491,12 +1605,27 @@ fn render_help_overlay(frame: &mut Frame, mode: Mode) {
                     ("PgUp / PgDn", "half-page scroll"),
                     ("g", "go to top"),
                     ("G", "go to bottom"),
+                    ("/", "search in page"),
+                    ("n / N", "next / prev match"),
                     ("Tab / Shift+Tab", "next / prev link"),
                     ("Enter", "follow link"),
                     ("e", "edit page"),
                     ("O", "open externally"),
                     ("h", "back in history"),
                     ("b", "back to list"),
+                    ("Esc", "clear search / back"),
+                ],
+            );
+        }
+        Mode::PageSearch => {
+            add_section(
+                &mut lines,
+                "Page Search",
+                &[
+                    ("type", "search page content"),
+                    ("Backspace", "delete character"),
+                    ("Enter", "confirm search"),
+                    ("Esc", "cancel search"),
                 ],
             );
         }
@@ -1522,7 +1651,7 @@ fn render_help_overlay(frame: &mut Frame, mode: Mode) {
     )]));
 
     let content_height = lines.len() as u16 + 2; // +2 for borders
-    let content_width = 44;
+    let content_width = 46;
     let area = centered_rect(content_width, content_height, frame.area());
 
     frame.render_widget(Clear, area);

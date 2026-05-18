@@ -35,7 +35,7 @@
 //! lepiter_plugin_main!(handle);
 //! ```
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::BufReader;
 use std::path::{Component, Path, PathBuf};
@@ -268,6 +268,8 @@ pub struct KnowledgeBaseIndex {
     pub sorted_ids: Vec<PageId>,
     /// Non-fatal issues encountered while scanning metadata.
     pub index_issues: Vec<ParseIssue>,
+    /// Reverse link index: target page id -> sorted list of source page ids that link to it.
+    backlinks: HashMap<PageId, Vec<PageId>>,
 }
 
 /// Entry point for opening a Lepiter knowledge base directory.
@@ -323,6 +325,7 @@ impl KnowledgeBase {
             pages,
             sorted_ids,
             index_issues: issues,
+            backlinks: HashMap::new(),
         })
     }
 }
@@ -502,6 +505,55 @@ impl KnowledgeBaseIndex {
         }
     }
 
+    /// Builds the reverse link index by loading every page, extracting link
+    /// targets, classifying them, and recording which pages link to which.
+    ///
+    /// Call this once after [`KnowledgeBase::open`] when backlink data is needed.
+    pub fn build_backlinks(&mut self) {
+        let mut back: HashMap<PageId, HashSet<PageId>> = HashMap::new();
+        let ids: Vec<PageId> = self.sorted_ids.clone();
+        for source_id in &ids {
+            let Ok(page) = self.load_page(source_id) else {
+                continue;
+            };
+            for target in extract_link_targets(&page.content) {
+                if let LinkTargetKind::InternalPage(target_id) = self.classify_link_target(&target)
+                    && target_id != *source_id
+                {
+                    back.entry(target_id).or_default().insert(source_id.clone());
+                }
+            }
+        }
+        self.backlinks = back
+            .into_iter()
+            .map(|(target, sources)| {
+                let mut sorted: Vec<PageId> = sources.into_iter().collect();
+                sorted.sort_by(|a, b| {
+                    let a_lower = self
+                        .pages
+                        .get(a)
+                        .map(|m| m.title_lower.as_str())
+                        .unwrap_or("");
+                    let b_lower = self
+                        .pages
+                        .get(b)
+                        .map(|m| m.title_lower.as_str())
+                        .unwrap_or("");
+                    a_lower.cmp(b_lower)
+                });
+                (target, sorted)
+            })
+            .collect();
+    }
+
+    /// Returns the page ids that link to the given page, sorted by title.
+    pub fn backlinks_for(&self, id: &str) -> &[PageId] {
+        self.backlinks
+            .get(id)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+    }
+
     /// Returns the root path used to build this index.
     pub fn root(&self) -> &Path {
         &self.root
@@ -511,6 +563,88 @@ impl KnowledgeBaseIndex {
     pub fn attachment_resolver(&self) -> AttachmentResolver {
         AttachmentResolver::new(&self.root)
     }
+}
+
+/// Extracts raw link target strings from a node tree.
+///
+/// Finds explicit `Node::Link` urls plus inline `[label](target)` and `[[wikilink]]`
+/// syntax in text-bearing nodes.
+pub fn extract_link_targets(nodes: &[Node]) -> Vec<String> {
+    let mut out = Vec::new();
+    for node in nodes {
+        match node {
+            Node::Link { url, .. } => out.push(url.clone()),
+            Node::Paragraph { text }
+            | Node::Text { text }
+            | Node::Quote { text }
+            | Node::Heading { text, .. } => {
+                extract_inline_link_targets(text, &mut out);
+            }
+            Node::List { items } => {
+                for item in items {
+                    out.extend(extract_link_targets(item));
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Extracts `[label](target)` and `[[wikilink]]` targets from inline text.
+fn extract_inline_link_targets(text: &str, out: &mut Vec<String>) {
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        // [[wikilink]]
+        if i + 1 < chars.len() && chars[i] == '[' && chars[i + 1] == '[' {
+            let start = i + 2;
+            if let Some(end) = find_closing_double_bracket(&chars, start) {
+                let target: String = chars[start..end].iter().collect();
+                let target = target.trim();
+                if !target.is_empty() {
+                    out.push(target.to_string());
+                }
+                i = end + 2;
+                continue;
+            }
+        }
+        // [label](target)
+        if chars[i] == '[' {
+            let label_start = i + 1;
+            if let Some(label_end) = find_char(&chars, ']', label_start)
+                && label_end + 1 < chars.len()
+                && chars[label_end + 1] == '('
+            {
+                let target_start = label_end + 2;
+                if let Some(target_end) = find_char(&chars, ')', target_start) {
+                    let target: String = chars[target_start..target_end].iter().collect();
+                    let target = target.trim();
+                    if !target.is_empty() {
+                        out.push(target.to_string());
+                    }
+                    i = target_end + 1;
+                    continue;
+                }
+            }
+        }
+        i += 1;
+    }
+}
+
+fn find_closing_double_bracket(chars: &[char], start: usize) -> Option<usize> {
+    let mut i = start;
+    while i + 1 < chars.len() {
+        if chars[i] == ']' && chars[i + 1] == ']' {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
+}
+
+fn find_char(chars: &[char], target: char, start: usize) -> Option<usize> {
+    (start..chars.len()).find(|&i| chars[i] == target)
 }
 
 fn compute_sorted_ids(pages: &HashMap<PageId, PageMeta>) -> Vec<PageId> {
@@ -1461,6 +1595,7 @@ mod tests {
             pages,
             sorted_ids,
             index_issues: Vec::new(),
+            backlinks: HashMap::new(),
         };
 
         assert_eq!(index.filter_page_ids("alpha"), vec!["id-1".to_string()]);
@@ -1503,6 +1638,7 @@ mod tests {
             pages,
             sorted_ids,
             index_issues: Vec::new(),
+            backlinks: HashMap::new(),
         };
 
         assert_eq!(
@@ -1539,6 +1675,7 @@ mod tests {
             pages,
             sorted_ids,
             index_issues: Vec::new(),
+            backlinks: HashMap::new(),
         };
 
         assert!(matches!(
@@ -1904,5 +2041,137 @@ mod tests {
 
         assert!(page.content.is_empty());
         Ok(())
+    }
+
+    #[test]
+    fn extract_link_targets_finds_link_nodes() {
+        let nodes = vec![
+            Node::Link {
+                text: "page".into(),
+                url: "page:abc".into(),
+            },
+            Node::Paragraph {
+                text: "plain text".into(),
+            },
+        ];
+        assert_eq!(extract_link_targets(&nodes), vec!["page:abc"]);
+    }
+
+    #[test]
+    fn extract_link_targets_finds_inline_markdown_links() {
+        let nodes = vec![Node::Paragraph {
+            text: "see [docs](https://docs.rs) and [api](page:xyz)".into(),
+        }];
+        let targets = extract_link_targets(&nodes);
+        assert_eq!(targets, vec!["https://docs.rs", "page:xyz"]);
+    }
+
+    #[test]
+    fn extract_link_targets_finds_wiki_links() {
+        let nodes = vec![Node::Text {
+            text: "see also [[My Page]] and [[Other]]".into(),
+        }];
+        let targets = extract_link_targets(&nodes);
+        assert_eq!(targets, vec!["My Page", "Other"]);
+    }
+
+    #[test]
+    fn extract_link_targets_handles_headings_and_quotes() {
+        let nodes = vec![
+            Node::Heading {
+                level: 2,
+                text: "about [[Topic]]".into(),
+            },
+            Node::Quote {
+                text: "see [ref](page:ref-id)".into(),
+            },
+        ];
+        let targets = extract_link_targets(&nodes);
+        assert_eq!(targets, vec!["Topic", "page:ref-id"]);
+    }
+
+    #[test]
+    fn extract_link_targets_recurses_into_lists() {
+        let nodes = vec![Node::List {
+            items: vec![vec![Node::Paragraph {
+                text: "item with [[link]]".into(),
+            }]],
+        }];
+        let targets = extract_link_targets(&nodes);
+        assert_eq!(targets, vec!["link"]);
+    }
+
+    #[test]
+    fn extract_link_targets_ignores_code_and_unknown() {
+        let nodes = vec![
+            Node::Code {
+                language: None,
+                code: "[not](a-link)".into(),
+            },
+            Node::Unknown {
+                typ: "x".into(),
+                raw: json!({}),
+            },
+        ];
+        assert!(extract_link_targets(&nodes).is_empty());
+    }
+
+    #[test]
+    fn build_backlinks_computes_reverse_index() {
+        let (dir, mut index) = make_kb_on_disk(&[
+            ("p1", "Alpha", &[], "see [[Beta]]"),
+            ("p2", "Beta", &[], "links to [a](page:p1) and [[Gamma]]"),
+            ("p3", "Gamma", &[], "no links here"),
+        ]);
+        index.build_backlinks();
+
+        // p1 is linked to by p2 (via page:p1)
+        assert_eq!(index.backlinks_for("p1"), &["p2"]);
+        // p2 ("Beta") is linked to by p1 (via [[Beta]])
+        assert_eq!(index.backlinks_for("p2"), &["p1"]);
+        // p3 ("Gamma") is linked to by p2 (via [[Gamma]])
+        assert_eq!(index.backlinks_for("p3"), &["p2"]);
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn build_backlinks_excludes_self_links() {
+        let (dir, mut index) = make_kb_on_disk(&[("p1", "Alpha", &[], "see [[Alpha]]")]);
+        index.build_backlinks();
+        assert!(index.backlinks_for("p1").is_empty());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn backlinks_for_unknown_page_returns_empty() {
+        let (dir, mut index) = make_kb_on_disk(&[("p1", "Alpha", &[], "text")]);
+        index.build_backlinks();
+        assert!(index.backlinks_for("nonexistent").is_empty());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn build_backlinks_deduplicates_multiple_links() {
+        let (dir, mut index) = make_kb_on_disk(&[
+            ("p1", "Alpha", &[], "[[Beta]] and [[Beta]] again"),
+            ("p2", "Beta", &[], "nothing"),
+        ]);
+        index.build_backlinks();
+        // p1 links to p2 twice but should only appear once
+        assert_eq!(index.backlinks_for("p2"), &["p1"]);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn build_backlinks_sorted_by_title() {
+        let (dir, mut index) = make_kb_on_disk(&[
+            ("p1", "Zebra", &[], "links to [[Target]]"),
+            ("p2", "Alpha", &[], "links to [[Target]]"),
+            ("p3", "Target", &[], "nothing"),
+        ]);
+        index.build_backlinks();
+        assert_eq!(index.backlinks_for("p3"), &["p2", "p1"]);
+        fs::remove_dir_all(&dir).unwrap();
     }
 }

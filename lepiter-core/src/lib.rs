@@ -552,6 +552,47 @@ impl KnowledgeBaseIndex {
             .collect();
     }
 
+    /// Incrementally updates the backlinks index for a single page.
+    ///
+    /// Removes any existing outgoing links from `page_id`, then re-extracts
+    /// and classifies its current links.  Much cheaper than a full
+    /// [`build_backlinks`] call when only one page changed.
+    pub fn update_backlinks_for(&mut self, page_id: &str) {
+        // 1. Remove page_id as a source from every target's backlink list.
+        self.backlinks.retain(|_target, sources| {
+            sources.retain(|s| s != page_id);
+            !sources.is_empty()
+        });
+
+        // 2. Re-extract outgoing links from the (possibly updated) page.
+        let Ok(page) = self.load_page(page_id) else {
+            return;
+        };
+        let mut seen = HashSet::new();
+        for target in extract_link_targets(&page.content) {
+            if let LinkTargetKind::InternalPage(target_id) = self.classify_link_target(&target)
+                && target_id != page_id
+                && seen.insert(target_id.clone())
+            {
+                let sources = self.backlinks.entry(target_id).or_default();
+                sources.push(page_id.to_string());
+                sources.sort_by(|a, b| {
+                    let a_lower = self
+                        .pages
+                        .get(a)
+                        .map(|m| m.title_lower.as_str())
+                        .unwrap_or("");
+                    let b_lower = self
+                        .pages
+                        .get(b)
+                        .map(|m| m.title_lower.as_str())
+                        .unwrap_or("");
+                    a_lower.cmp(b_lower)
+                });
+            }
+        }
+    }
+
     /// Returns the page ids that link to the given page, sorted by title.
     pub fn backlinks_for(&self, id: &str) -> &[PageId] {
         self.backlinks
@@ -2190,6 +2231,209 @@ mod tests {
         ]);
         index.build_backlinks();
         assert_eq!(index.backlinks_for("p3"), &["p2", "p1"]);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn update_backlinks_for_adds_new_links() {
+        let (dir, mut index) = make_kb_on_disk(&[
+            ("p1", "Alpha", &[], "no links"),
+            ("p2", "Beta", &[], "nothing"),
+        ]);
+        index.build_backlinks();
+        assert!(index.backlinks_for("p2").is_empty());
+
+        // Simulate editing p1 to add a link to Beta.
+        let content = json!({
+            "uid": {"uuid": "p1"},
+            "pageType": {"title": "Alpha"},
+            "children": {"items": [
+                {"__type": "textSnippet", "string": "now links to [[Beta]]"}
+            ]}
+        });
+        fs::write(
+            dir.join("p1.lepiter"),
+            serde_json::to_vec(&content).unwrap(),
+        )
+        .unwrap();
+
+        index.update_backlinks_for("p1");
+        assert_eq!(index.backlinks_for("p2"), &["p1"]);
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn update_backlinks_for_removes_stale_links() {
+        let (dir, mut index) = make_kb_on_disk(&[
+            ("p1", "Alpha", &[], "see [[Beta]]"),
+            ("p2", "Beta", &[], "nothing"),
+        ]);
+        index.build_backlinks();
+        assert_eq!(index.backlinks_for("p2"), &["p1"]);
+
+        // Edit p1 to remove the link.
+        let content = json!({
+            "uid": {"uuid": "p1"},
+            "pageType": {"title": "Alpha"},
+            "children": {"items": [
+                {"__type": "textSnippet", "string": "no links anymore"}
+            ]}
+        });
+        fs::write(
+            dir.join("p1.lepiter"),
+            serde_json::to_vec(&content).unwrap(),
+        )
+        .unwrap();
+
+        index.update_backlinks_for("p1");
+        assert!(index.backlinks_for("p2").is_empty());
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn update_backlinks_for_replaces_changed_link() {
+        let (dir, mut index) = make_kb_on_disk(&[
+            ("p1", "Alpha", &[], "see [[Beta]]"),
+            ("p2", "Beta", &[], "nothing"),
+            ("p3", "Gamma", &[], "nothing"),
+        ]);
+        index.build_backlinks();
+        assert_eq!(index.backlinks_for("p2"), &["p1"]);
+        assert!(index.backlinks_for("p3").is_empty());
+
+        // Edit p1 to link to Gamma instead of Beta.
+        let content = json!({
+            "uid": {"uuid": "p1"},
+            "pageType": {"title": "Alpha"},
+            "children": {"items": [
+                {"__type": "textSnippet", "string": "see [[Gamma]]"}
+            ]}
+        });
+        fs::write(
+            dir.join("p1.lepiter"),
+            serde_json::to_vec(&content).unwrap(),
+        )
+        .unwrap();
+
+        index.update_backlinks_for("p1");
+        assert!(index.backlinks_for("p2").is_empty());
+        assert_eq!(index.backlinks_for("p3"), &["p1"]);
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn update_backlinks_for_preserves_other_sources() {
+        let (dir, mut index) = make_kb_on_disk(&[
+            ("p1", "Alpha", &[], "see [[Gamma]]"),
+            ("p2", "Beta", &[], "see [[Gamma]]"),
+            ("p3", "Gamma", &[], "nothing"),
+        ]);
+        index.build_backlinks();
+        assert_eq!(index.backlinks_for("p3"), &["p1", "p2"]);
+
+        // Edit p1 to remove its link; p2's link should remain.
+        let content = json!({
+            "uid": {"uuid": "p1"},
+            "pageType": {"title": "Alpha"},
+            "children": {"items": [
+                {"__type": "textSnippet", "string": "no link"}
+            ]}
+        });
+        fs::write(
+            dir.join("p1.lepiter"),
+            serde_json::to_vec(&content).unwrap(),
+        )
+        .unwrap();
+
+        index.update_backlinks_for("p1");
+        assert_eq!(index.backlinks_for("p3"), &["p2"]);
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn update_backlinks_for_deduplicates() {
+        let (dir, mut index) = make_kb_on_disk(&[
+            ("p1", "Alpha", &[], "nothing"),
+            ("p2", "Beta", &[], "nothing"),
+        ]);
+        index.build_backlinks();
+
+        // Edit p1 to link to Beta twice.
+        let content = json!({
+            "uid": {"uuid": "p1"},
+            "pageType": {"title": "Alpha"},
+            "children": {"items": [
+                {"__type": "textSnippet", "string": "[[Beta]] and [[Beta]] again"}
+            ]}
+        });
+        fs::write(
+            dir.join("p1.lepiter"),
+            serde_json::to_vec(&content).unwrap(),
+        )
+        .unwrap();
+
+        index.update_backlinks_for("p1");
+        assert_eq!(index.backlinks_for("p2"), &["p1"]);
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn update_backlinks_for_excludes_self_links() {
+        let (dir, mut index) = make_kb_on_disk(&[("p1", "Alpha", &[], "nothing")]);
+        index.build_backlinks();
+
+        // Edit p1 to link to itself.
+        let content = json!({
+            "uid": {"uuid": "p1"},
+            "pageType": {"title": "Alpha"},
+            "children": {"items": [
+                {"__type": "textSnippet", "string": "see [[Alpha]]"}
+            ]}
+        });
+        fs::write(
+            dir.join("p1.lepiter"),
+            serde_json::to_vec(&content).unwrap(),
+        )
+        .unwrap();
+
+        index.update_backlinks_for("p1");
+        assert!(index.backlinks_for("p1").is_empty());
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn update_backlinks_for_maintains_sort_order() {
+        let (dir, mut index) = make_kb_on_disk(&[
+            ("p1", "Zebra", &[], "nothing"),
+            ("p2", "Alpha", &[], "links to [[Target]]"),
+            ("p3", "Target", &[], "nothing"),
+        ]);
+        index.build_backlinks();
+        assert_eq!(index.backlinks_for("p3"), &["p2"]);
+
+        // Edit p1 (Zebra) to also link to Target; result should be sorted Alpha, Zebra.
+        let content = json!({
+            "uid": {"uuid": "p1"},
+            "pageType": {"title": "Zebra"},
+            "children": {"items": [
+                {"__type": "textSnippet", "string": "links to [[Target]]"}
+            ]}
+        });
+        fs::write(
+            dir.join("p1.lepiter"),
+            serde_json::to_vec(&content).unwrap(),
+        )
+        .unwrap();
+
+        index.update_backlinks_for("p1");
+        assert_eq!(index.backlinks_for("p3"), &["p2", "p1"]);
+
         fs::remove_dir_all(&dir).unwrap();
     }
 

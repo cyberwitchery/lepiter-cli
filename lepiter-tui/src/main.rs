@@ -353,6 +353,8 @@ impl App {
             tags: Vec::new(),
         };
         self.index.register_page(meta);
+        // Existing pages may link to this title; rebuild to pick them up.
+        self.index.build_backlinks();
         self.rebuild_visible_ids();
         self.open_page(&page_uuid, false);
         self.enter_edit_mode();
@@ -372,6 +374,7 @@ impl App {
                 },
             );
         }
+        self.index.update_backlinks_for(id);
     }
 
     fn get_or_load_page(&mut self, id: &str) -> Result<Page> {

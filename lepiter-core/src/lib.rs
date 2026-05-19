@@ -331,6 +331,12 @@ impl KnowledgeBase {
 }
 
 impl KnowledgeBaseIndex {
+    /// Registers a new page in the index and re-sorts the id list.
+    pub fn register_page(&mut self, meta: PageMeta) {
+        self.pages.insert(meta.id.clone(), meta);
+        self.sorted_ids = compute_sorted_ids(&self.pages);
+    }
+
     /// Loads and parses a single page by canonical id.
     ///
     /// Returns an error if the id is missing from the index or if JSON parsing fails.
@@ -2172,6 +2178,29 @@ mod tests {
         ]);
         index.build_backlinks();
         assert_eq!(index.backlinks_for("p3"), &["p2", "p1"]);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn register_page_adds_and_resorts() {
+        let dir = temp_dir_path("register");
+        fs::create_dir_all(&dir).unwrap();
+        let mut index = KnowledgeBase::open(&dir).unwrap();
+        assert!(index.sorted_ids.is_empty());
+
+        let meta = PageMeta {
+            id: "new-page".to_string(),
+            title: "My Page".to_string(),
+            title_lower: "my page".to_string(),
+            path: dir.join("new-page.lepiter"),
+            updated_at: None,
+            tags: Vec::new(),
+        };
+        index.register_page(meta);
+        assert_eq!(index.sorted_ids.len(), 1);
+        assert_eq!(index.sorted_ids[0], "new-page");
+        assert!(index.pages.contains_key("new-page"));
+
         fs::remove_dir_all(&dir).unwrap();
     }
 }

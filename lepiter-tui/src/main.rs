@@ -40,7 +40,7 @@ mod util;
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::fs;
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Write as _};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -59,8 +59,8 @@ use crate::util::{LruCache, cache_limit_from_env};
 use anyhow::{Context, Result, bail};
 use crossterm::event::{self, Event, KeyEventKind};
 use lepiter_core::{
-    KnowledgeBase, KnowledgeBaseIndex, LinkTargetKind, Node, Page, PageId, SearchMatchKind,
-    TitleResolution, render_page_to_text,
+    KnowledgeBase, KnowledgeBaseIndex, LinkTargetKind, Node, Page, PageId, PageMeta,
+    SearchMatchKind, TitleResolution, render_page_to_text,
 };
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -76,6 +76,7 @@ enum Mode {
     PageSearch,
     Backlinks,
     Edit,
+    NewPageTitle,
 }
 
 #[derive(Debug, Clone)]
@@ -107,6 +108,7 @@ struct App {
     page_search_current: usize,
     backlink_ids: Vec<PageId>,
     backlink_selected: usize,
+    new_page_title: String,
     mode: Mode,
     show_help: bool,
     status: String,
@@ -141,6 +143,7 @@ impl App {
             page_search_current: 0,
             backlink_ids: Vec::new(),
             backlink_selected: 0,
+            new_page_title: String::new(),
             mode: Mode::List,
             show_help: false,
             status: String::new(),
@@ -297,6 +300,62 @@ impl App {
             }
         }
         self.mode = Mode::Page;
+    }
+
+    fn create_page(&mut self, title: &str) {
+        let page_uuid = uuid::Uuid::new_v4().to_string();
+        let now = chrono::Utc::now().to_rfc3339();
+        let raw = serde_json::json!({
+            "uid": { "uuid": &page_uuid },
+            "pageType": { "title": title },
+            "editTime": { "time": { "dateAndTimeString": &now } },
+            "children": {
+                "items": [
+                    { "__type": "textSnippet", "string": "" }
+                ]
+            }
+        });
+
+        let file_path = self.index.root().join(format!("{page_uuid}.lepiter"));
+        let bytes = match serde_json::to_vec_pretty(&raw) {
+            Ok(b) => b,
+            Err(err) => {
+                self.status = format!("failed to serialize page: {err:#}");
+                return;
+            }
+        };
+        let dir = self.index.root();
+        let tmp = match tempfile::NamedTempFile::new_in(dir) {
+            Ok(t) => t,
+            Err(err) => {
+                self.status = format!("failed to create temp file: {err:#}");
+                return;
+            }
+        };
+        if let Err(err) = (|| -> anyhow::Result<()> {
+            let mut tmp = tmp;
+            tmp.write_all(&bytes)?;
+            tmp.as_file().sync_all()?;
+            tmp.persist(&file_path)?;
+            Ok(())
+        })() {
+            self.status = format!("failed to write page: {err:#}");
+            return;
+        }
+
+        let title_lower = title.to_lowercase();
+        let meta = PageMeta {
+            id: page_uuid.clone(),
+            title: title.to_string(),
+            title_lower,
+            path: file_path,
+            updated_at: chrono::DateTime::parse_from_rfc3339(&now).ok(),
+            tags: Vec::new(),
+        };
+        self.index.register_page(meta);
+        self.rebuild_visible_ids();
+        self.open_page(&page_uuid, false);
+        self.enter_edit_mode();
     }
 
     fn refresh_after_edit(&mut self, id: &str) {
@@ -1261,7 +1320,7 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App) -> Result<()> {
 
 fn ui(frame: &mut Frame, app: &mut App) {
     match app.mode {
-        Mode::List | Mode::Search => render_list_view(frame, app),
+        Mode::List | Mode::Search | Mode::NewPageTitle => render_list_view(frame, app),
         Mode::Page | Mode::PageSearch => render_page_view(frame, app),
         Mode::Backlinks => render_backlinks_view(frame, app),
         Mode::Edit => render_edit_view(frame, app),
@@ -1281,27 +1340,45 @@ fn render_list_view(frame: &mut Frame, app: &App) {
         ])
         .split(frame.area());
 
-    let search_title = if app.mode == Mode::Search {
-        "Search (typing)"
+    if app.mode == Mode::NewPageTitle {
+        let title_style = Style::default().fg(Color::Green);
+        let title_bar = Paragraph::new(Line::from(vec![
+            Span::styled("> ", title_style.add_modifier(Modifier::BOLD)),
+            Span::styled(
+                app.new_page_title.clone(),
+                Style::default().fg(Color::White),
+            ),
+        ]))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("New Page Title (Enter to create, Esc to cancel)")
+                .border_style(title_style),
+        );
+        frame.render_widget(title_bar, chunks[0]);
     } else {
-        "Search (/)"
-    };
-    let search_style = if app.mode == Mode::Search {
-        Style::default().fg(Color::Yellow)
-    } else {
-        Style::default().fg(Color::Gray)
-    };
-    let search_bar = Paragraph::new(Line::from(vec![
-        Span::styled("> ", search_style.add_modifier(Modifier::BOLD)),
-        Span::styled(app.search.clone(), Style::default().fg(Color::White)),
-    ]))
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(search_title)
-            .border_style(search_style),
-    );
-    frame.render_widget(search_bar, chunks[0]);
+        let search_title = if app.mode == Mode::Search {
+            "Search (typing)"
+        } else {
+            "Search (/)"
+        };
+        let search_style = if app.mode == Mode::Search {
+            Style::default().fg(Color::Yellow)
+        } else {
+            Style::default().fg(Color::Gray)
+        };
+        let search_bar = Paragraph::new(Line::from(vec![
+            Span::styled("> ", search_style.add_modifier(Modifier::BOLD)),
+            Span::styled(app.search.clone(), Style::default().fg(Color::White)),
+        ]))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(search_title)
+                .border_style(search_style),
+        );
+        frame.render_widget(search_bar, chunks[0]);
+    }
 
     let items = app
         .visible_ids
@@ -1349,7 +1426,7 @@ fn render_list_view(frame: &mut Frame, app: &App) {
     frame.render_stateful_widget(list, chunks[1], &mut state);
 
     let mut status = format!(
-        "matches: {} | index: {}/{} | cache p/r: {}/{} | j/k move | enter open | / search | ? help | q quit",
+        "matches: {} | index: {}/{} | cache p/r: {}/{} | j/k move | enter open | / search | n new | ? help | q quit",
         app.visible_ids.len(),
         app.text_index.len(),
         app.index.pages.len(),
@@ -1668,7 +1745,7 @@ fn render_help_overlay(frame: &mut Frame, mode: Mode) {
     );
 
     match mode {
-        Mode::List => {
+        Mode::List | Mode::NewPageTitle => {
             add_section(
                 &mut lines,
                 "List",
@@ -1677,6 +1754,7 @@ fn render_help_overlay(frame: &mut Frame, mode: Mode) {
                     ("k / Up", "move up"),
                     ("Enter", "open page"),
                     ("/", "search pages"),
+                    ("n", "create new page"),
                 ],
             );
         }
@@ -1749,6 +1827,7 @@ fn render_help_overlay(frame: &mut Frame, mode: Mode) {
                     ("Home / End", "start / end of text"),
                     ("PgUp / PgDn", "scroll preview"),
                     ("Tab / Shift+Tab", "next / prev snippet"),
+                    ("Ctrl+A", "append new text snippet"),
                     ("Ctrl+U", "undo"),
                     ("Esc", "save and exit"),
                 ],

@@ -16,7 +16,9 @@ ratatui.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
+chrono.workspace = true
 lepiter-core.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 anyhow.workspace = true

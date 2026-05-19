@@ -5,6 +5,13 @@ all notable changes to this project are documented in this file.
 ## Unreleased
 
 ### added
+- page creation from the TUI: press `n` in list mode to create a new page;
+  type a title and press Enter to create a minimal `.lepiter` page (with a
+  fresh UUID and an empty text snippet), then immediately enter edit mode
+- snippet insertion in edit mode: press `Ctrl+A` to append a new empty text
+  snippet to the current page; the cursor moves to the new snippet
+- `KnowledgeBaseIndex::register_page()` public method to add a page to the
+  index at runtime and re-sort the id list
 - within-page content search: press `/` in page mode to search, `n`/`N` to
   cycle through matches, `Esc` to clear; matches are highlighted in the
   rendered page with the current match distinguished from other matches

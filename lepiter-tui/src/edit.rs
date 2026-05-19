@@ -194,6 +194,37 @@ impl EditState {
         last.elapsed() >= delay
     }
 
+    pub fn append_text_snippet(&mut self) {
+        let new_snippet = serde_json::json!({
+            "__type": "textSnippet",
+            "string": ""
+        });
+
+        let items = self
+            .raw
+            .get_mut("children")
+            .and_then(|v| v.get_mut("items"))
+            .and_then(Value::as_array_mut);
+        let Some(items) = items else {
+            return;
+        };
+        items.push(new_snippet);
+
+        self.commit_buffer();
+
+        let mut snippets = Vec::new();
+        collect_snippets(&self.raw, Vec::new(), &mut snippets);
+        let new_idx = snippets.len().saturating_sub(1);
+        self.snippets = snippets;
+        self.selected = new_idx;
+        if let Some(entry) = self.current() {
+            let text = entry.text.clone();
+            self.set_buffer(text);
+        }
+        self.dirty = true;
+        self.last_edit = Some(Instant::now());
+    }
+
     pub fn save_to_disk(&mut self) -> Result<()> {
         let bytes = serde_json::to_vec_pretty(&self.raw)?;
 
@@ -1531,5 +1562,65 @@ mod tests {
             String::new(),
         );
         assert!(!edit.is_editable());
+    }
+
+    // ── append_text_snippet ────────────────────────────────────────
+
+    #[test]
+    fn append_text_snippet_adds_to_items() {
+        let mut edit = make_edit("hello");
+        assert_eq!(edit.snippets.len(), 1);
+        edit.append_text_snippet();
+        assert_eq!(edit.snippets.len(), 2);
+        assert_eq!(edit.selected, 1);
+        assert!(edit.buffer.is_empty());
+        assert!(edit.dirty);
+    }
+
+    #[test]
+    fn append_text_snippet_updates_raw_json() {
+        let mut edit = make_edit("hello");
+        edit.append_text_snippet();
+        let items = edit
+            .raw
+            .get("children")
+            .unwrap()
+            .get("items")
+            .unwrap()
+            .as_array()
+            .unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(
+            items[1].get("__type").unwrap().as_str().unwrap(),
+            "textSnippet"
+        );
+        assert_eq!(items[1].get("string").unwrap().as_str().unwrap(), "");
+    }
+
+    #[test]
+    fn append_text_snippet_to_empty_page() {
+        let raw = json!({"children": {"items": []}});
+        let snippets = Vec::new();
+        let mut edit = EditState::new(
+            "p".into(),
+            PathBuf::from("/tmp/t.json"),
+            raw,
+            snippets,
+            String::new(),
+        );
+        edit.append_text_snippet();
+        assert_eq!(edit.snippets.len(), 1);
+        assert_eq!(edit.selected, 0);
+        assert!(edit.dirty);
+    }
+
+    #[test]
+    fn append_text_snippet_new_entry_is_editable() {
+        let mut edit = make_edit("hello");
+        edit.append_text_snippet();
+        let entry = edit.current().unwrap();
+        assert!(entry.editable);
+        assert_eq!(entry.typ, "textSnippet");
+        assert_eq!(entry.field, Some("string".to_string()));
     }
 }

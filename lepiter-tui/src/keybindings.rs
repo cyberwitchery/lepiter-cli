@@ -94,6 +94,32 @@ impl App {
             return KeyResult::Continue;
         }
 
+        if self.mode == Mode::NewPageTitle {
+            match key.code {
+                KeyCode::Esc => {
+                    self.new_page_title.clear();
+                    self.mode = Mode::List;
+                }
+                KeyCode::Enter => {
+                    let title = self.new_page_title.trim().to_string();
+                    self.new_page_title.clear();
+                    if title.is_empty() {
+                        self.mode = Mode::List;
+                    } else {
+                        self.create_page(&title);
+                    }
+                }
+                KeyCode::Backspace => {
+                    self.new_page_title.pop();
+                }
+                KeyCode::Char(c) => {
+                    self.new_page_title.push(c);
+                }
+                _ => {}
+            }
+            return KeyResult::Tick;
+        }
+
         if self.mode == Mode::Edit {
             self.handle_edit_key(key);
             return KeyResult::Tick;
@@ -143,7 +169,11 @@ impl App {
                     self.open_selected_page();
                 }
                 Mode::Page => self.follow_selected_link(),
-                Mode::Search | Mode::PageSearch | Mode::Edit | Mode::Backlinks => {}
+                Mode::Search
+                | Mode::PageSearch
+                | Mode::Edit
+                | Mode::Backlinks
+                | Mode::NewPageTitle => {}
             },
             KeyCode::Char('n') if self.mode == Mode::Page => {
                 self.page_search_next();
@@ -154,29 +184,61 @@ impl App {
             KeyCode::Up | KeyCode::Char('k') => match self.mode {
                 Mode::List => self.move_selection(-1),
                 Mode::Page => self.scroll_page(-1),
-                Mode::Search | Mode::PageSearch | Mode::Edit | Mode::Backlinks => {}
+                Mode::Search
+                | Mode::PageSearch
+                | Mode::Edit
+                | Mode::Backlinks
+                | Mode::NewPageTitle => {}
             },
             KeyCode::Down | KeyCode::Char('j') => match self.mode {
                 Mode::List => self.move_selection(1),
                 Mode::Page => self.scroll_page(1),
-                Mode::Search | Mode::PageSearch | Mode::Edit | Mode::Backlinks => {}
+                Mode::Search
+                | Mode::PageSearch
+                | Mode::Edit
+                | Mode::Backlinks
+                | Mode::NewPageTitle => {}
             },
             KeyCode::PageUp => match self.mode {
                 Mode::Page => self.scroll_page(-page_scroll_half()),
-                Mode::List | Mode::Search | Mode::PageSearch | Mode::Edit | Mode::Backlinks => {}
+                Mode::List
+                | Mode::Search
+                | Mode::PageSearch
+                | Mode::Edit
+                | Mode::Backlinks
+                | Mode::NewPageTitle => {}
             },
             KeyCode::PageDown => match self.mode {
                 Mode::Page => self.scroll_page(page_scroll_half()),
-                Mode::List | Mode::Search | Mode::PageSearch | Mode::Edit | Mode::Backlinks => {}
+                Mode::List
+                | Mode::Search
+                | Mode::PageSearch
+                | Mode::Edit
+                | Mode::Backlinks
+                | Mode::NewPageTitle => {}
             },
             KeyCode::Char('g') => match self.mode {
                 Mode::Page => self.page_scroll = 0,
-                Mode::List | Mode::Search | Mode::PageSearch | Mode::Edit | Mode::Backlinks => {}
+                Mode::List
+                | Mode::Search
+                | Mode::PageSearch
+                | Mode::Edit
+                | Mode::Backlinks
+                | Mode::NewPageTitle => {}
             },
             KeyCode::Char('G') => match self.mode {
                 Mode::Page => self.page_scroll = usize::MAX / 2,
-                Mode::List | Mode::Search | Mode::PageSearch | Mode::Edit | Mode::Backlinks => {}
+                Mode::List
+                | Mode::Search
+                | Mode::PageSearch
+                | Mode::Edit
+                | Mode::Backlinks
+                | Mode::NewPageTitle => {}
             },
+            KeyCode::Char('n') if self.mode == Mode::List => {
+                self.new_page_title.clear();
+                self.mode = Mode::NewPageTitle;
+            }
             KeyCode::Char('b') if self.mode == Mode::Page => {
                 self.back_to_list();
             }
@@ -224,6 +286,10 @@ impl App {
                 edit.preview_scroll = edit.preview_scroll.saturating_add(10);
                 edit.follow_cursor = false;
                 edit.snapshot_pending = true;
+                return;
+            }
+            KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                edit.append_text_snippet();
                 return;
             }
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -413,6 +479,7 @@ mod tests {
             page_search_current: 0,
             backlink_ids: Vec::new(),
             backlink_selected: 0,
+            new_page_title: String::new(),
             mode: Mode::List,
             show_help: false,
             status: String::new(),
@@ -1057,7 +1124,7 @@ mod tests {
         let edit = make_edit_state();
         let before = edit.buffer.clone();
         app.edit = Some(edit);
-        app.handle_key(key_ctrl(KeyCode::Char('a')));
+        app.handle_key(key_ctrl(KeyCode::Char('b')));
         assert_eq!(app.edit.as_ref().unwrap().buffer, before);
     }
 
@@ -1411,5 +1478,76 @@ mod tests {
         app.mode = Mode::Backlinks;
         let result = app.handle_key(key(KeyCode::Char('j')));
         assert!(matches!(result, KeyResult::Tick));
+    }
+
+    // ── New page title mode ───────────────────────────────────────
+
+    #[test]
+    fn list_n_enters_new_page_title_mode() {
+        let mut app = make_app();
+        app.handle_key(key(KeyCode::Char('n')));
+        assert_eq!(app.mode, Mode::NewPageTitle);
+        assert!(app.new_page_title.is_empty());
+    }
+
+    #[test]
+    fn new_page_title_typing_accumulates() {
+        let mut app = make_app();
+        app.mode = Mode::NewPageTitle;
+        app.handle_key(key(KeyCode::Char('H')));
+        app.handle_key(key(KeyCode::Char('i')));
+        assert_eq!(app.new_page_title, "Hi");
+    }
+
+    #[test]
+    fn new_page_title_backspace_removes_char() {
+        let mut app = make_app();
+        app.mode = Mode::NewPageTitle;
+        app.new_page_title = "abc".to_string();
+        app.handle_key(key(KeyCode::Backspace));
+        assert_eq!(app.new_page_title, "ab");
+    }
+
+    #[test]
+    fn new_page_title_esc_cancels() {
+        let mut app = make_app();
+        app.mode = Mode::NewPageTitle;
+        app.new_page_title = "something".to_string();
+        app.handle_key(key(KeyCode::Esc));
+        assert_eq!(app.mode, Mode::List);
+        assert!(app.new_page_title.is_empty());
+    }
+
+    #[test]
+    fn new_page_title_empty_enter_returns_to_list() {
+        let mut app = make_app();
+        app.mode = Mode::NewPageTitle;
+        app.handle_key(key(KeyCode::Enter));
+        assert_eq!(app.mode, Mode::List);
+    }
+
+    #[test]
+    fn new_page_title_returns_tick() {
+        let mut app = make_app();
+        app.mode = Mode::NewPageTitle;
+        let result = app.handle_key(key(KeyCode::Char('x')));
+        assert!(matches!(result, KeyResult::Tick));
+    }
+
+    // ── Ctrl+A append snippet ─────────────────────────────────────
+
+    #[test]
+    fn edit_ctrl_a_appends_snippet() {
+        let mut app = make_app();
+        app.mode = Mode::Edit;
+        let edit = make_edit_state();
+        assert_eq!(edit.snippets.len(), 2);
+        app.edit = Some(edit);
+        app.handle_key(key_ctrl(KeyCode::Char('a')));
+        let edit = app.edit.as_ref().unwrap();
+        assert_eq!(edit.snippets.len(), 3);
+        assert_eq!(edit.selected, 2);
+        assert!(edit.buffer.is_empty());
+        assert!(edit.dirty);
     }
 }

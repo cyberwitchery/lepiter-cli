@@ -1142,6 +1142,8 @@ pub fn is_code_snippet(typ: &str) -> bool {
         "pharoSnippet"
             | "pythonSnippet"
             | "javascriptSnippet"
+            | "jsonSnippet"
+            | "yamlSnippet"
             | "shellCommandSnippet"
             | "gemstoneSnippet"
             | "exampleSnippet"
@@ -1388,6 +1390,12 @@ mod tests {
         let code = json!({"__type":"pythonSnippet","code":"print(1)"});
         assert!(matches!(parse_node(&code), Node::Code { .. }));
 
+        let json_code = json!({"__type":"jsonSnippet","code":"{\"key\": 1}"});
+        assert!(matches!(parse_node(&json_code), Node::Code { .. }));
+
+        let yaml_code = json!({"__type":"yamlSnippet","code":"key: value"});
+        assert!(matches!(parse_node(&yaml_code), Node::Code { .. }));
+
         let link = json!({"__type":"pharoLinkSnippet","string":"link","url":"page:abc"});
         assert!(matches!(parse_node(&link), Node::Link { .. }));
 
@@ -1429,6 +1437,10 @@ mod tests {
         assert_eq!(
             infer_language(Some("javascriptSnippet")),
             Some("javascript".to_string())
+        );
+        assert_eq!(
+            infer_language(Some("jsonSnippet")),
+            Some("json".to_string())
         );
         assert_eq!(
             infer_language(Some("yamlSnippet")),

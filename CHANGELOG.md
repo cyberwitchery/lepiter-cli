@@ -45,6 +45,8 @@ all notable changes to this project are documented in this file.
   with proper indentation instead of truncating to the first line (TUI and plain-text renderers)
 - edit-mode autosave now uses atomic writes (temp file + rename) to prevent page JSON
   corruption on crash or disk-full conditions
+- `jsonSnippet` and `yamlSnippet` now render as code blocks with correct language
+  tags instead of falling through to Unknown nodes
 - transient plugin failures (timeout/crash) are no longer permanently cached in the LRU;
   subsequent renders for the same snippet retry the plugin instead of returning a stale error
 

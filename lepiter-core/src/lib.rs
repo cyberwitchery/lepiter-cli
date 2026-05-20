@@ -556,7 +556,7 @@ impl KnowledgeBaseIndex {
     ///
     /// Removes any existing outgoing links from `page_id`, then re-extracts
     /// and classifies its current links.  Much cheaper than a full
-    /// [`build_backlinks`] call when only one page changed.
+    /// [`Self::build_backlinks`] call when only one page changed.
     pub fn update_backlinks_for(&mut self, page_id: &str) {
         // 1. Remove page_id as a source from every target's backlink list.
         self.backlinks.retain(|_target, sources| {

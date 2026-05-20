@@ -146,10 +146,30 @@ pub struct ParseIssue {
 /// Match category for search results.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SearchMatchKind {
-    /// Match came from page metadata (title/id/tags).
-    Meta,
+    /// Match came from page title or id.
+    Title,
+    /// Match came from a page tag.
+    Tag,
     /// Match came from rendered page content.
     Content,
+}
+
+impl SearchMatchKind {
+    /// Relevance score used for ranking search results.
+    /// Higher is more relevant.
+    pub fn score(self) -> u32 {
+        match self {
+            SearchMatchKind::Title => 3,
+            SearchMatchKind::Tag => 2,
+            SearchMatchKind::Content => 1,
+        }
+    }
+
+    /// Returns `true` when the match came from metadata (title, id, or tags)
+    /// rather than page content.
+    pub fn is_meta(self) -> bool {
+        matches!(self, SearchMatchKind::Title | SearchMatchKind::Tag)
+    }
 }
 
 /// Search result entry for one page.
@@ -385,12 +405,27 @@ impl KnowledgeBaseIndex {
         let needle = query.trim().to_lowercase();
         let mut metas = self.sorted_pages();
         if !needle.is_empty() {
-            metas.retain(|m| page_meta_matches(m, &needle));
+            metas.retain(|m| page_meta_match_kind(m, &needle).is_some());
         }
         metas.into_iter().map(|m| m.id.clone()).collect()
     }
 
-    /// Searches pages by metadata and optionally content, returning sorted hits.
+    /// Returns page ids with their match kinds, filtered by metadata query.
+    pub fn filter_page_ids_scored(&self, query: &str) -> Vec<(PageId, SearchMatchKind)> {
+        let needle = query.trim().to_lowercase();
+        if needle.is_empty() {
+            return Vec::new();
+        }
+        let metas = self.sorted_pages();
+        metas
+            .into_iter()
+            .filter_map(|m| page_meta_match_kind(m, &needle).map(|kind| (m.id.clone(), kind)))
+            .collect()
+    }
+
+    /// Searches pages by metadata and optionally content, returning hits
+    /// ranked by relevance (title > tag > content), with ties broken
+    /// alphabetically by title.
     pub fn search_hits(&self, query: &str, include_content: bool) -> Vec<SearchHit> {
         let needle = query.trim().to_lowercase();
         if needle.is_empty() {
@@ -401,8 +436,8 @@ impl KnowledgeBaseIndex {
         let metas = self.sorted_pages();
 
         for meta in &metas {
-            if page_meta_matches(meta, &needle) {
-                by_id.insert(meta.id.clone(), SearchMatchKind::Meta);
+            if let Some(kind) = page_meta_match_kind(meta, &needle) {
+                by_id.insert(meta.id.clone(), kind);
             }
         }
 
@@ -420,15 +455,30 @@ impl KnowledgeBaseIndex {
             }
         }
 
-        let mut hits = Vec::new();
-        for meta in metas {
-            if let Some(kind) = by_id.get(&meta.id) {
-                hits.push(SearchHit {
+        let mut hits: Vec<SearchHit> = metas
+            .iter()
+            .filter_map(|meta| {
+                by_id.get(&meta.id).map(|kind| SearchHit {
                     id: meta.id.clone(),
                     kind: *kind,
-                });
-            }
-        }
+                })
+            })
+            .collect();
+        hits.sort_by(|a, b| {
+            b.kind.score().cmp(&a.kind.score()).then_with(|| {
+                let ta = self
+                    .pages
+                    .get(&a.id)
+                    .map(|m| m.title_lower.as_str())
+                    .unwrap_or("");
+                let tb = self
+                    .pages
+                    .get(&b.id)
+                    .map(|m| m.title_lower.as_str())
+                    .unwrap_or("");
+                ta.cmp(tb)
+            })
+        });
         hits
     }
 
@@ -659,10 +709,14 @@ fn compute_sorted_ids(pages: &HashMap<PageId, PageMeta>) -> Vec<PageId> {
     entries.into_iter().map(|m| m.id.clone()).collect()
 }
 
-fn page_meta_matches(meta: &PageMeta, needle: &str) -> bool {
-    meta.title_lower.contains(needle)
-        || meta.id.to_lowercase().contains(needle)
-        || meta.tags.iter().any(|t| t.to_lowercase().contains(needle))
+fn page_meta_match_kind(meta: &PageMeta, needle: &str) -> Option<SearchMatchKind> {
+    if meta.title_lower.contains(needle) || meta.id.to_lowercase().contains(needle) {
+        Some(SearchMatchKind::Title)
+    } else if meta.tags.iter().any(|t| t.to_lowercase().contains(needle)) {
+        Some(SearchMatchKind::Tag)
+    } else {
+        None
+    }
 }
 
 fn is_external_target(target: &str) -> bool {
@@ -1787,7 +1841,7 @@ mod tests {
         let hits = index.search_hits("alpha", false);
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].id, "p1");
-        assert_eq!(hits[0].kind, SearchMatchKind::Meta);
+        assert_eq!(hits[0].kind, SearchMatchKind::Title);
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -1800,7 +1854,7 @@ mod tests {
         let hits = index.search_hits("rust", false);
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].id, "p1");
-        assert_eq!(hits[0].kind, SearchMatchKind::Meta);
+        assert_eq!(hits[0].kind, SearchMatchKind::Tag);
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -1822,16 +1876,16 @@ mod tests {
     }
 
     #[test]
-    fn search_hits_meta_match_takes_priority_over_content() {
+    fn search_hits_title_match_takes_priority_over_content() {
         let (dir, index) = make_kb_on_disk(&[("p1", "Fox Guide", &[], "the fox jumps")]);
         let hits = index.search_hits("fox", true);
         assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].kind, SearchMatchKind::Meta);
+        assert_eq!(hits[0].kind, SearchMatchKind::Title);
         fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
-    fn search_hits_returns_results_sorted_by_title() {
+    fn search_hits_same_score_sorted_alphabetically() {
         let (dir, index) = make_kb_on_disk(&[
             ("p1", "Zebra", &["common"], "body"),
             ("p2", "Alpha", &["common"], "body"),
@@ -1839,7 +1893,135 @@ mod tests {
         ]);
         let hits = index.search_hits("common", false);
         let ids: Vec<&str> = hits.iter().map(|h| h.id.as_str()).collect();
+        // all tag matches → same score → alphabetical by title
         assert_eq!(ids, vec!["p2", "p3", "p1"]);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn search_hits_title_ranked_above_tag() {
+        let (dir, index) = make_kb_on_disk(&[
+            ("p1", "Page One", &["rust"], "body"),
+            ("p2", "Rust Guide", &[], "body"),
+        ]);
+        let hits = index.search_hits("rust", false);
+        assert_eq!(hits.len(), 2);
+        // title match first
+        assert_eq!(hits[0].id, "p2");
+        assert_eq!(hits[0].kind, SearchMatchKind::Title);
+        // tag match second
+        assert_eq!(hits[1].id, "p1");
+        assert_eq!(hits[1].kind, SearchMatchKind::Tag);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn search_hits_title_ranked_above_content() {
+        let (dir, index) = make_kb_on_disk(&[
+            ("p1", "Alpha", &[], "the word rust appears here"),
+            ("p2", "Rust Guide", &[], "no match in body"),
+        ]);
+        let hits = index.search_hits("rust", true);
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].id, "p2");
+        assert_eq!(hits[0].kind, SearchMatchKind::Title);
+        assert_eq!(hits[1].id, "p1");
+        assert_eq!(hits[1].kind, SearchMatchKind::Content);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn search_hits_tag_ranked_above_content() {
+        let (dir, index) = make_kb_on_disk(&[
+            ("p1", "Alpha", &[], "the word rust appears here"),
+            ("p2", "Beta", &["rust"], "no match in body"),
+        ]);
+        let hits = index.search_hits("rust", true);
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].id, "p2");
+        assert_eq!(hits[0].kind, SearchMatchKind::Tag);
+        assert_eq!(hits[1].id, "p1");
+        assert_eq!(hits[1].kind, SearchMatchKind::Content);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn search_hits_mixed_kinds_ranked_correctly() {
+        let (dir, index) = make_kb_on_disk(&[
+            ("p1", "Alpha", &[], "cli tools are great"),
+            ("p2", "Beta", &["cli"], "no match"),
+            ("p3", "CLI Reference", &[], "no match"),
+            ("p4", "Delta", &[], "no match"),
+        ]);
+        let hits = index.search_hits("cli", true);
+        assert_eq!(hits.len(), 3);
+        // title match first
+        assert_eq!(hits[0].id, "p3");
+        assert_eq!(hits[0].kind, SearchMatchKind::Title);
+        // tag match second
+        assert_eq!(hits[1].id, "p2");
+        assert_eq!(hits[1].kind, SearchMatchKind::Tag);
+        // content match last
+        assert_eq!(hits[2].id, "p1");
+        assert_eq!(hits[2].kind, SearchMatchKind::Content);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn search_hits_title_with_tag_stays_title() {
+        // page matches both title and tag — kind should be Title (highest)
+        let (dir, index) =
+            make_kb_on_disk(&[("p1", "Rust Guide", &["rust"], "also mentions rust")]);
+        let hits = index.search_hits("rust", true);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].kind, SearchMatchKind::Title);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn search_hits_tag_match_takes_priority_over_content() {
+        let (dir, index) = make_kb_on_disk(&[("p1", "Some Page", &["fox"], "the fox jumps")]);
+        let hits = index.search_hits("fox", true);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].kind, SearchMatchKind::Tag);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn search_hits_id_match_counts_as_title() {
+        let (dir, index) = make_kb_on_disk(&[("rustacean", "Some Page", &[], "body")]);
+        let hits = index.search_hits("rustacean", false);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].kind, SearchMatchKind::Title);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn search_match_kind_score_ordering() {
+        assert!(SearchMatchKind::Title.score() > SearchMatchKind::Tag.score());
+        assert!(SearchMatchKind::Tag.score() > SearchMatchKind::Content.score());
+    }
+
+    #[test]
+    fn search_match_kind_is_meta() {
+        assert!(SearchMatchKind::Title.is_meta());
+        assert!(SearchMatchKind::Tag.is_meta());
+        assert!(!SearchMatchKind::Content.is_meta());
+    }
+
+    #[test]
+    fn filter_page_ids_scored_returns_kinds() {
+        let (dir, index) = make_kb_on_disk(&[
+            ("p1", "Rust Intro", &[], "body"),
+            ("p2", "Beta", &["rust"], "body"),
+            ("p3", "Gamma", &[], "body"),
+        ]);
+        let scored = index.filter_page_ids_scored("rust");
+        assert_eq!(scored.len(), 2);
+        let map: HashMap<&str, SearchMatchKind> =
+            scored.iter().map(|(id, k)| (id.as_str(), *k)).collect();
+        assert_eq!(map["p1"], SearchMatchKind::Title);
+        assert_eq!(map["p2"], SearchMatchKind::Tag);
         fs::remove_dir_all(&dir).unwrap();
     }
 

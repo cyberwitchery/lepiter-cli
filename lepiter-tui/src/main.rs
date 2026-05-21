@@ -14,7 +14,7 @@
 //! # subcommands
 //!
 //! - `tui`: full-screen list, page reader, and snippet editor
-//! - `list`, `ids`, `search`, `show`, `info`: non-interactive output
+//! - `list`, `ids`, `search`, `show`, `info`, `export`: non-interactive output
 //!
 //! # configuration
 //!
@@ -731,6 +731,10 @@ fn main() -> Result<()> {
             let rest = args.collect::<Vec<_>>();
             run_show(rest)
         }
+        "export" => {
+            let rest = args.collect::<Vec<_>>();
+            run_export(rest)
+        }
         "-h" | "--help" | "help" => {
             print_usage();
             Ok(())
@@ -760,7 +764,7 @@ fn run_tui(kb_path: PathBuf) -> Result<()> {
 
 fn print_usage() {
     eprintln!(
-        "lepiter-cli <subcommand|kb-path> [args]\n\nsubcommands:\n  tui [kb-path]                                      launch the terminal reader (default path: ./lepiter)\n  info [kb-path]                                     print knowledge base metadata summary\n  list [--tsv] [kb-path]                             list pages (pretty columns by default)\n  ids [kb-path]                                      print page ids only (sorted by title)\n  search [--full-text] [--tsv] <query> [kb-path]     search by title/id/tags, optionally page content\n  show [--id|--by-title] [--open-links] <value> [kb-path]  render one page (default: title lookup)\n\nIf the first argument is a directory path, `info` mode is used implicitly."
+        "lepiter-cli <subcommand|kb-path> [args]\n\nsubcommands:\n  tui [kb-path]                                      launch the terminal reader (default path: ./lepiter)\n  info [kb-path]                                     print knowledge base metadata summary\n  list [--tsv] [kb-path]                             list pages (pretty columns by default)\n  ids [kb-path]                                      print page ids only (sorted by title)\n  search [--full-text] [--tsv] <query> [kb-path]     search by title/id/tags, optionally page content\n  show [--id|--by-title] [--open-links] <value> [kb-path]  render one page (default: title lookup)\n  export [--output DIR] [--id ID|--title TITLE] [kb-path]  export pages to markdown files\n\nIf the first argument is a directory path, `info` mode is used implicitly."
     );
 }
 
@@ -1062,6 +1066,77 @@ fn run_show(args: Vec<String>) -> Result<()> {
         resolve_page_id_by_title(&index, value)?
     };
     print_page(kb_path, &page_id, open_links)
+}
+
+fn run_export(args: Vec<String>) -> Result<()> {
+    let mut output_dir: Option<PathBuf> = None;
+    let mut by_id: Option<String> = None;
+    let mut by_title: Option<String> = None;
+    let mut positional = Vec::new();
+    let mut args_iter = args.into_iter();
+
+    while let Some(arg) = args_iter.next() {
+        match arg.as_str() {
+            "--output" | "-o" => {
+                let val = args_iter
+                    .next()
+                    .with_context(|| "--output requires a directory argument")?;
+                output_dir = Some(PathBuf::from(val));
+            }
+            "--id" => {
+                let val = args_iter
+                    .next()
+                    .with_context(|| "--id requires a page id argument")?;
+                by_id = Some(val);
+            }
+            "--title" => {
+                let val = args_iter
+                    .next()
+                    .with_context(|| "--title requires a title argument")?;
+                by_title = Some(val);
+            }
+            _ => positional.push(arg),
+        }
+    }
+
+    if by_id.is_some() && by_title.is_some() {
+        bail!("--id and --title are mutually exclusive");
+    }
+
+    let kb_path = positional
+        .first()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("./lepiter"));
+    let out = output_dir.unwrap_or_else(|| PathBuf::from("./export"));
+
+    let index = KnowledgeBase::open(&kb_path)
+        .with_context(|| format!("failed to open knowledge base at {}", kb_path.display()))?;
+
+    if let Some(id) = by_id {
+        let slug_table = lepiter_core::export::build_slug_table(&index);
+        let title_table = lepiter_core::export::build_title_table(&index);
+        fs::create_dir_all(&out)
+            .with_context(|| format!("failed to create output directory {}", out.display()))?;
+        let path = lepiter_core::export::export_page(&index, &id, &out, &slug_table, &title_table)?;
+        println!("{}", path.display());
+    } else if let Some(title) = by_title {
+        let page_id = resolve_page_id_by_title(&index, &title)?;
+        let slug_table = lepiter_core::export::build_slug_table(&index);
+        let title_table = lepiter_core::export::build_title_table(&index);
+        fs::create_dir_all(&out)
+            .with_context(|| format!("failed to create output directory {}", out.display()))?;
+        let path =
+            lepiter_core::export::export_page(&index, &page_id, &out, &slug_table, &title_table)?;
+        println!("{}", path.display());
+    } else {
+        let paths = lepiter_core::export::export_all(&index, &out)?;
+        for path in &paths {
+            println!("{}", path.display());
+        }
+        eprintln!("exported {} pages to {}", paths.len(), out.display());
+    }
+
+    Ok(())
 }
 
 fn resolve_page_id_by_title(index: &KnowledgeBaseIndex, title: &str) -> Result<String> {

@@ -47,6 +47,7 @@ use serde_json::Value;
 use thiserror::Error;
 use walkdir::WalkDir;
 
+pub mod export;
 pub mod plugin;
 
 #[macro_export]
@@ -703,7 +704,7 @@ fn find_char(chars: &[char], target: char, start: usize) -> Option<usize> {
     (start..chars.len()).find(|&i| chars[i] == target)
 }
 
-fn compute_sorted_ids(pages: &HashMap<PageId, PageMeta>) -> Vec<PageId> {
+pub(crate) fn compute_sorted_ids(pages: &HashMap<PageId, PageMeta>) -> Vec<PageId> {
     let mut entries: Vec<_> = pages.values().collect();
     entries.sort_by(|a, b| a.title_lower.cmp(&b.title_lower));
     entries.into_iter().map(|m| m.id.clone()).collect()

@@ -2,6 +2,16 @@
 
 all notable changes to this project are documented in this file.
 
+## Unreleased
+
+### added
+- `export` subcommand: writes knowledge base pages to markdown files with YAML
+  frontmatter (title, id, updated_at, tags), resolves `[[wikilinks]]` and
+  internal `[label](target)` links to relative `.md` paths, and supports bulk
+  export of all pages. usage: `lepiter-cli export [--output DIR] [--id ID|--title TITLE] [kb-path]`
+- `lepiter_core::export` module with public API: `export_all`, `export_page`,
+  `render_page_to_markdown`, `slug_from_title`, `build_slug_table`, `build_title_table`
+
 ## 0.8.0 - 2026-05-21
 
 ### changed

@@ -2,7 +2,7 @@
 
 all notable changes to this project are documented in this file.
 
-## Unreleased
+## 0.8.0 - 2026-05-21
 
 ### changed
 - search results are now ranked by relevance: title/id matches appear first,

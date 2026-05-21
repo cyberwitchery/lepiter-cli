@@ -55,7 +55,7 @@ use crate::render::{
     RenderedPage, highlight_page_search, highlight_selected_link_markers, render_page,
     sanitize_for_terminal,
 };
-use crate::util::{LruCache, cache_limit_from_env};
+use crate::util::{LruCache, cache_limit_from_env, lower_byte_to_raw_byte};
 use anyhow::{Context, Result, bail};
 use crossterm::event::{self, Event, KeyEventKind};
 use lepiter_core::{
@@ -357,14 +357,17 @@ impl App {
             return;
         }
 
+        let id_lower = page_uuid.to_lowercase();
         let title_lower = title.to_lowercase();
         let meta = PageMeta {
             id: page_uuid.clone(),
+            id_lower,
             title: title.to_string(),
             title_lower,
             path: file_path,
             updated_at: chrono::DateTime::parse_from_rfc3339(&now).ok(),
             tags: Vec::new(),
+            tags_lower: Vec::new(),
         };
         self.index.register_page(meta);
         self.rebuild_visible_ids();
@@ -1084,24 +1087,6 @@ fn resolve_page_id_by_title(index: &KnowledgeBaseIndex, title: &str) -> Result<S
             bail!("title match is ambiguous ({} matches): {sample}", ids.len())
         }
     }
-}
-
-/// Map a byte offset in `raw.to_lowercase()` to the corresponding byte offset
-/// in `raw`. Walks both strings' characters in tandem so the result is correct
-/// even when lowercasing changes byte lengths (e.g. multi-byte characters).
-fn lower_byte_to_raw_byte(raw: &str, lower_pos: usize) -> usize {
-    let mut raw_byte = 0usize;
-    let mut lower_byte = 0usize;
-    for ch in raw.chars() {
-        if lower_byte >= lower_pos {
-            return raw_byte;
-        }
-        raw_byte += ch.len_utf8();
-        for lch in ch.to_lowercase() {
-            lower_byte += lch.len_utf8();
-        }
-    }
-    raw_byte
 }
 
 fn truncate_chars(input: &str, max_chars: usize) -> String {

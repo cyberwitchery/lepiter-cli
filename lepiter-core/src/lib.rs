@@ -66,6 +66,8 @@ pub type PageId = String;
 pub struct PageMeta {
     /// Canonical page id (preferred key over filename).
     pub id: PageId,
+    /// Pre-computed lowercased id for case-insensitive comparisons.
+    pub id_lower: String,
     /// Human-readable page title.
     pub title: String,
     /// Pre-computed lowercased title for case-insensitive comparisons.
@@ -76,6 +78,8 @@ pub struct PageMeta {
     pub updated_at: Option<DateTime<FixedOffset>>,
     /// Optional page tags extracted from metadata.
     pub tags: Vec<String>,
+    /// Pre-computed lowercased tags for case-insensitive comparisons.
+    pub tags_lower: Vec<String>,
 }
 
 /// Fully parsed page content.
@@ -710,9 +714,9 @@ fn compute_sorted_ids(pages: &HashMap<PageId, PageMeta>) -> Vec<PageId> {
 }
 
 fn page_meta_match_kind(meta: &PageMeta, needle: &str) -> Option<SearchMatchKind> {
-    if meta.title_lower.contains(needle) || meta.id.to_lowercase().contains(needle) {
+    if meta.title_lower.contains(needle) || meta.id_lower.contains(needle) {
         Some(SearchMatchKind::Title)
-    } else if meta.tags.iter().any(|t| t.to_lowercase().contains(needle)) {
+    } else if meta.tags_lower.iter().any(|t| t.contains(needle)) {
         Some(SearchMatchKind::Tag)
     } else {
         None
@@ -729,8 +733,8 @@ fn is_external_target(target: &str) -> bool {
 }
 
 fn extract_attachment_relative(target: &str) -> Option<&str> {
-    if let Some(rest) = target.strip_prefix("attachments/") {
-        return Some(rest).map(|_| target);
+    if target.starts_with("attachments/") {
+        return Some(target);
     }
     if let Some(pos) = target.find("/attachments/") {
         let start = pos + 1;
@@ -848,14 +852,18 @@ fn parse_page_meta(path: &Path) -> Result<PageMeta> {
         .and_then(|s| DateTime::parse_from_rfc3339(&s).ok());
     let tags = parse_tags(raw.tags.as_ref());
 
+    let id_lower = id.to_lowercase();
     let title_lower = title.to_lowercase();
+    let tags_lower = tags.iter().map(|t| t.to_lowercase()).collect();
     Ok(PageMeta {
         id,
+        id_lower,
         title,
         title_lower,
         path: path.to_path_buf(),
         updated_at,
         tags,
+        tags_lower,
     })
 }
 
@@ -1643,22 +1651,26 @@ mod tests {
             "id-1".to_string(),
             PageMeta {
                 id: "id-1".to_string(),
+                id_lower: "id-1".to_string(),
                 title: "Alpha".to_string(),
                 title_lower: "alpha".to_string(),
                 path: PathBuf::from("/tmp/a"),
                 updated_at: None,
                 tags: vec!["rust".to_string()],
+                tags_lower: vec!["rust".to_string()],
             },
         );
         pages.insert(
             "id-2".to_string(),
             PageMeta {
                 id: "id-2".to_string(),
+                id_lower: "id-2".to_string(),
                 title: "Beta".to_string(),
                 title_lower: "beta".to_string(),
                 path: PathBuf::from("/tmp/b"),
                 updated_at: None,
                 tags: vec!["pharo".to_string()],
+                tags_lower: vec!["pharo".to_string()],
             },
         );
         let sorted_ids = compute_sorted_ids(&pages);
@@ -1686,22 +1698,26 @@ mod tests {
             "id-1".to_string(),
             PageMeta {
                 id: "id-1".to_string(),
+                id_lower: "id-1".to_string(),
                 title: "Alpha".to_string(),
                 title_lower: "alpha".to_string(),
                 path: PathBuf::from("/tmp/a"),
                 updated_at: None,
                 tags: Vec::new(),
+                tags_lower: Vec::new(),
             },
         );
         pages.insert(
             "id-2".to_string(),
             PageMeta {
                 id: "id-2".to_string(),
+                id_lower: "id-2".to_string(),
                 title: "Alphabet".to_string(),
                 title_lower: "alphabet".to_string(),
                 path: PathBuf::from("/tmp/b"),
                 updated_at: None,
                 tags: Vec::new(),
+                tags_lower: Vec::new(),
             },
         );
         let sorted_ids = compute_sorted_ids(&pages);
@@ -1734,11 +1750,13 @@ mod tests {
             "8a505fa0-2222-3333-4444-555555555555".to_string(),
             PageMeta {
                 id: "8a505fa0-2222-3333-4444-555555555555".to_string(),
+                id_lower: "8a505fa0-2222-3333-4444-555555555555".to_string(),
                 title: "Alpha".to_string(),
                 title_lower: "alpha".to_string(),
                 path: PathBuf::from("/tmp/a"),
                 updated_at: None,
                 tags: Vec::new(),
+                tags_lower: Vec::new(),
             },
         );
         let sorted_ids = compute_sorted_ids(&pages);
@@ -1784,6 +1802,28 @@ mod tests {
             index.classify_link_target("page:Nonexistent"),
             LinkTargetKind::Unknown(_)
         ));
+    }
+
+    #[test]
+    fn extract_attachment_relative_covers_all_branches() {
+        // Direct "attachments/" prefix
+        assert_eq!(
+            extract_attachment_relative("attachments/image.png"),
+            Some("attachments/image.png")
+        );
+        // Path containing "/attachments/"
+        assert_eq!(
+            extract_attachment_relative("abc/attachments/image.png"),
+            Some("attachments/image.png")
+        );
+        // Bare "attachments/" found mid-string (no leading slash)
+        assert_eq!(
+            extract_attachment_relative("data_attachments/image.png"),
+            Some("attachments/image.png")
+        );
+        // No attachment path at all
+        assert_eq!(extract_attachment_relative("image.png"), None);
+        assert_eq!(extract_attachment_relative(""), None);
     }
 
     #[test]
@@ -2384,11 +2424,13 @@ mod tests {
 
         let meta = PageMeta {
             id: "new-page".to_string(),
+            id_lower: "new-page".to_string(),
             title: "My Page".to_string(),
             title_lower: "my page".to_string(),
             path: dir.join("new-page.lepiter"),
             updated_at: None,
             tags: Vec::new(),
+            tags_lower: Vec::new(),
         };
         index.register_page(meta);
         assert_eq!(index.sorted_ids.len(), 1);

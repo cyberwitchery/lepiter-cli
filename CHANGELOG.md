@@ -10,6 +10,15 @@ all notable changes to this project are documented in this file.
   alphabetically by title. `SearchMatchKind` is refined from `Meta`/`Content`
   to `Title`/`Tag`/`Content`, with a `score()` method and an `is_meta()` helper
 
+### changed
+- `PageMeta` now pre-computes `id_lower` and `tags_lower` fields, eliminating
+  per-keystroke `to_lowercase()` allocations in `page_meta_matches` during search
+- deduplicated `lower_byte_to_raw_byte` helper (was identically defined in both
+  `main.rs` and `render.rs`, now lives in `util.rs`)
+- simplified `extract_attachment_relative` first branch from a confusing
+  `Some(rest).map(|_| target)` pattern to a direct `starts_with` check
+  (behaviour unchanged)
+
 ### added
 - page creation from the TUI: press `n` in list mode to create a new page;
   type a title and press Enter to create a minimal `.lepiter` page (with a

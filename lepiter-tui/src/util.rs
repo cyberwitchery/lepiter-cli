@@ -21,6 +21,24 @@ pub fn cache_limit_from_env_allow_zero(var: &str, default: usize) -> usize {
         .unwrap_or(default)
 }
 
+/// Map a byte offset in `raw.to_lowercase()` to the corresponding byte offset
+/// in `raw`. Walks both strings' characters in tandem so the result is correct
+/// even when lowercasing changes byte lengths (e.g. multi-byte characters).
+pub fn lower_byte_to_raw_byte(raw: &str, lower_pos: usize) -> usize {
+    let mut raw_byte = 0usize;
+    let mut lower_byte = 0usize;
+    for ch in raw.chars() {
+        if lower_byte >= lower_pos {
+            return raw_byte;
+        }
+        raw_byte += ch.len_utf8();
+        for lch in ch.to_lowercase() {
+            lower_byte += lch.len_utf8();
+        }
+    }
+    raw_byte
+}
+
 pub struct LruCache<K, V> {
     map: IndexMap<K, V>,
     max_entries: usize,

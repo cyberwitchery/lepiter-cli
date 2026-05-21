@@ -8,6 +8,7 @@ use ratatui::text::{Line, Span};
 use crate::highlight::{CodeToken, tokenize_code_line};
 use crate::inline::{InlineElement, parse_inline};
 use crate::plugins::{PluginManager, PluginRender};
+use crate::util::lower_byte_to_raw_byte;
 
 #[derive(Debug, Clone)]
 pub struct LinkTarget {
@@ -514,23 +515,6 @@ fn highlight_all_in_line(
     }
 
     Line::from(result_spans)
-}
-
-/// Map a byte offset in `raw.to_lowercase()` to the corresponding byte offset
-/// in `raw`.
-fn lower_byte_to_raw_byte(raw: &str, lower_pos: usize) -> usize {
-    let mut raw_byte = 0usize;
-    let mut lower_byte = 0usize;
-    for ch in raw.chars() {
-        if lower_byte >= lower_pos {
-            return raw_byte;
-        }
-        raw_byte += ch.len_utf8();
-        for lch in ch.to_lowercase() {
-            lower_byte += lch.len_utf8();
-        }
-    }
-    raw_byte
 }
 
 #[cfg(test)]

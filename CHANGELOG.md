@@ -12,7 +12,7 @@ all notable changes to this project are documented in this file.
 
 ### changed
 - `PageMeta` now pre-computes `id_lower` and `tags_lower` fields, eliminating
-  per-keystroke `to_lowercase()` allocations in `page_meta_matches` during search
+  per-keystroke `to_lowercase()` allocations in `page_meta_match_kind` during search
 - deduplicated `lower_byte_to_raw_byte` helper (was identically defined in both
   `main.rs` and `render.rs`, now lives in `util.rs`)
 - simplified `extract_attachment_relative` first branch from a confusing

@@ -329,9 +329,11 @@ impl KnowledgeBase {
                         && let Some(stem) = file_path.file_stem().and_then(|s| s.to_str())
                     {
                         meta.id = stem.to_string();
+                        meta.id_lower = meta.id.to_lowercase();
                     }
                     if meta.title.is_empty() {
                         meta.title = meta.id.clone();
+                        meta.title_lower = meta.title.to_lowercase();
                     }
                     pages.insert(meta.id.clone(), meta);
                 }

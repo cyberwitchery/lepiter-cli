@@ -689,7 +689,7 @@ fn extract_inline_link_targets(text: &str, out: &mut Vec<String>) {
     }
 }
 
-fn find_closing_double_bracket(chars: &[char], start: usize) -> Option<usize> {
+pub(crate) fn find_closing_double_bracket(chars: &[char], start: usize) -> Option<usize> {
     let mut i = start;
     while i + 1 < chars.len() {
         if chars[i] == ']' && chars[i + 1] == ']' {
@@ -700,7 +700,7 @@ fn find_closing_double_bracket(chars: &[char], start: usize) -> Option<usize> {
     None
 }
 
-fn find_char(chars: &[char], target: char, start: usize) -> Option<usize> {
+pub(crate) fn find_char(chars: &[char], target: char, start: usize) -> Option<usize> {
     (start..chars.len()).find(|&i| chars[i] == target)
 }
 

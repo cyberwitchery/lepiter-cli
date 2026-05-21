@@ -3,25 +3,40 @@
 //! converts parsed pages to markdown files with yaml frontmatter and resolves
 //! internal wikilinks to relative file paths.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-use crate::{KnowledgeBaseIndex, LinkTargetKind, Node, Page, PageId};
+use crate::{
+    KnowledgeBaseIndex, LinkTargetKind, Node, Page, PageId, find_char, find_closing_double_bracket,
+};
 
 /// builds a lookup from page id to the slug that will be used as the markdown filename.
 pub fn build_slug_table(index: &KnowledgeBaseIndex) -> HashMap<PageId, String> {
     let mut table = HashMap::new();
     let mut seen = HashMap::<String, usize>::new();
+    let mut used = HashSet::<String>::new();
     for meta in index.sorted_pages() {
-        let mut slug = slug_from_title(&meta.title);
-        let count = seen.entry(slug.clone()).or_insert(0);
-        if *count > 0 {
-            slug = format!("{slug}-{count}");
+        let base = slug_from_title(&meta.title);
+        let base = if base.is_empty() {
+            meta.id.clone()
+        } else {
+            base
+        };
+        let count = seen.entry(base.clone()).or_insert(0);
+        let mut slug = if *count > 0 {
+            format!("{base}-{count}")
+        } else {
+            base.clone()
+        };
+        *count += 1;
+        // ensure no collision with another page's natural slug
+        while !used.insert(slug.clone()) {
+            slug = format!("{base}-{}", *seen.get(&base).unwrap());
+            *seen.get_mut(&base).unwrap() += 1;
         }
-        *seen.get_mut(&slug_from_title(&meta.title)).unwrap() += 1;
         table.insert(meta.id.clone(), slug);
     }
     table
@@ -288,23 +303,11 @@ fn resolve_wikilink(
     }
 }
 
-fn find_closing_double_bracket(chars: &[char], start: usize) -> Option<usize> {
-    let mut i = start;
-    while i + 1 < chars.len() {
-        if chars[i] == ']' && chars[i + 1] == ']' {
-            return Some(i);
-        }
-        i += 1;
-    }
-    None
-}
-
-fn find_char(chars: &[char], target: char, start: usize) -> Option<usize> {
-    (start..chars.len()).find(|&i| chars[i] == target)
-}
-
 fn escape_yaml(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('"', "\\\"")
+    s.replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
 }
 
 /// exports a single page to a markdown file in the output directory.
@@ -599,17 +602,106 @@ mod tests {
         let paths = export_all(&index, &out_dir).unwrap();
         assert_eq!(paths.len(), 2);
 
-        let alpha_content = fs::read_to_string(&out_dir.join("alpha.md")).unwrap();
+        let alpha_content = fs::read_to_string(out_dir.join("alpha.md")).unwrap();
         assert!(
             alpha_content.contains("[Beta](beta.md)"),
             "alpha should link to beta.md, got: {alpha_content}"
         );
 
-        let beta_content = fs::read_to_string(&out_dir.join("beta.md")).unwrap();
+        let beta_content = fs::read_to_string(out_dir.join("beta.md")).unwrap();
         assert!(
             beta_content.contains("[Alpha](alpha.md)"),
             "beta should link to alpha.md, got: {beta_content}"
         );
+    }
+
+    #[test]
+    fn build_slug_table_three_duplicates_no_collision() {
+        // "Foo", "Foo", "Foo" should produce foo, foo-1, foo-2
+        let index = make_index_with_pages(&[("id-1", "Foo"), ("id-2", "Foo"), ("id-3", "Foo")]);
+        let table = build_slug_table(&index);
+        let mut slugs: Vec<_> = table.values().cloned().collect();
+        slugs.sort();
+        assert_eq!(slugs, vec!["foo", "foo-1", "foo-2"]);
+    }
+
+    #[test]
+    fn build_slug_table_suffixed_vs_natural_slug_collision() {
+        // "Foo", "Foo", "Foo 1" -- the suffixed "foo-1" must not collide with natural "foo-1"
+        let index = make_index_with_pages(&[("id-1", "Foo"), ("id-2", "Foo"), ("id-3", "Foo 1")]);
+        let table = build_slug_table(&index);
+        let mut slugs: Vec<_> = table.values().cloned().collect();
+        slugs.sort();
+        assert_eq!(slugs.len(), 3);
+        // all slugs must be unique
+        let unique: HashSet<_> = slugs.iter().collect();
+        assert_eq!(unique.len(), 3, "all slugs must be unique: {slugs:?}");
+        // "foo-1" must appear exactly once (the natural slug for "Foo 1")
+        assert!(slugs.contains(&"foo-1".to_string()));
+    }
+
+    #[test]
+    fn escape_yaml_newlines() {
+        assert_eq!(escape_yaml("line one\nline two"), "line one\\nline two");
+        assert_eq!(escape_yaml("cr\r\nlf"), "cr\\r\\nlf");
+    }
+
+    #[test]
+    fn slug_from_title_non_ascii_only() {
+        // pure non-ASCII produces empty slug
+        assert_eq!(slug_from_title("こんにちは"), "");
+        assert_eq!(slug_from_title("..."), "");
+    }
+
+    #[test]
+    fn build_slug_table_non_ascii_falls_back_to_id() {
+        let index = make_index_with_pages(&[("page-xyz", "こんにちは")]);
+        let table = build_slug_table(&index);
+        assert_eq!(table.get("page-xyz").unwrap(), "page-xyz");
+    }
+
+    #[test]
+    fn build_slug_table_multiple_non_ascii_unique() {
+        let index = make_index_with_pages(&[("id-a", "こんにちは"), ("id-b", "こんにちは")]);
+        let table = build_slug_table(&index);
+        let slug_a = table.get("id-a").unwrap();
+        let slug_b = table.get("id-b").unwrap();
+        assert_ne!(slug_a, slug_b);
+    }
+
+    #[test]
+    fn render_frontmatter_with_newline_in_title() {
+        let page = Page {
+            id: "nl-id".to_string(),
+            title: "Line One\nLine Two".to_string(),
+            updated_at: None,
+            tags: vec![],
+            content: vec![],
+        };
+        let index = make_empty_index();
+        let slug_table = HashMap::new();
+        let title_table = HashMap::new();
+        let md = render_page_to_markdown(&page, &index, &slug_table, &title_table);
+        assert!(md.contains("title: \"Line One\\nLine Two\""));
+        // frontmatter-only page: ends right after the closing ---
+        assert!(md.contains("---\n\n"));
+    }
+
+    #[test]
+    fn render_empty_content_produces_frontmatter_only() {
+        let page = Page {
+            id: "empty-id".to_string(),
+            title: "Empty".to_string(),
+            updated_at: None,
+            tags: vec![],
+            content: vec![],
+        };
+        let index = make_empty_index();
+        let slug_table = HashMap::new();
+        let title_table = HashMap::new();
+        let md = render_page_to_markdown(&page, &index, &slug_table, &title_table);
+        // should be just frontmatter
+        assert_eq!(md, "---\ntitle: \"Empty\"\nid: \"empty-id\"\n---\n\n");
     }
 
     fn make_empty_index() -> KnowledgeBaseIndex {

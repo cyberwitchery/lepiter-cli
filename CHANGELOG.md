@@ -4,6 +4,12 @@ all notable changes to this project are documented in this file.
 
 ## Unreleased
 
+### changed
+- search results are now ranked by relevance: title/id matches appear first,
+  then tag matches, then content matches; within each tier results are sorted
+  alphabetically by title. `SearchMatchKind` is refined from `Meta`/`Content`
+  to `Title`/`Tag`/`Content`, with a `score()` method and an `is_meta()` helper
+
 ### added
 - page creation from the TUI: press `n` in list mode to create a new page;
   type a title and press Enter to create a minimal `.lepiter` page (with a

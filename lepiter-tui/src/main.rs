@@ -184,9 +184,9 @@ impl App {
             self.search_hit_kind.clear();
             self.reset_text_index_queue();
         } else {
-            let mut hit_kind = HashMap::new();
-            for id in self.index.filter_page_ids(query) {
-                hit_kind.insert(id, SearchMatchKind::Meta);
+            let mut hit_kind: HashMap<PageId, SearchMatchKind> = HashMap::new();
+            for (id, kind) in self.index.filter_page_ids_scored(query) {
+                hit_kind.insert(id, kind);
             }
             for (id, text) in &self.text_index {
                 if hit_kind.contains_key(id) {
@@ -197,13 +197,27 @@ impl App {
                 }
             }
 
-            self.visible_ids = self
-                .index
-                .sorted_ids
-                .iter()
-                .filter(|id| hit_kind.contains_key(id.as_str()))
-                .cloned()
-                .collect();
+            let mut ids: Vec<_> = hit_kind.keys().cloned().collect();
+            ids.sort_by(|a, b| {
+                let sa = hit_kind[a].score();
+                let sb = hit_kind[b].score();
+                sb.cmp(&sa).then_with(|| {
+                    let ta = self
+                        .index
+                        .pages
+                        .get(a)
+                        .map(|m| m.title_lower.as_str())
+                        .unwrap_or("");
+                    let tb = self
+                        .index
+                        .pages
+                        .get(b)
+                        .map(|m| m.title_lower.as_str())
+                        .unwrap_or("");
+                    ta.cmp(tb)
+                })
+            });
+            self.visible_ids = ids;
             self.search_hit_kind = hit_kind;
         }
         if self.selected >= self.visible_ids.len() {
@@ -956,7 +970,8 @@ fn run_search(args: Vec<String>) -> Result<()> {
         .into_iter()
         .map(|hit| {
             let kind = match hit.kind {
-                SearchMatchKind::Meta => "meta",
+                SearchMatchKind::Title => "title",
+                SearchMatchKind::Tag => "tag",
                 SearchMatchKind::Content => "content",
             };
             (hit.id, kind)

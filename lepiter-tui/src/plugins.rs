@@ -430,8 +430,9 @@ mod tests {
 
     #[test]
     fn request_times_out_on_unresponsive_plugin() {
-        // `sleep infinity` accepts piped stdin/stdout but never writes output.
-        let mut proc = PluginProcess::spawn("sleep", &["infinity".to_string()]).unwrap();
+        // `sleep 60` outlives the 100ms timeout below and never writes stdout.
+        // (`sleep infinity` is GNU-only — BSD `sleep` on macOS rejects it.)
+        let mut proc = PluginProcess::spawn("sleep", &["60".to_string()]).unwrap();
         let req = dummy_request();
         let start = std::time::Instant::now();
         let result = proc.request_with_timeout(&req, Duration::from_millis(100));

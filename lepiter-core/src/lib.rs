@@ -725,13 +725,25 @@ fn page_meta_match_kind(meta: &PageMeta, needle: &str) -> Option<SearchMatchKind
     }
 }
 
+fn starts_with_ignore_ascii_case(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack.len() >= needle.len()
+        && haystack[..needle.len()]
+            .iter()
+            .zip(needle)
+            .all(|(h, n)| h.to_ascii_lowercase() == *n)
+}
+
+fn contains_scheme_separator(target: &[u8]) -> bool {
+    target.windows(3).any(|w| w == b"://")
+}
+
 fn is_external_target(target: &str) -> bool {
-    let lower = target.to_lowercase();
-    lower.starts_with("http://")
-        || lower.starts_with("https://")
-        || lower.starts_with("mailto:")
-        || lower.starts_with("file://")
-        || lower.contains("://")
+    let bytes = target.as_bytes();
+    starts_with_ignore_ascii_case(bytes, b"http://")
+        || starts_with_ignore_ascii_case(bytes, b"https://")
+        || starts_with_ignore_ascii_case(bytes, b"mailto:")
+        || starts_with_ignore_ascii_case(bytes, b"file://")
+        || contains_scheme_separator(bytes)
 }
 
 fn extract_attachment_relative(target: &str) -> Option<&str> {
@@ -2440,5 +2452,139 @@ mod tests {
         assert!(index.pages.contains_key("new-page"));
 
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn is_external_target_common_schemes() {
+        assert!(is_external_target("http://example.com"));
+        assert!(is_external_target("https://example.com"));
+        assert!(is_external_target("mailto:user@example.com"));
+        assert!(is_external_target("file:///home/user/doc.txt"));
+        assert!(is_external_target("ftp://files.example.com"));
+        assert!(is_external_target("ssh://host.example.com"));
+    }
+
+    #[test]
+    fn is_external_target_mixed_case() {
+        assert!(is_external_target("HTTP://EXAMPLE.COM"));
+        assert!(is_external_target("Https://Example.Com"));
+        assert!(is_external_target("MAILTO:USER@EXAMPLE.COM"));
+        assert!(is_external_target("File://localhost/path"));
+        assert!(is_external_target("hTtPs://mixed.case"));
+        assert!(is_external_target("FTP://FILES.EXAMPLE.COM"));
+    }
+
+    #[test]
+    fn is_external_target_rejects_non_urls() {
+        assert!(!is_external_target("attachments/image.png"));
+        assert!(!is_external_target("page:some-id"));
+        assert!(!is_external_target("title:My Page"));
+        assert!(!is_external_target("just some text"));
+        assert!(!is_external_target(""));
+        assert!(!is_external_target("   "));
+        assert!(!is_external_target("not-a-scheme"));
+    }
+
+    #[test]
+    fn is_external_target_boundary_inputs() {
+        // scheme separator at the very start
+        assert!(is_external_target("://bare"));
+        // single character scheme
+        assert!(is_external_target("x://y"));
+        // scheme with numbers
+        assert!(is_external_target("h323://voip.example.com"));
+        // just the scheme prefix, no content after
+        assert!(is_external_target("http://"));
+        assert!(is_external_target("https://"));
+        assert!(is_external_target("mailto:"));
+    }
+
+    #[test]
+    fn classify_link_target_mixed_case_urls() {
+        let (dir, index) = make_kb_on_disk(&[("p1", "Alpha", &[], "body")]);
+        assert!(matches!(
+            index.classify_link_target("HTTPS://EXAMPLE.COM"),
+            LinkTargetKind::ExternalUrl(_)
+        ));
+        assert!(matches!(
+            index.classify_link_target("Http://Example.Com"),
+            LinkTargetKind::ExternalUrl(_)
+        ));
+        assert!(matches!(
+            index.classify_link_target("MAILTO:user@host.com"),
+            LinkTargetKind::ExternalUrl(_)
+        ));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn classify_link_target_whitespace_only_is_unknown() {
+        let (dir, index) = make_kb_on_disk(&[("p1", "Alpha", &[], "body")]);
+        assert!(matches!(
+            index.classify_link_target("   "),
+            LinkTargetKind::Unknown(_)
+        ));
+        assert!(matches!(
+            index.classify_link_target("\t\n"),
+            LinkTargetKind::Unknown(_)
+        ));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn classify_link_target_trims_whitespace_around_url() {
+        let (dir, index) = make_kb_on_disk(&[("p1", "Alpha", &[], "body")]);
+        assert!(matches!(
+            index.classify_link_target("  https://example.com  "),
+            LinkTargetKind::ExternalUrl(_)
+        ));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn classify_link_target_unusual_schemes() {
+        let (dir, index) = make_kb_on_disk(&[("p1", "Alpha", &[], "body")]);
+        assert!(matches!(
+            index.classify_link_target("ftp://files.example.com"),
+            LinkTargetKind::ExternalUrl(_)
+        ));
+        assert!(matches!(
+            index.classify_link_target("ssh://git.example.com"),
+            LinkTargetKind::ExternalUrl(_)
+        ));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn extract_attachment_relative_nested_paths() {
+        // Deeply nested path before attachments/
+        assert_eq!(
+            extract_attachment_relative("a/b/c/attachments/deep.png"),
+            Some("attachments/deep.png")
+        );
+        // Multiple attachments/ segments — should match first /attachments/
+        assert_eq!(
+            extract_attachment_relative("x/attachments/attachments/file.txt"),
+            Some("attachments/attachments/file.txt")
+        );
+    }
+
+    #[test]
+    fn extract_attachment_relative_no_filename() {
+        // Trailing slash, no filename
+        assert_eq!(
+            extract_attachment_relative("attachments/"),
+            Some("attachments/")
+        );
+        assert_eq!(
+            extract_attachment_relative("foo/attachments/"),
+            Some("attachments/")
+        );
+    }
+
+    #[test]
+    fn extract_attachment_relative_only_keyword() {
+        // "attachments" without trailing slash
+        assert_eq!(extract_attachment_relative("attachments"), None);
     }
 }

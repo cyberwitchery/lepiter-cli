@@ -590,18 +590,11 @@ impl KnowledgeBaseIndex {
             .into_iter()
             .map(|(target, sources)| {
                 let mut sorted: Vec<PageId> = sources.into_iter().collect();
-                sorted.sort_by(|a, b| {
-                    let a_lower = self
-                        .pages
-                        .get(a)
-                        .map(|m| m.title_lower.as_str())
-                        .unwrap_or("");
-                    let b_lower = self
-                        .pages
-                        .get(b)
-                        .map(|m| m.title_lower.as_str())
-                        .unwrap_or("");
-                    a_lower.cmp(b_lower)
+                sorted.sort_by_cached_key(|id| {
+                    self.pages
+                        .get(id)
+                        .map(|m| m.title_lower.clone())
+                        .unwrap_or_default()
                 });
                 (target, sorted)
             })
@@ -621,8 +614,12 @@ impl KnowledgeBaseIndex {
         });
 
         // 2. Re-extract outgoing links from the (possibly updated) page.
-        let Ok(page) = self.load_page(page_id) else {
-            return;
+        let page = match self.load_page(page_id) {
+            Ok(p) => p,
+            Err(e) => {
+                log::warn!("update_backlinks_for: failed to load page {page_id}: {e:#}");
+                return;
+            }
         };
         let mut seen = HashSet::new();
         for target in extract_link_targets(&page.content) {
@@ -632,18 +629,11 @@ impl KnowledgeBaseIndex {
             {
                 let sources = self.backlinks.entry(target_id).or_default();
                 sources.push(page_id.to_string());
-                sources.sort_by(|a, b| {
-                    let a_lower = self
-                        .pages
-                        .get(a)
-                        .map(|m| m.title_lower.as_str())
-                        .unwrap_or("");
-                    let b_lower = self
-                        .pages
-                        .get(b)
-                        .map(|m| m.title_lower.as_str())
-                        .unwrap_or("");
-                    a_lower.cmp(b_lower)
+                sources.sort_by_cached_key(|id| {
+                    self.pages
+                        .get(id)
+                        .map(|m| m.title_lower.clone())
+                        .unwrap_or_default()
                 });
             }
         }

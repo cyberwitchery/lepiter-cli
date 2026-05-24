@@ -18,7 +18,7 @@
 //!
 //! # configuration
 //!
-//! - `LEPITER_TUI_PARSED_CACHE` / `LEPITER_TUI_RENDERED_CACHE`: cache sizes
+//! - `LEPITER_TUI_PARSED_CACHE` / `LEPITER_TUI_RENDERED_CACHE` / `LEPITER_TUI_TEXT_INDEX_CACHE`: cache sizes
 //! - `LEPITER_EDIT_AUTOSAVE_MS`: edit autosave delay
 //! - `LEPITER_PLUGIN_CONFIG`: external snippet renderer config
 //! - `LEPITER_OPEN_CMD`: shell command to open a page externally (receives
@@ -99,7 +99,7 @@ struct App {
     search: String,
     search_needle: String,
     search_hit_kind: HashMap<PageId, SearchMatchKind>,
-    text_index: HashMap<PageId, IndexedPageText>,
+    text_index: LruCache<String, IndexedPageText>,
     text_index_queue: VecDeque<PageId>,
     history: Vec<PageId>,
     page_search: String,
@@ -120,6 +120,7 @@ impl App {
         let plugins = PluginManager::from_env();
         let max_parsed_cache = cache_limit_from_env("LEPITER_TUI_PARSED_CACHE", 128);
         let max_rendered_cache = cache_limit_from_env("LEPITER_TUI_RENDERED_CACHE", 128);
+        let max_text_index = cache_limit_from_env("LEPITER_TUI_TEXT_INDEX_CACHE", 512);
         let mut app = Self {
             index,
             plugins,
@@ -134,7 +135,7 @@ impl App {
             search: String::new(),
             search_needle: String::new(),
             search_hit_kind: HashMap::new(),
-            text_index: HashMap::new(),
+            text_index: LruCache::new(max_text_index),
             text_index_queue: VecDeque::new(),
             history: Vec::new(),
             page_search: String::new(),
@@ -188,7 +189,7 @@ impl App {
             for (id, kind) in self.index.filter_page_ids_scored(query) {
                 hit_kind.insert(id, kind);
             }
-            for (id, text) in &self.text_index {
+            for (id, text) in self.text_index.iter() {
                 if hit_kind.contains_key(id) {
                     continue;
                 }
@@ -584,7 +585,7 @@ impl App {
     }
 
     fn snippet_for(&self, id: &str) -> Option<String> {
-        let text = self.text_index.get(id)?;
+        let text = self.text_index.peek(id)?;
         if self.search_needle.is_empty() {
             return None;
         }

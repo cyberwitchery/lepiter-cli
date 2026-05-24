@@ -2,6 +2,14 @@
 
 all notable changes to this project are documented in this file.
 
+## Unreleased
+
+### changed
+- the full-text search index (`text_index`) is now a bounded LRU cache instead
+  of an unbounded `HashMap`, preventing memory growth in long-running TUI
+  sessions with large knowledge bases. the default cap is 512 entries,
+  configurable via `LEPITER_TUI_TEXT_INDEX_CACHE`
+
 ## 0.8.0 - 2026-05-21
 
 ### changed

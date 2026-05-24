@@ -10,6 +10,10 @@ all notable changes to this project are documented in this file.
   sessions with large knowledge bases. the default cap is 512 entries,
   configurable via `LEPITER_TUI_TEXT_INDEX_CACHE`
 
+### fixed
+- navigation history (`h` to go back) is now capped at 200 entries, matching
+  the undo stack cap; previously it grew without bound during long sessions
+
 ## 0.8.0 - 2026-05-21
 
 ### changed

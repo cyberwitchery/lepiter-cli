@@ -314,7 +314,7 @@ mod tests {
         );
         // the tick should be punctuation
         assert!(
-            tokens.iter().any(|t| *t == CodeToken::Punct('\'')),
+            tokens.contains(&CodeToken::Punct('\'')),
             "lifetime tick should be Punct"
         );
     }

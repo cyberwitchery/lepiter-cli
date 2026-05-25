@@ -112,6 +112,20 @@ where
         self.map.insert(key, value);
     }
 
+    /// Check whether a key is present without touching LRU order.
+    pub fn contains_key<Q>(&self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
+        self.map.contains_key(key)
+    }
+
+    /// Iterate over all entries without touching LRU order.
+    pub fn iter(&self) -> impl Iterator<Item = (&K, &V)> {
+        self.map.iter()
+    }
+
     #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
         self.map.len()
@@ -393,6 +407,67 @@ mod tests {
         let mut cache = LruCache::new(10);
         cache.insert("hello".to_string(), 42);
         assert!(cache.touch("hello"));
+    }
+
+    // ── contains_key ───────────────────────────────────────────────
+
+    #[test]
+    fn contains_key_present() {
+        let mut cache = LruCache::new(10);
+        cache.insert("a".to_string(), 1);
+        assert!(cache.contains_key("a"));
+    }
+
+    #[test]
+    fn contains_key_absent() {
+        let cache: LruCache<String, i32> = LruCache::new(10);
+        assert!(!cache.contains_key("missing"));
+    }
+
+    #[test]
+    fn contains_key_after_eviction() {
+        let mut cache = LruCache::new(2);
+        cache.insert("a".to_string(), 1);
+        cache.insert("b".to_string(), 2);
+        cache.insert("c".to_string(), 3);
+        assert!(!cache.contains_key("a"));
+        assert!(cache.contains_key("b"));
+        assert!(cache.contains_key("c"));
+    }
+
+    // ── iter ──────────────────────────────────────────────────────
+
+    #[test]
+    fn iter_empty_cache() {
+        let cache: LruCache<String, i32> = LruCache::new(10);
+        assert_eq!(cache.iter().count(), 0);
+    }
+
+    #[test]
+    fn iter_returns_all_entries() {
+        let mut cache = LruCache::new(10);
+        cache.insert("a".to_string(), 1);
+        cache.insert("b".to_string(), 2);
+        cache.insert("c".to_string(), 3);
+        let mut entries: Vec<_> = cache.iter().map(|(k, v)| (k.as_str(), *v)).collect();
+        entries.sort();
+        assert_eq!(entries, vec![("a", 1), ("b", 2), ("c", 3)]);
+    }
+
+    #[test]
+    fn iter_does_not_touch_order() {
+        let mut cache = LruCache::new(3);
+        cache.insert("a".to_string(), 1);
+        cache.insert("b".to_string(), 2);
+        cache.insert("c".to_string(), 3);
+
+        // Iterate (should not change order).
+        let _: Vec<_> = cache.iter().collect();
+
+        // Insert "d" — should evict "a" (still oldest).
+        cache.insert("d".to_string(), 4);
+        assert!(!cache.contains_key("a"));
+        assert!(cache.contains_key("b"));
     }
 
     // ── integer keys ───────────────────────────────────────────────

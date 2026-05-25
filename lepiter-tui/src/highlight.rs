@@ -38,20 +38,44 @@ pub fn tokenize_code_line<'a>(line: &'a str, language: Option<&str>) -> Vec<Code
     while i < bytes.len() {
         let b = bytes[i];
 
-        // line comments: # for python / shell / bash
-        if matches!(language, Some("python") | Some("shell") | Some("bash")) && b == b'#' {
+        // line comments: # for python / shell / bash / toml
+        if matches!(
+            language,
+            Some("python") | Some("shell") | Some("bash") | Some("toml")
+        ) && b == b'#'
+        {
             tokens.push(CodeToken::Comment(&line[i..]));
             return tokens;
         }
 
-        // line comments: // for javascript
-        if language == Some("javascript")
+        // line comments: // for javascript / rust
+        if matches!(language, Some("javascript") | Some("rust"))
             && i + 1 < bytes.len()
             && b == b'/'
             && bytes[i + 1] == b'/'
         {
             tokens.push(CodeToken::Comment(&line[i..]));
             return tokens;
+        }
+
+        // rust: distinguish char literals ('a', '\n') from lifetimes ('a)
+        if language == Some("rust") && b == b'\'' {
+            // '\X' — escaped char literal
+            if i + 3 < bytes.len() && bytes[i + 1] == b'\\' && bytes[i + 3] == b'\'' {
+                tokens.push(CodeToken::StringLit(&line[i..i + 4]));
+                i += 4;
+                continue;
+            }
+            // 'X' — single-char literal
+            if i + 2 < bytes.len() && bytes[i + 2] == b'\'' {
+                tokens.push(CodeToken::StringLit(&line[i..i + 3]));
+                i += 3;
+                continue;
+            }
+            // otherwise it's a lifetime tick — emit as punctuation
+            tokens.push(CodeToken::Punct('\''));
+            i += 1;
+            continue;
         }
 
         // string literals
@@ -151,6 +175,13 @@ pub fn keywords_for_language(language: &str) -> &'static [&'static str] {
             "echo", "exit",
         ],
         "pharo" => &["self", "super", "true", "false", "nil", "thisContext", "^"],
+        "rust" => &[
+            "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else", "enum",
+            "extern", "false", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod",
+            "move", "mut", "pub", "ref", "return", "self", "Self", "static", "struct", "super",
+            "trait", "true", "type", "unsafe", "use", "where", "while",
+        ],
+        "toml" => &["true", "false"],
         _ => &[],
     }
 }
@@ -221,5 +252,124 @@ mod tests {
             })
             .collect();
         assert_eq!(nums, vec!["42.5"]);
+    }
+
+    // --- rust ---
+
+    #[test]
+    fn rust_comment() {
+        let tokens = tokenize_code_line("let x = 1; // a comment", Some("rust"));
+        let comment = tokens.last().unwrap();
+        assert_eq!(comment, &CodeToken::Comment("// a comment"));
+    }
+
+    #[test]
+    fn rust_keywords() {
+        let tokens = tokenize_code_line("pub fn main() {}", Some("rust"));
+        assert_eq!(tokens[0], CodeToken::Keyword("pub"));
+        assert_eq!(tokens[2], CodeToken::Keyword("fn"));
+        assert_eq!(tokens[4], CodeToken::Ident("main"));
+    }
+
+    #[test]
+    fn rust_char_literal() {
+        let tokens = tokenize_code_line("let c = 'a';", Some("rust"));
+        let strings: Vec<_> = tokens
+            .iter()
+            .filter_map(|t| match t {
+                CodeToken::StringLit(s) => Some(*s),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(strings, vec!["'a'"]);
+    }
+
+    #[test]
+    fn rust_escaped_char_literal() {
+        let tokens = tokenize_code_line(r"let c = '\n';", Some("rust"));
+        let strings: Vec<_> = tokens
+            .iter()
+            .filter_map(|t| match t {
+                CodeToken::StringLit(s) => Some(*s),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(strings, vec![r"'\n'"]);
+    }
+
+    #[test]
+    fn rust_lifetime_not_string() {
+        let tokens = tokenize_code_line("fn foo<'a>(x: &'a str) {}", Some("rust"));
+        // lifetimes should produce Punct(') then Ident("a"), not StringLit
+        let strings: Vec<_> = tokens
+            .iter()
+            .filter_map(|t| match t {
+                CodeToken::StringLit(s) => Some(*s),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            strings.is_empty(),
+            "lifetimes should not be string literals"
+        );
+        // the tick should be punctuation
+        assert!(
+            tokens.iter().any(|t| *t == CodeToken::Punct('\'')),
+            "lifetime tick should be Punct"
+        );
+    }
+
+    #[test]
+    fn rust_lifetime_static() {
+        let tokens = tokenize_code_line("&'static str", Some("rust"));
+        // 'static is a lifetime — the tick is Punct, "static" is a Keyword
+        assert!(tokens.contains(&CodeToken::Punct('\'')));
+        assert!(tokens.contains(&CodeToken::Keyword("static")));
+        assert!(
+            !tokens.iter().any(|t| matches!(t, CodeToken::StringLit(_))),
+            "'static should not produce a StringLit"
+        );
+    }
+
+    #[test]
+    fn rust_string_literal() {
+        let tokens = tokenize_code_line(r#"let s = "hello";"#, Some("rust"));
+        let strings: Vec<_> = tokens
+            .iter()
+            .filter_map(|t| match t {
+                CodeToken::StringLit(s) => Some(*s),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(strings, vec![r#""hello""#]);
+    }
+
+    // --- toml ---
+
+    #[test]
+    fn toml_comment() {
+        let tokens = tokenize_code_line("key = 'value' # a comment", Some("toml"));
+        let comment = tokens.last().unwrap();
+        assert_eq!(comment, &CodeToken::Comment("# a comment"));
+    }
+
+    #[test]
+    fn toml_keywords() {
+        let tokens = tokenize_code_line("enabled = true", Some("toml"));
+        assert_eq!(tokens[0], CodeToken::Ident("enabled"));
+        assert_eq!(tokens[4], CodeToken::Keyword("true"));
+    }
+
+    #[test]
+    fn toml_string_literal() {
+        let tokens = tokenize_code_line(r#"name = "lepiter-cli""#, Some("toml"));
+        let strings: Vec<_> = tokens
+            .iter()
+            .filter_map(|t| match t {
+                CodeToken::StringLit(s) => Some(*s),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(strings, vec![r#""lepiter-cli""#]);
     }
 }

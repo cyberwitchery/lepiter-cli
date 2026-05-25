@@ -2,6 +2,14 @@
 
 all notable changes to this project are documented in this file.
 
+## Unreleased
+
+### added
+- syntax highlighting for Rust (keywords, `//` line comments, lifetime-aware
+  single-quote handling that distinguishes char literals from lifetimes) and
+  TOML (boolean keywords, `#` line comments)
+- `rustSnippet` and `tomlSnippet` recognised as code snippet types
+
 ## 0.8.0 - 2026-05-21
 
 ### changed

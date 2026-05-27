@@ -472,7 +472,7 @@ mod tests {
             search_hit_kind: HashMap::new(),
             text_index: LruCache::new(16),
             text_index_queue: VecDeque::new(),
-            history: Vec::new(),
+            history: VecDeque::new(),
             page_search: String::new(),
             page_search_needle: String::new(),
             page_search_match_lines: Vec::new(),

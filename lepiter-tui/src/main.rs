@@ -101,7 +101,7 @@ struct App {
     search_hit_kind: HashMap<PageId, SearchMatchKind>,
     text_index: LruCache<String, IndexedPageText>,
     text_index_queue: VecDeque<PageId>,
-    history: Vec<PageId>,
+    history: VecDeque<PageId>,
     page_search: String,
     page_search_needle: String,
     page_search_match_lines: Vec<usize>,
@@ -137,7 +137,7 @@ impl App {
             search_hit_kind: HashMap::new(),
             text_index: LruCache::new(max_text_index),
             text_index_queue: VecDeque::new(),
-            history: Vec::new(),
+            history: VecDeque::new(),
             page_search: String::new(),
             page_search_needle: String::new(),
             page_search_match_lines: Vec::new(),
@@ -264,7 +264,10 @@ impl App {
         }
 
         if from_link && let Some(current) = self.opened.as_ref() {
-            self.history.push(current.clone());
+            if self.history.len() >= 200 {
+                self.history.pop_front();
+            }
+            self.history.push_back(current.clone());
         }
 
         self.opened = Some(id.to_string());
@@ -414,7 +417,7 @@ impl App {
     }
 
     fn back_in_history(&mut self) {
-        if let Some(prev) = self.history.pop() {
+        if let Some(prev) = self.history.pop_back() {
             self.open_page(&prev, false);
         } else {
             self.mode = Mode::List;

@@ -23,9 +23,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Cache cargo
-        uses: kunobi-ninja/kache-action@v1
-        with:
-          cache-key-prefix: kache-lint
+        uses: Swatinem/rust-cache@v2
 
       - name: Rustfmt
         run: cargo fmt --all -- --check
@@ -44,9 +42,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache cargo
-        uses: kunobi-ninja/kache-action@v1
-        with:
-          cache-key-prefix: kache-docs
+        uses: Swatinem/rust-cache@v2
 
       - name: Build docs (warnings denied)
         env:
@@ -64,9 +60,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache cargo
-        uses: kunobi-ninja/kache-action@v1
-        with:
-          cache-key-prefix: kache-snippet-matrix
+        uses: Swatinem/rust-cache@v2
 
       - name: Refresh snippet matrix docs
         run: ./scripts/refresh_snippet_matrix.sh
@@ -90,9 +84,7 @@ jobs:
         uses: taiki-e/install-action@cargo-llvm-cov
 
       - name: Cache cargo
-        uses: kunobi-ninja/kache-action@v1
-        with:
-          cache-key-prefix: kache-tests-and-coverage
+        uses: Swatinem/rust-cache@v2
 
       - name: Run tests
         run: cargo test --workspace
@@ -127,9 +119,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache cargo
-        uses: kunobi-ninja/kache-action@v1
-        with:
-          cache-key-prefix: kache-unsafe-gate
+        uses: Swatinem/rust-cache@v2
 
       - name: Install unsafe-budget
         run: cargo install unsafe-budget

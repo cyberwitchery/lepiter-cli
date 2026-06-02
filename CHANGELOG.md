@@ -5,8 +5,6 @@ all notable changes to this project are documented in this file.
 ## Unreleased
 
 ### changed
-- split `lepiter-core/src/lib.rs` into five focused modules (`model`, `parse`,
-  `render`, `util`, `index`) with a re-export facade; no public API changes
 - the full-text search index (`text_index`) is now a bounded LRU cache instead
   of an unbounded `HashMap`, preventing memory growth in long-running TUI
   sessions with large knowledge bases. the default cap is 512 entries,

@@ -1257,7 +1257,6 @@ pub fn is_code_snippet(typ: &str) -> bool {
             | "changesSnippet"
             | "robocoderMetamodelSnippet"
             | "rustSnippet"
-            | "tomlSnippet"
     )
 }
 

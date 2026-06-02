@@ -38,12 +38,8 @@ pub fn tokenize_code_line<'a>(line: &'a str, language: Option<&str>) -> Vec<Code
     while i < bytes.len() {
         let b = bytes[i];
 
-        // line comments: # for python / shell / bash / toml
-        if matches!(
-            language,
-            Some("python") | Some("shell") | Some("bash") | Some("toml")
-        ) && b == b'#'
-        {
+        // line comments: # for python / shell / bash
+        if matches!(language, Some("python") | Some("shell") | Some("bash")) && b == b'#' {
             tokens.push(CodeToken::Comment(&line[i..]));
             return tokens;
         }
@@ -181,7 +177,6 @@ pub fn keywords_for_language(language: &str) -> &'static [&'static str] {
             "move", "mut", "pub", "ref", "return", "self", "Self", "static", "struct", "super",
             "trait", "true", "type", "unsafe", "use", "where", "while",
         ],
-        "toml" => &["true", "false"],
         _ => &[],
     }
 }
@@ -342,34 +337,5 @@ mod tests {
             })
             .collect();
         assert_eq!(strings, vec![r#""hello""#]);
-    }
-
-    // --- toml ---
-
-    #[test]
-    fn toml_comment() {
-        let tokens = tokenize_code_line("key = 'value' # a comment", Some("toml"));
-        let comment = tokens.last().unwrap();
-        assert_eq!(comment, &CodeToken::Comment("# a comment"));
-    }
-
-    #[test]
-    fn toml_keywords() {
-        let tokens = tokenize_code_line("enabled = true", Some("toml"));
-        assert_eq!(tokens[0], CodeToken::Ident("enabled"));
-        assert_eq!(tokens[4], CodeToken::Keyword("true"));
-    }
-
-    #[test]
-    fn toml_string_literal() {
-        let tokens = tokenize_code_line(r#"name = "lepiter-cli""#, Some("toml"));
-        let strings: Vec<_> = tokens
-            .iter()
-            .filter_map(|t| match t {
-                CodeToken::StringLit(s) => Some(*s),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(strings, vec![r#""lepiter-cli""#]);
     }
 }

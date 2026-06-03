@@ -37,7 +37,7 @@ jobs:
             publish_crates: false
     steps:
       - name: checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -98,7 +98,7 @@ jobs:
           Compress-Archive -Path (Join-Path $stageDir "*") -DestinationPath (Join-Path $distDir "$archiveBase.zip") -Force
 
       - name: upload packaged binaries artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dist-${{ matrix.target }}
           path: |
@@ -146,7 +146,7 @@ jobs:
 
       - name: upload sbom
         if: matrix.publish_crates
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: sbom-${{ github.ref_name }}
           path: "/tmp/lepiter-cli-sbom/sbom-${{ github.ref_name }}-*.cdx.json"
@@ -191,7 +191,7 @@ jobs:
       contents: write
     steps:
       - name: checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: prepare release notes from changelog
         shell: bash
@@ -211,21 +211,21 @@ jobs:
           fi
 
       - name: download packaged binaries
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: dist-*
           path: ${{ runner.temp }}/dist
           merge-multiple: true
 
       - name: download sbom
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         continue-on-error: true
         with:
           name: sbom-${{ github.ref_name }}
           path: ${{ runner.temp }}/sbom
 
       - name: create or update github release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           body_path: ${{ runner.temp }}/release-notes.md
           files: |

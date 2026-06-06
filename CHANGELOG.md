@@ -4,6 +4,13 @@ all notable changes to this project are documented in this file.
 
 ## Unreleased
 
+### added
+- `plugin_loop_io` function accepts generic `BufRead`/`Write`, making the plugin
+  SDK testable without spawning a subprocess and usable by embedders with custom
+  IO. `plugin_loop` is now a thin convenience wrapper over `plugin_loop_io`
+- unit tests for the IPC protocol: valid request, malformed JSON, empty lines,
+  handler error propagation, serialization roundtrip, multiple requests
+
 ### changed
 - the full-text search index (`text_index`) is now a bounded LRU cache instead
   of an unbounded `HashMap`, preventing memory growth in long-running TUI

@@ -323,11 +323,8 @@ impl KnowledgeBaseIndex {
             .into_iter()
             .map(|(target, sources)| {
                 let mut sorted: Vec<PageId> = sources.into_iter().collect();
-                sorted.sort_by_cached_key(|id| {
-                    self.pages
-                        .get(id)
-                        .map(|m| m.title_lower.clone())
-                        .unwrap_or_default()
+                sorted.sort_by(|a, b| {
+                    title_sort_key(&self.pages, a).cmp(title_sort_key(&self.pages, b))
                 });
                 (target, sorted)
             })
@@ -360,14 +357,11 @@ impl KnowledgeBaseIndex {
                 && target_id != page_id
                 && seen.insert(target_id.clone())
             {
-                let sources = self.backlinks.entry(target_id).or_default();
-                sources.push(page_id.to_string());
-                sources.sort_by_cached_key(|id| {
-                    self.pages
-                        .get(id)
-                        .map(|m| m.title_lower.clone())
-                        .unwrap_or_default()
-                });
+                insert_sorted_by_title(
+                    self.backlinks.entry(target_id).or_default(),
+                    &self.pages,
+                    page_id.to_string(),
+                );
             }
         }
     }
@@ -389,6 +383,28 @@ impl KnowledgeBaseIndex {
     pub fn attachment_resolver(&self) -> AttachmentResolver {
         AttachmentResolver::new(&self.root)
     }
+}
+
+/// Returns the case-insensitive title for `id`, or `""` if unknown.
+///
+/// Free function so callers can split-borrow `pages` and `backlinks`
+/// without conflicting on `&self`.
+fn title_sort_key<'a>(pages: &'a HashMap<PageId, PageMeta>, id: &str) -> &'a str {
+    pages.get(id).map(|m| m.title_lower.as_str()).unwrap_or("")
+}
+
+/// Inserts `source_id` into `sources` at the position that keeps the vec
+/// sorted by title.  Uses `partition_point` (binary search) for O(log n)
+/// lookup with zero key clones, vs the old push-then-sort which was
+/// O(n log n) with n clones per call.
+fn insert_sorted_by_title(
+    sources: &mut Vec<PageId>,
+    pages: &HashMap<PageId, PageMeta>,
+    source_id: String,
+) {
+    let key = title_sort_key(pages, &source_id);
+    let pos = sources.partition_point(|id| title_sort_key(pages, id) < key);
+    sources.insert(pos, source_id);
 }
 
 fn compute_sorted_ids(pages: &HashMap<PageId, PageMeta>) -> Vec<PageId> {

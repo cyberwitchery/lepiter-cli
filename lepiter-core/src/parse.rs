@@ -357,8 +357,11 @@ fn parse_word_node(item: &Value) -> Node {
     }
 
     let mut text = lines.join("\n");
-    if text.chars().count() > 1200 {
-        text = text.chars().take(1199).collect::<String>();
+    let mut char_iter = text.char_indices();
+    if let Some((trunc_at, _)) = char_iter.nth(1199)
+        && char_iter.next().is_some()
+    {
+        text.truncate(trunc_at);
         text.push('…');
     }
 

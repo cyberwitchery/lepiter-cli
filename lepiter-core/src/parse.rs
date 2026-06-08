@@ -10,6 +10,17 @@ use serde_json::Value;
 
 use crate::model::{Node, PageMeta};
 
+/// Maximum number of text fragments to harvest from a word-snippet's JSON tree
+/// when neither `wordString` nor `explanationAttachmentNameString` is present.
+const MAX_TEXT_FRAGMENTS: usize = 12;
+
+/// Maximum number of lines kept in a word-snippet paragraph after deduplication.
+const MAX_WORD_SNIPPET_LINES: usize = 8;
+
+/// Maximum number of characters in a word-snippet paragraph before it is
+/// truncated with an ellipsis.  (The text is cut *after* this many characters.)
+const MAX_WORD_SNIPPET_CHARS: usize = 1200;
+
 #[derive(Debug, Deserialize)]
 struct RawMeta {
     #[serde(default)]
@@ -343,11 +354,11 @@ fn parse_word_node(item: &Value) -> Node {
     }
 
     if lines.is_empty() {
-        collect_text_fragments(item, &mut lines, 0, 12);
+        collect_text_fragments(item, &mut lines, 0, MAX_TEXT_FRAGMENTS);
     }
 
     lines.retain(|s| !s.trim().is_empty());
-    lines.truncate(8);
+    lines.truncate(MAX_WORD_SNIPPET_LINES);
 
     if lines.is_empty() {
         return Node::Unknown {
@@ -358,7 +369,7 @@ fn parse_word_node(item: &Value) -> Node {
 
     let mut text = lines.join("\n");
     let mut char_iter = text.char_indices();
-    if let Some((trunc_at, _)) = char_iter.nth(1199)
+    if let Some((trunc_at, _)) = char_iter.nth(MAX_WORD_SNIPPET_CHARS - 1)
         && char_iter.next().is_some()
     {
         text.truncate(trunc_at);

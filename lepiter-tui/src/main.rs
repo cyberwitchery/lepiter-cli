@@ -838,7 +838,7 @@ fn print_kb_info(kb_path: PathBuf, detail: bool, json: bool) -> Result<()> {
     }
 
     let detailed = if detail {
-        Some(compute_detailed_info(&index))
+        Some(compute_detailed_info(&index, table_of_contents))
     } else {
         None
     };
@@ -894,7 +894,7 @@ struct KbInfo<'a> {
     index: &'a KnowledgeBaseIndex,
 }
 
-fn compute_detailed_info(index: &KnowledgeBaseIndex) -> DetailedInfo {
+fn compute_detailed_info(index: &KnowledgeBaseIndex, toc_page_id: &str) -> DetailedInfo {
     use lepiter_core::{collect_node_types_in_file, extract_link_targets};
     use std::collections::HashSet;
 
@@ -940,10 +940,12 @@ fn compute_detailed_info(index: &KnowledgeBaseIndex) -> DetailedInfo {
     }
 
     // Orphan pages: not linked to by any other page.
+    // The table-of-contents page is excluded — it is the root entry point and
+    // is not expected to be linked to by other pages.
     let orphan_ids: Vec<PageId> = index
         .sorted_ids
         .iter()
-        .filter(|id| !linked_to.contains(*id))
+        .filter(|id| !linked_to.contains(*id) && id.as_str() != toc_page_id)
         .cloned()
         .collect();
 
@@ -961,10 +963,7 @@ fn compute_detailed_info(index: &KnowledgeBaseIndex) -> DetailedInfo {
 /// Returns true if the type string looks like a snippet type (as opposed to
 /// a container type like "page" or "snippets").
 fn is_snippet_type(typ: &str) -> bool {
-    typ.ends_with("Snippet")
-        || typ.ends_with("Rewrite")
-        || typ == "pharoRewrite"
-        || typ.ends_with("snippet")
+    typ.ends_with("Snippet") || typ.ends_with("Rewrite") || typ.ends_with("snippet")
 }
 
 fn print_kb_info_text(info: &KbInfo<'_>) {
@@ -2175,6 +2174,132 @@ fn open_with_system(target: &str) -> Result<()> {
 mod tests {
     use super::*;
     use lepiter_core::Node;
+
+    // --- is_snippet_type ---
+
+    #[test]
+    fn is_snippet_type_accepts_text_snippet() {
+        assert!(is_snippet_type("textSnippet"));
+    }
+
+    #[test]
+    fn is_snippet_type_accepts_pharo_snippet() {
+        assert!(is_snippet_type("pharoSnippet"));
+    }
+
+    #[test]
+    fn is_snippet_type_accepts_lowercase_snippet() {
+        assert!(is_snippet_type("codeSnippet"));
+        assert!(is_snippet_type("pythonSnippet"));
+    }
+
+    #[test]
+    fn is_snippet_type_accepts_rewrite() {
+        assert!(is_snippet_type("pharoRewrite"));
+        assert!(is_snippet_type("someRewrite"));
+    }
+
+    #[test]
+    fn is_snippet_type_rejects_container_types() {
+        assert!(!is_snippet_type("page"));
+        assert!(!is_snippet_type("snippets"));
+        assert!(!is_snippet_type("children"));
+    }
+
+    // --- compute_detailed_info ---
+
+    fn make_test_kb(
+        pages: &[(&str, &str, &str)],
+    ) -> (std::path::PathBuf, lepiter_core::KnowledgeBaseIndex) {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("lepiter-tui-test-{ts}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (id, title, body) in pages {
+            let content = serde_json::json!({
+                "uid": {"uuid": id},
+                "pageType": {"title": title},
+                "tags": [],
+                "children": {"items": [
+                    {"__type": "textSnippet", "string": body}
+                ]}
+            });
+            let file_path = dir.join(format!("{id}.lepiter"));
+            std::fs::write(&file_path, serde_json::to_vec(&content).unwrap()).unwrap();
+        }
+        let index = lepiter_core::KnowledgeBase::open(&dir).unwrap();
+        (dir, index)
+    }
+
+    #[test]
+    fn compute_detailed_info_counts_snippet_types() {
+        let (dir, index) = make_test_kb(&[("p1", "Page One", "hello world")]);
+        let info = compute_detailed_info(&index, "");
+        // The textSnippet from the JSON should appear in snippet_types.
+        assert!(info.snippet_types.iter().any(|(t, _)| t == "textSnippet"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn compute_detailed_info_detects_orphan_pages() {
+        // Two pages, neither links to the other — both should be orphans.
+        let (dir, index) =
+            make_test_kb(&[("p1", "Page One", "hello"), ("p2", "Page Two", "world")]);
+        let info = compute_detailed_info(&index, "");
+        assert_eq!(info.orphan_ids.len(), 2);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn compute_detailed_info_excludes_toc_from_orphans() {
+        // Two pages, neither links to the other. "p1" is the TOC page.
+        let (dir, index) = make_test_kb(&[
+            ("p1", "Table of Contents", "hello"),
+            ("p2", "Page Two", "world"),
+        ]);
+        let info = compute_detailed_info(&index, "p1");
+        // p1 excluded as TOC, only p2 should be orphan.
+        assert_eq!(info.orphan_ids.len(), 1);
+        assert_eq!(info.orphan_ids[0], "p2");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn compute_detailed_info_linked_page_not_orphan() {
+        // p1 links to p2 via inline markdown link.
+        let (dir, index) = make_test_kb(&[
+            ("p1", "Page One", "see [link](page:p2) for more"),
+            ("p2", "Page Two", "target page"),
+        ]);
+        let info = compute_detailed_info(&index, "");
+        // p2 is linked to by p1, so only p1 should be orphan.
+        assert_eq!(info.orphan_ids.len(), 1);
+        assert_eq!(info.orphan_ids[0], "p1");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn compute_detailed_info_detects_broken_links() {
+        // p1 links to a nonexistent page.
+        let (dir, index) = make_test_kb(&[("p1", "Page One", "see [link](page:nonexistent) here")]);
+        let info = compute_detailed_info(&index, "");
+        assert_eq!(info.broken_links.len(), 1);
+        assert_eq!(info.broken_links[0].target, "page:nonexistent");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn compute_detailed_info_empty_kb() {
+        let (dir, index) = make_test_kb(&[]);
+        let info = compute_detailed_info(&index, "");
+        assert!(info.broken_links.is_empty());
+        assert!(info.orphan_ids.is_empty());
+        assert!(info.snippet_types.is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     #[test]
     fn collect_page_links_standalone_link_node() {

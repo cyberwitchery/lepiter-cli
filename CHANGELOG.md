@@ -8,6 +8,15 @@ all notable changes to this project are documented in this file.
 - `info --detail` flag: shows broken wikilinks, orphan pages (no incoming links),
   tag distribution, and snippet type breakdown
 - `info --json` flag: outputs all info data as JSON (combinable with `--detail`)
+- `list --json` flag: outputs page metadata as a JSON array (id, title, path,
+  tags, updated_at)
+- `search --json` flag: outputs search results as a JSON array including id,
+  title, match kind (`title`/`tag`/`content`), and tags
+- `show --json` flag: serializes the full parsed page structure (metadata +
+  content nodes) as JSON
+- `serde::Serialize` derives on core model types (`PageMeta`, `Page`, `Node`,
+  `SearchMatchKind`, `SearchHit`) in lepiter-core, enabling structured JSON
+  output from any consumer
 - `plugin_loop_io` function accepts generic `BufRead`/`Write`, making the plugin
   SDK testable without spawning a subprocess and usable by embedders with custom
   IO. `plugin_loop` is now a thin convenience wrapper over `plugin_loop_io`

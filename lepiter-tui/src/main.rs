@@ -767,7 +767,7 @@ fn run_tui(kb_path: PathBuf) -> Result<()> {
 
 fn print_usage() {
     eprintln!(
-        "lepiter-cli <subcommand|kb-path> [args]\n\nsubcommands:\n  tui [kb-path]                                      launch the terminal reader (default path: ./lepiter)\n  info [--detail] [--json] [kb-path]                 print knowledge base metadata summary\n  list [--tsv] [kb-path]                             list pages (pretty columns by default)\n  ids [kb-path]                                      print page ids only (sorted by title)\n  search [--full-text] [--tsv] <query> [kb-path]     search by title/id/tags, optionally page content\n  show [--id|--by-title] [--open-links] <value> [kb-path]  render one page (default: title lookup)\n\nIf the first argument is a directory path, `info` mode is used implicitly.\n\ninfo flags:\n  --detail  show broken links, orphan pages, tag distribution, snippet type breakdown\n  --json    output as json (combinable with --detail)"
+        "lepiter-cli <subcommand|kb-path> [args]\n\nsubcommands:\n  tui [kb-path]                                      launch the terminal reader (default path: ./lepiter)\n  info [--detail] [--json] [kb-path]                 print knowledge base metadata summary\n  list [--tsv] [--json] [kb-path]                    list pages (pretty columns by default)\n  ids [kb-path]                                      print page ids only (sorted by title)\n  search [--full-text] [--tsv] [--json] <query> [kb-path]  search by title/id/tags, optionally page content\n  show [--id|--by-title] [--open-links] [--json] <value> [kb-path]  render one page (default: title lookup)\n\nIf the first argument is a directory path, `info` mode is used implicitly.\n\ninfo flags:\n  --detail  show broken links, orphan pages, tag distribution, snippet type breakdown\n  --json    output as json (combinable with --detail)\n\njson flags:\n  --json on list outputs page metadata as a json array\n  --json on search includes match kind alongside page metadata\n  --json on show serializes the full parsed page structure"
     );
 }
 
@@ -1162,10 +1162,12 @@ fn print_page(kb_path: PathBuf, page_id: &str, show_links: bool) -> Result<()> {
 
 fn run_list(args: Vec<String>) -> Result<()> {
     let mut tsv = false;
+    let mut json = false;
     let mut positional = Vec::new();
     for arg in args {
         match arg.as_str() {
             "--tsv" => tsv = true,
+            "--json" => json = true,
             _ => positional.push(arg),
         }
     }
@@ -1173,12 +1175,19 @@ fn run_list(args: Vec<String>) -> Result<()> {
         .first()
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("./lepiter"));
-    print_page_list(kb_path, tsv)
+    print_page_list(kb_path, tsv, json)
 }
 
-fn print_page_list(kb_path: PathBuf, tsv: bool) -> Result<()> {
+fn print_page_list(kb_path: PathBuf, tsv: bool, json: bool) -> Result<()> {
     let index = KnowledgeBase::open(&kb_path)
         .with_context(|| format!("failed to open knowledge base at {}", kb_path.display()))?;
+
+    if json {
+        let pages: Vec<&PageMeta> = index.sorted_pages();
+        println!("{}", serde_json::to_string_pretty(&pages).unwrap());
+        return Ok(());
+    }
+
     if tsv {
         for meta in index.sorted_pages() {
             println!("{}\t{}", meta.title, meta.id);
@@ -1219,11 +1228,13 @@ fn print_page_ids(kb_path: PathBuf) -> Result<()> {
 fn run_search(args: Vec<String>) -> Result<()> {
     let mut full_text = false;
     let mut tsv = false;
+    let mut json = false;
     let mut positional = Vec::new();
     for arg in args {
         match arg.as_str() {
             "--full-text" => full_text = true,
             "--tsv" => tsv = true,
+            "--json" => json = true,
             _ => positional.push(arg),
         }
     }
@@ -1244,6 +1255,25 @@ fn run_search(args: Vec<String>) -> Result<()> {
     let index = KnowledgeBase::open(&kb_path)
         .with_context(|| format!("failed to open knowledge base at {}", kb_path.display()))?;
     let hits = index.search_hits(&query, full_text);
+
+    if json {
+        let enriched: Vec<serde_json::Value> = hits
+            .iter()
+            .filter_map(|hit| {
+                index.pages.get(&hit.id).map(|meta| {
+                    serde_json::json!({
+                        "id": hit.id,
+                        "title": meta.title,
+                        "kind": hit.kind,
+                        "tags": meta.tags,
+                    })
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&enriched).unwrap());
+        return Ok(());
+    }
+
     let hit_by_id = hits
         .into_iter()
         .map(|hit| {
@@ -1305,6 +1335,7 @@ fn run_show(args: Vec<String>) -> Result<()> {
     let mut by_id = false;
     let mut by_title = false;
     let mut open_links = false;
+    let mut json = false;
     let mut positional = Vec::new();
 
     for arg in args {
@@ -1312,6 +1343,7 @@ fn run_show(args: Vec<String>) -> Result<()> {
             "--id" | "-i" => by_id = true,
             "--by-title" => by_title = true,
             "--open-links" => open_links = true,
+            "--json" => json = true,
             _ => positional.push(arg),
         }
     }
@@ -1339,6 +1371,15 @@ fn run_show(args: Vec<String>) -> Result<()> {
     } else {
         resolve_page_id_by_title(&index, value)?
     };
+
+    if json {
+        let page = index
+            .load_page(&page_id)
+            .with_context(|| format!("failed to load page id `{page_id}`"))?;
+        println!("{}", serde_json::to_string_pretty(&page).unwrap());
+        return Ok(());
+    }
+
     print_page(kb_path, &page_id, open_links)
 }
 

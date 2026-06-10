@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, FixedOffset};
+use serde::Serialize;
 use serde_json::Value;
 use thiserror::Error;
 
@@ -10,15 +11,17 @@ use crate::util::{extract_attachment_relative, sanitize_relative_path};
 pub type PageId = String;
 
 /// Metadata for a page discovered during index scanning.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct PageMeta {
     /// Canonical page id (preferred key over filename).
     pub id: PageId,
     /// Pre-computed lowercased id for case-insensitive comparisons.
+    #[serde(skip)]
     pub id_lower: String,
     /// Human-readable page title.
     pub title: String,
     /// Pre-computed lowercased title for case-insensitive comparisons.
+    #[serde(skip)]
     pub title_lower: String,
     /// Absolute or relative path to the source page file.
     pub path: PathBuf,
@@ -27,11 +30,12 @@ pub struct PageMeta {
     /// Optional page tags extracted from metadata.
     pub tags: Vec<String>,
     /// Pre-computed lowercased tags for case-insensitive comparisons.
+    #[serde(skip)]
     pub tags_lower: Vec<String>,
 }
 
 /// Fully parsed page content.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Page {
     /// Canonical page id.
     pub id: PageId,
@@ -46,7 +50,8 @@ pub struct Page {
 }
 
 /// Block-oriented normalized node model used by consumers (e.g. TUI).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum Node {
     /// Markdown-style heading.
     Heading { level: u8, text: String },
@@ -74,7 +79,11 @@ pub enum Node {
         is_method_pattern: Option<bool>,
     },
     /// Unknown/unsupported source node type preserved losslessly.
-    Unknown { typ: String, raw: Value },
+    Unknown {
+        #[serde(rename = "source_type")]
+        typ: String,
+        raw: Value,
+    },
 }
 
 /// Non-fatal parse/indexing issue associated with a source file.
@@ -87,7 +96,8 @@ pub struct ParseIssue {
 }
 
 /// Match category for search results.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SearchMatchKind {
     /// Match came from page title or id.
     Title,
@@ -116,7 +126,7 @@ impl SearchMatchKind {
 }
 
 /// Search result entry for one page.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SearchHit {
     /// Canonical page id.
     pub id: PageId,
@@ -246,6 +256,149 @@ mod tests {
         assert!(SearchMatchKind::Title.is_meta());
         assert!(SearchMatchKind::Tag.is_meta());
         assert!(!SearchMatchKind::Content.is_meta());
+    }
+
+    #[test]
+    fn page_meta_serializes_without_internal_fields() {
+        let meta = PageMeta {
+            id: "abc-123".to_string(),
+            id_lower: "abc-123".to_string(),
+            title: "My Page".to_string(),
+            title_lower: "my page".to_string(),
+            path: PathBuf::from("/kb/abc-123.lepiter"),
+            updated_at: None,
+            tags: vec!["rust".to_string()],
+            tags_lower: vec!["rust".to_string()],
+        };
+        let json: serde_json::Value = serde_json::to_value(&meta).unwrap();
+        assert_eq!(json["id"], "abc-123");
+        assert_eq!(json["title"], "My Page");
+        assert_eq!(json["tags"], serde_json::json!(["rust"]));
+        // Internal lowercase fields must not appear in output.
+        assert!(json.get("id_lower").is_none());
+        assert!(json.get("title_lower").is_none());
+        assert!(json.get("tags_lower").is_none());
+    }
+
+    #[test]
+    fn page_serializes_with_content() {
+        let page = Page {
+            id: "p1".to_string(),
+            title: "Test".to_string(),
+            updated_at: None,
+            tags: Vec::new(),
+            content: vec![
+                Node::Paragraph {
+                    text: "hello".to_string(),
+                },
+                Node::Code {
+                    language: Some("rust".to_string()),
+                    code: "fn main() {}".to_string(),
+                },
+            ],
+        };
+        let json: serde_json::Value = serde_json::to_value(&page).unwrap();
+        let content = json["content"].as_array().unwrap();
+        assert_eq!(content.len(), 2);
+        assert_eq!(content[0]["type"], "paragraph");
+        assert_eq!(content[0]["text"], "hello");
+        assert_eq!(content[1]["type"], "code");
+        assert_eq!(content[1]["language"], "rust");
+    }
+
+    #[test]
+    fn node_variants_serialize_with_type_tag() {
+        let cases: Vec<(Node, &str)> = vec![
+            (
+                Node::Heading {
+                    level: 2,
+                    text: "title".to_string(),
+                },
+                "heading",
+            ),
+            (
+                Node::Paragraph {
+                    text: "p".to_string(),
+                },
+                "paragraph",
+            ),
+            (
+                Node::Text {
+                    text: "t".to_string(),
+                },
+                "text",
+            ),
+            (Node::List { items: vec![] }, "list"),
+            (
+                Node::Code {
+                    language: None,
+                    code: "x".to_string(),
+                },
+                "code",
+            ),
+            (
+                Node::Link {
+                    text: "a".to_string(),
+                    url: "b".to_string(),
+                },
+                "link",
+            ),
+            (
+                Node::Quote {
+                    text: "q".to_string(),
+                },
+                "quote",
+            ),
+            (
+                Node::Unknown {
+                    typ: "wardleyMap".to_string(),
+                    raw: serde_json::json!({}),
+                },
+                "unknown",
+            ),
+        ];
+        for (node, expected_type) in cases {
+            let json: serde_json::Value = serde_json::to_value(&node).unwrap();
+            assert_eq!(json["type"], expected_type, "wrong type tag for {:?}", node);
+        }
+    }
+
+    #[test]
+    fn unknown_node_serializes_source_type() {
+        let node = Node::Unknown {
+            typ: "wardleyMap".to_string(),
+            raw: serde_json::json!({"data": 1}),
+        };
+        let json: serde_json::Value = serde_json::to_value(&node).unwrap();
+        assert_eq!(json["source_type"], "wardleyMap");
+        assert_eq!(json["raw"]["data"], 1);
+    }
+
+    #[test]
+    fn search_match_kind_serializes_lowercase() {
+        assert_eq!(
+            serde_json::to_value(SearchMatchKind::Title).unwrap(),
+            serde_json::json!("title")
+        );
+        assert_eq!(
+            serde_json::to_value(SearchMatchKind::Tag).unwrap(),
+            serde_json::json!("tag")
+        );
+        assert_eq!(
+            serde_json::to_value(SearchMatchKind::Content).unwrap(),
+            serde_json::json!("content")
+        );
+    }
+
+    #[test]
+    fn search_hit_serializes() {
+        let hit = SearchHit {
+            id: "p1".to_string(),
+            kind: SearchMatchKind::Tag,
+        };
+        let json: serde_json::Value = serde_json::to_value(&hit).unwrap();
+        assert_eq!(json["id"], "p1");
+        assert_eq!(json["kind"], "tag");
     }
 
     #[test]

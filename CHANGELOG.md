@@ -8,6 +8,8 @@ all notable changes to this project are documented in this file.
 - `info --detail` flag: shows broken wikilinks, orphan pages (no incoming links),
   tag distribution, and snippet type breakdown
 - `info --json` flag: outputs all info data as JSON (combinable with `--detail`)
+- `--json` flag for `list`, `search`, and `show` subcommands: outputs
+  structured JSON matching the existing `info --json` pattern
 - `plugin_loop_io` function accepts generic `BufRead`/`Write`, making the plugin
   SDK testable without spawning a subprocess and usable by embedders with custom
   IO. `plugin_loop` is now a thin convenience wrapper over `plugin_loop_io`

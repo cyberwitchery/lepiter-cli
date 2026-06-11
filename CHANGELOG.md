@@ -17,6 +17,9 @@ all notable changes to this project are documented in this file.
   handler error propagation, serialization roundtrip, multiple requests
 
 ### changed
+- `update_backlinks_for()` now maintains a forward links map alongside the
+  backlinks map, making incremental backlink updates O(outgoing_links) instead
+  of O(total_backlink_entries)
 - the full-text search index (`text_index`) is now a bounded LRU cache instead
   of an unbounded `HashMap`, preventing memory growth in long-running TUI
   sessions with large knowledge bases. the default cap is 512 entries,

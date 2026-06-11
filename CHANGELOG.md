@@ -5,6 +5,10 @@ all notable changes to this project are documented in this file.
 ## Unreleased
 
 ### added
+- `links` subcommand: outputs the page link graph with statistics (total links,
+  most-linked pages, isolated pages). supports `--json` for structured output
+  with nodes and edges arrays, `--dot` for graphviz DOT format, and
+  `--for <page>` to show only links involving a specific page (ego graph)
 - `info --detail` flag: shows broken wikilinks, orphan pages (no incoming links),
   tag distribution, and snippet type breakdown
 - `info --json` flag: outputs all info data as JSON (combinable with `--detail`)

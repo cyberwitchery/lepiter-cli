@@ -7,6 +7,8 @@ use anyhow::{Context, Result};
 use serde_json::Value;
 use walkdir::WalkDir;
 
+use serde::Serialize;
+
 use crate::model::{
     AttachmentResolver, LinkTargetKind, Page, PageId, PageMeta, ParseIssue, SearchHit,
     SearchMatchKind, TitleResolution,
@@ -395,6 +397,33 @@ impl KnowledgeBaseIndex {
             .unwrap_or_default()
     }
 
+    /// Builds the full directed link graph across all pages.
+    ///
+    /// Each edge represents one internal page-to-page link (deduplicated per
+    /// source/target pair).  Self-links are excluded.
+    pub fn build_link_graph(&self) -> LinkGraph {
+        let mut edges = Vec::new();
+        let mut seen = HashSet::new();
+        for source_id in &self.sorted_ids {
+            let Ok(page) = self.load_page(source_id) else {
+                continue;
+            };
+            seen.clear();
+            for target in extract_link_targets(&page.content) {
+                if let LinkTargetKind::InternalPage(target_id) = self.classify_link_target(&target)
+                    && target_id != *source_id
+                    && seen.insert(target_id.clone())
+                {
+                    edges.push(LinkEdge {
+                        source: source_id.clone(),
+                        target: target_id,
+                    });
+                }
+            }
+        }
+        LinkGraph { edges }
+    }
+
     /// Returns the root path used to build this index.
     pub fn root(&self) -> &Path {
         &self.root
@@ -403,6 +432,32 @@ impl KnowledgeBaseIndex {
     /// Returns an attachment resolver rooted at this knowledge base.
     pub fn attachment_resolver(&self) -> AttachmentResolver {
         AttachmentResolver::new(&self.root)
+    }
+}
+
+/// A directed edge in the page link graph.
+#[derive(Debug, Clone, Serialize)]
+pub struct LinkEdge {
+    /// Page id of the linking page.
+    pub source: PageId,
+    /// Page id of the linked-to page.
+    pub target: PageId,
+}
+
+/// Directed link graph across all pages in a knowledge base.
+#[derive(Debug, Clone)]
+pub struct LinkGraph {
+    /// Deduplicated directed edges (self-links excluded).
+    pub edges: Vec<LinkEdge>,
+}
+
+impl LinkGraph {
+    /// Returns edges filtered to only those involving `page_id` (as source or target).
+    pub fn ego(&self, page_id: &str) -> Vec<&LinkEdge> {
+        self.edges
+            .iter()
+            .filter(|e| e.source == page_id || e.target == page_id)
+            .collect()
     }
 }
 
@@ -1330,6 +1385,76 @@ mod tests {
         assert_eq!(index.sorted_ids[0], "new-page");
         assert!(index.pages.contains_key("new-page"));
 
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn build_link_graph_collects_edges() {
+        let (dir, index) = make_kb_on_disk(&[
+            ("p1", "Alpha", &[], "see [[Beta]]"),
+            ("p2", "Beta", &[], "links to [a](page:p1) and [[Gamma]]"),
+            ("p3", "Gamma", &[], "no links here"),
+        ]);
+        let graph = index.build_link_graph();
+        assert_eq!(graph.edges.len(), 3);
+        let pairs: Vec<(&str, &str)> = graph
+            .edges
+            .iter()
+            .map(|e| (e.source.as_str(), e.target.as_str()))
+            .collect();
+        assert!(pairs.contains(&("p1", "p2")));
+        assert!(pairs.contains(&("p2", "p1")));
+        assert!(pairs.contains(&("p2", "p3")));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn build_link_graph_excludes_self_links() {
+        let (dir, index) = make_kb_on_disk(&[("p1", "Alpha", &[], "see [[Alpha]]")]);
+        let graph = index.build_link_graph();
+        assert!(graph.edges.is_empty());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn build_link_graph_deduplicates() {
+        let (dir, index) = make_kb_on_disk(&[
+            ("p1", "Alpha", &[], "[[Beta]] and [[Beta]] again"),
+            ("p2", "Beta", &[], "nothing"),
+        ]);
+        let graph = index.build_link_graph();
+        assert_eq!(graph.edges.len(), 1);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn link_graph_ego_filters_by_page() {
+        let (dir, index) = make_kb_on_disk(&[
+            ("p1", "Alpha", &[], "see [[Beta]]"),
+            ("p2", "Beta", &[], "see [[Gamma]]"),
+            ("p3", "Gamma", &[], "nothing"),
+        ]);
+        let graph = index.build_link_graph();
+        let ego = graph.ego("p2");
+        assert_eq!(ego.len(), 2);
+        let pairs: Vec<(&str, &str)> = ego
+            .iter()
+            .map(|e| (e.source.as_str(), e.target.as_str()))
+            .collect();
+        assert!(pairs.contains(&("p1", "p2")));
+        assert!(pairs.contains(&("p2", "p3")));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn link_graph_ego_unconnected_page() {
+        let (dir, index) = make_kb_on_disk(&[
+            ("p1", "Alpha", &[], "see [[Beta]]"),
+            ("p2", "Beta", &[], "nothing"),
+            ("p3", "Gamma", &[], "nothing"),
+        ]);
+        let graph = index.build_link_graph();
+        assert!(graph.ego("p3").is_empty());
         fs::remove_dir_all(&dir).unwrap();
     }
 }

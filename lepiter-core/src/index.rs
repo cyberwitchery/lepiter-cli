@@ -27,6 +27,10 @@ pub struct KnowledgeBaseIndex {
     pub index_issues: Vec<ParseIssue>,
     /// Reverse link index: target page id -> sorted list of source page ids that link to it.
     backlinks: HashMap<PageId, Vec<PageId>>,
+    /// Forward link index: source page id -> set of target page ids it links to.
+    /// Kept in sync with `backlinks` so that incremental updates can remove
+    /// stale entries in O(outgoing_links) instead of scanning every backlink.
+    forward_links: HashMap<PageId, HashSet<PageId>>,
 }
 
 /// Entry point for opening a Lepiter knowledge base directory.
@@ -85,6 +89,7 @@ impl KnowledgeBase {
             sorted_ids,
             index_issues: issues,
             backlinks: HashMap::new(),
+            forward_links: HashMap::new(),
         })
     }
 }
@@ -306,19 +311,26 @@ impl KnowledgeBaseIndex {
     /// Call this once after [`KnowledgeBase::open`] when backlink data is needed.
     pub fn build_backlinks(&mut self) {
         let mut back: HashMap<PageId, HashSet<PageId>> = HashMap::new();
+        let mut forward: HashMap<PageId, HashSet<PageId>> = HashMap::new();
         let ids: Vec<PageId> = self.sorted_ids.clone();
         for source_id in &ids {
             let Ok(page) = self.load_page(source_id) else {
                 continue;
             };
+            let mut source_targets = HashSet::new();
             for target in extract_link_targets(&page.content) {
                 if let LinkTargetKind::InternalPage(target_id) = self.classify_link_target(&target)
                     && target_id != *source_id
+                    && source_targets.insert(target_id.clone())
                 {
                     back.entry(target_id).or_default().insert(source_id.clone());
                 }
             }
+            if !source_targets.is_empty() {
+                forward.insert(source_id.clone(), source_targets);
+            }
         }
+        self.forward_links = forward;
         self.backlinks = back
             .into_iter()
             .map(|(target, sources)| {
@@ -337,11 +349,17 @@ impl KnowledgeBaseIndex {
     /// and classifies its current links.  Much cheaper than a full
     /// [`Self::build_backlinks`] call when only one page changed.
     pub fn update_backlinks_for(&mut self, page_id: &str) {
-        // 1. Remove page_id as a source from every target's backlink list.
-        self.backlinks.retain(|_target, sources| {
-            sources.retain(|s| s != page_id);
-            !sources.is_empty()
-        });
+        // 1. Remove page_id from only the targets it previously linked to.
+        if let Some(old_targets) = self.forward_links.remove(page_id) {
+            for target_id in &old_targets {
+                if let Some(sources) = self.backlinks.get_mut(target_id) {
+                    sources.retain(|s| s != page_id);
+                    if sources.is_empty() {
+                        self.backlinks.remove(target_id);
+                    }
+                }
+            }
+        }
 
         // 2. Re-extract outgoing links from the (possibly updated) page.
         let page = match self.load_page(page_id) {
@@ -351,11 +369,11 @@ impl KnowledgeBaseIndex {
                 return;
             }
         };
-        let mut seen = HashSet::new();
+        let mut new_targets = HashSet::new();
         for target in extract_link_targets(&page.content) {
             if let LinkTargetKind::InternalPage(target_id) = self.classify_link_target(&target)
                 && target_id != page_id
-                && seen.insert(target_id.clone())
+                && new_targets.insert(target_id.clone())
             {
                 insert_sorted_by_title(
                     self.backlinks.entry(target_id).or_default(),
@@ -363,6 +381,9 @@ impl KnowledgeBaseIndex {
                     page_id.to_string(),
                 );
             }
+        }
+        if !new_targets.is_empty() {
+            self.forward_links.insert(page_id.to_string(), new_targets);
         }
     }
 
@@ -494,6 +515,7 @@ mod tests {
             sorted_ids,
             index_issues: Vec::new(),
             backlinks: HashMap::new(),
+            forward_links: HashMap::new(),
         };
 
         assert_eq!(index.filter_page_ids("alpha"), vec!["id-1".to_string()]);
@@ -541,6 +563,7 @@ mod tests {
             sorted_ids,
             index_issues: Vec::new(),
             backlinks: HashMap::new(),
+            forward_links: HashMap::new(),
         };
 
         assert_eq!(
@@ -580,6 +603,7 @@ mod tests {
             sorted_ids,
             index_issues: Vec::new(),
             backlinks: HashMap::new(),
+            forward_links: HashMap::new(),
         };
 
         assert!(matches!(

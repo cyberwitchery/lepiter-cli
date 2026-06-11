@@ -742,6 +742,10 @@ fn main() -> Result<()> {
             let rest = args.collect::<Vec<_>>();
             run_links(rest)
         }
+        "tags" => {
+            let rest = args.collect::<Vec<_>>();
+            run_tags(rest)
+        }
         "-h" | "--help" | "help" => {
             print_usage();
             Ok(())
@@ -771,7 +775,7 @@ fn run_tui(kb_path: PathBuf) -> Result<()> {
 
 fn print_usage() {
     eprintln!(
-        "lepiter-cli <subcommand|kb-path> [args]\n\nsubcommands:\n  tui [kb-path]                                      launch the terminal reader (default path: ./lepiter)\n  info [--detail] [--json] [kb-path]                 print knowledge base metadata summary\n  list [--tsv] [--json] [kb-path]                    list pages (pretty columns by default)\n  ids [kb-path]                                      print page ids only (sorted by title)\n  search [--full-text] [--tsv] [--json] <query> [kb-path]  search by title/id/tags, optionally page content\n  show [--id|--by-title] [--open-links] [--json] <value> [kb-path]  render one page (default: title lookup)\n  links [--dot] [--json] [--for <page>] [kb-path]    show the page link graph\n\nIf the first argument is a directory path, `info` mode is used implicitly.\n\ninfo flags:\n  --detail  show broken links, orphan pages, tag distribution, snippet type breakdown\n  --json    output as json (combinable with --detail)\n\nlinks flags:\n  --dot       output as graphviz dot\n  --json      output as json with nodes and edges arrays\n  --for PAGE  show only links involving PAGE (ego graph, resolved by title)\n\njson flags:\n  --json on list outputs page metadata as a json array\n  --json on search includes match kind alongside page metadata\n  --json on show serializes the full parsed page structure"
+        "lepiter-cli <subcommand|kb-path> [args]\n\nsubcommands:\n  tui [kb-path]                                      launch the terminal reader (default path: ./lepiter)\n  info [--detail] [--json] [kb-path]                 print knowledge base metadata summary\n  list [--tsv] [--json] [kb-path]                    list pages (pretty columns by default)\n  ids [kb-path]                                      print page ids only (sorted by title)\n  search [--full-text] [--tsv] [--json] <query> [kb-path]  search by title/id/tags, optionally page content\n  show [--id|--by-title] [--open-links] [--json] <value> [kb-path]  render one page (default: title lookup)\n  links [--dot] [--json] [--for <page>] [kb-path]    show the page link graph\n  tags [--tsv] [--json] [--for <tag>] [kb-path]      list tags with page counts, or pages for a tag\n\nIf the first argument is a directory path, `info` mode is used implicitly.\n\ninfo flags:\n  --detail  show broken links, orphan pages, tag distribution, snippet type breakdown\n  --json    output as json (combinable with --detail)\n\nlinks flags:\n  --dot       output as graphviz dot\n  --json      output as json with nodes and edges arrays\n  --for PAGE  show only links involving PAGE (ego graph, resolved by title)\n\ntags flags:\n  --for TAG   list pages tagged with TAG (case-insensitive)\n  --tsv       output as tab-separated values\n  --json      output as json\n\njson flags:\n  --json on list outputs page metadata as a json array\n  --json on search includes match kind alongside page metadata\n  --json on show serializes the full parsed page structure"
     );
 }
 
@@ -1610,6 +1614,128 @@ fn print_links_text(index: &KnowledgeBaseIndex, edges: &[&LinkEdge], ego_id: Opt
                 let title = index.pages.get(*id).map(|m| m.title.as_str()).unwrap_or(id);
                 println!("  {title}");
             }
+        }
+    }
+}
+
+fn run_tags(args: Vec<String>) -> Result<()> {
+    let mut json = false;
+    let mut tsv = false;
+    let mut for_tag: Option<String> = None;
+    let mut positional = Vec::new();
+
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--json" => json = true,
+            "--tsv" => tsv = true,
+            "--for" => {
+                let val = iter
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("--for requires a tag argument"))?;
+                for_tag = Some(val.clone());
+            }
+            _ if arg.starts_with('-') => {
+                eprintln!("unknown flag: {arg}");
+                std::process::exit(2);
+            }
+            _ => positional.push(arg.clone()),
+        }
+    }
+
+    let kb_path = positional
+        .first()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("./lepiter"));
+    let index = KnowledgeBase::open(&kb_path)
+        .with_context(|| format!("failed to open knowledge base at {}", kb_path.display()))?;
+
+    match for_tag {
+        Some(tag) => print_tag_pages(&index, &tag, json, tsv),
+        None => print_tag_summary(&index, json, tsv),
+    }
+
+    Ok(())
+}
+
+fn collect_tag_counts(index: &KnowledgeBaseIndex) -> Vec<(String, usize)> {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for meta in index.pages.values() {
+        for tag in &meta.tags {
+            *counts.entry(tag.clone()).or_insert(0) += 1;
+        }
+    }
+    let mut sorted: Vec<(String, usize)> = counts.into_iter().collect();
+    sorted.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    sorted
+}
+
+fn print_tag_summary(index: &KnowledgeBaseIndex, json: bool, tsv: bool) {
+    let tags = collect_tag_counts(index);
+
+    if json {
+        let arr: Vec<serde_json::Value> = tags
+            .iter()
+            .map(|(tag, count)| serde_json::json!({ "tag": tag, "count": count }))
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&arr).unwrap());
+        return;
+    }
+
+    if tsv {
+        for (tag, count) in &tags {
+            println!("{tag}\t{count}");
+        }
+        return;
+    }
+
+    println!("Tags ({} unique)", tags.len());
+    if tags.is_empty() {
+        println!("  (none)");
+    } else {
+        for (tag, count) in &tags {
+            println!("  {count:>4}  {tag}");
+        }
+    }
+}
+
+fn print_tag_pages(index: &KnowledgeBaseIndex, tag: &str, json: bool, tsv: bool) {
+    let needle = tag.to_lowercase();
+    let pages: Vec<&PageMeta> = index
+        .sorted_pages()
+        .into_iter()
+        .filter(|m| m.tags_lower.iter().any(|t| t == &needle))
+        .collect();
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&pages).unwrap());
+        return;
+    }
+
+    if tsv {
+        for meta in &pages {
+            println!("{}\t{}", meta.title, meta.id);
+        }
+        return;
+    }
+
+    println!("Pages tagged \"{tag}\" ({})", pages.len());
+    if pages.is_empty() {
+        println!("  (none)");
+    } else {
+        let title_width = pages
+            .iter()
+            .map(|m| m.title.chars().count())
+            .max()
+            .unwrap_or(5)
+            .clamp(5, 64);
+        for meta in &pages {
+            println!(
+                "  {:<width$}  {}",
+                truncate_chars(&meta.title, title_width),
+                meta.id,
+                width = title_width
+            );
         }
     }
 }

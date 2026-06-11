@@ -561,6 +561,159 @@ mod show {
 }
 
 // ---------------------------------------------------------------------------
+// links subcommand
+// ---------------------------------------------------------------------------
+
+mod links {
+    use super::*;
+
+    #[test]
+    fn plain_output_shows_statistics() {
+        let out = run(&["links", &fixtures_path_str()]);
+        assert!(out.status.success());
+        let text = stdout(&out);
+        assert!(text.contains("Link Graph"), "should show header");
+        assert!(text.contains("pages: 6"), "expected 6 pages, got: {text}");
+        assert!(text.contains("links: 1"), "expected 1 link, got: {text}");
+    }
+
+    #[test]
+    fn plain_output_shows_most_linked() {
+        let out = run(&["links", &fixtures_path_str()]);
+        let text = stdout(&out);
+        assert!(
+            text.contains("Most Linked Pages"),
+            "should show most linked section"
+        );
+        assert!(
+            text.contains("alpha page"),
+            "alpha page should be most linked"
+        );
+    }
+
+    #[test]
+    fn plain_output_shows_isolated_pages() {
+        let out = run(&["links", &fixtures_path_str()]);
+        let text = stdout(&out);
+        assert!(
+            text.contains("Isolated Pages"),
+            "should show isolated section"
+        );
+        assert!(
+            text.contains("gamma unknown page"),
+            "gamma should be isolated"
+        );
+        assert!(text.contains("word page"), "word should be isolated");
+    }
+
+    #[test]
+    fn json_output_has_nodes_and_edges() {
+        let out = run(&["links", "--json", &fixtures_path_str()]);
+        assert!(out.status.success());
+        let json: serde_json::Value =
+            serde_json::from_str(&stdout(&out)).expect("links --json should produce valid JSON");
+        assert!(json["nodes"].is_array());
+        assert!(json["edges"].is_array());
+        let edges = json["edges"].as_array().unwrap();
+        assert_eq!(edges.len(), 1, "expected 1 edge");
+        assert_eq!(edges[0]["source"], "fixture-page-beta");
+        assert_eq!(edges[0]["target"], "fixture-page-alpha");
+    }
+
+    #[test]
+    fn json_nodes_have_id_and_title() {
+        let out = run(&["links", "--json", &fixtures_path_str()]);
+        let json: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+        for node in json["nodes"].as_array().unwrap() {
+            assert!(node["id"].is_string(), "node should have id");
+            assert!(node["title"].is_string(), "node should have title");
+        }
+    }
+
+    #[test]
+    fn dot_output_is_valid_digraph() {
+        let out = run(&["links", "--dot", &fixtures_path_str()]);
+        assert!(out.status.success());
+        let text = stdout(&out);
+        assert!(text.starts_with("digraph links {"));
+        assert!(text.contains("rankdir=LR;"));
+        assert!(text.contains("\"fixture-page-beta\" -> \"fixture-page-alpha\""));
+        assert!(text.trim_end().ends_with('}'));
+    }
+
+    #[test]
+    fn dot_output_includes_labels() {
+        let out = run(&["links", "--dot", &fixtures_path_str()]);
+        let text = stdout(&out);
+        assert!(text.contains("[label=\"alpha page\"]"));
+        assert!(text.contains("[label=\"beta page\"]"));
+    }
+
+    #[test]
+    fn for_flag_filters_to_ego_graph() {
+        let out = run(&["links", "--for", "alpha page", &fixtures_path_str()]);
+        assert!(out.status.success());
+        let text = stdout(&out);
+        assert!(
+            text.contains("ego: alpha page"),
+            "should show ego label, got: {text}"
+        );
+        assert!(text.contains("links: 1"));
+    }
+
+    #[test]
+    fn for_flag_with_json() {
+        let out = run(&[
+            "links",
+            "--json",
+            "--for",
+            "alpha page",
+            &fixtures_path_str(),
+        ]);
+        assert!(out.status.success());
+        let json: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+        let edges = json["edges"].as_array().unwrap();
+        assert_eq!(edges.len(), 1);
+        let nodes = json["nodes"].as_array().unwrap();
+        assert_eq!(nodes.len(), 2);
+    }
+
+    #[test]
+    fn for_flag_unconnected_page_shows_zero_links() {
+        let out = run(&["links", "--for", "word page", &fixtures_path_str()]);
+        assert!(out.status.success());
+        let text = stdout(&out);
+        assert!(text.contains("links: 0"));
+    }
+
+    #[test]
+    fn for_flag_nonexistent_page_fails() {
+        let out = run(&["links", "--for", "nonexistent_xyz", &fixtures_path_str()]);
+        assert!(!out.status.success());
+    }
+
+    #[test]
+    fn dot_and_json_mutually_exclusive() {
+        let out = run(&["links", "--dot", "--json", &fixtures_path_str()]);
+        assert!(!out.status.success());
+    }
+
+    #[test]
+    fn for_flag_missing_argument_fails() {
+        let out = run(&["links", "--for"]);
+        assert!(!out.status.success());
+    }
+
+    #[test]
+    fn unknown_flag_exits_nonzero() {
+        let out = run(&["links", "--badarg", &fixtures_path_str()]);
+        assert!(!out.status.success());
+        let err = stderr(&out);
+        assert!(err.contains("unknown flag"));
+    }
+}
+
+// ---------------------------------------------------------------------------
 // help / usage
 // ---------------------------------------------------------------------------
 

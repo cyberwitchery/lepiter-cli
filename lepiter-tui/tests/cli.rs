@@ -725,7 +725,10 @@ mod tags {
         let out = run(&["tags", &fixtures_path_str()]);
         assert!(out.status.success());
         let text = stdout(&out);
-        assert!(text.contains("Tags (2 unique)"), "expected 2 unique tags, got: {text}");
+        assert!(
+            text.contains("Tags (2 unique)"),
+            "expected 2 unique tags, got: {text}"
+        );
         assert!(text.contains("fixture"), "should list fixture tag");
         assert!(text.contains("alpha"), "should list alpha tag");
     }
@@ -783,7 +786,10 @@ mod tags {
             text.contains("Pages tagged \"fixture\""),
             "should show header, got: {text}"
         );
-        assert!(text.contains("(2)"), "fixture tag should match 2 pages, got: {text}");
+        assert!(
+            text.contains("(2)"),
+            "fixture tag should match 2 pages, got: {text}"
+        );
         assert!(text.contains("alpha page"));
         assert!(text.contains("beta page"));
     }
@@ -793,15 +799,17 @@ mod tags {
         let out = run(&["tags", "--for", "FIXTURE", &fixtures_path_str()]);
         assert!(out.status.success());
         let text = stdout(&out);
-        assert!(text.contains("(2)"), "case-insensitive match should find 2 pages");
+        assert!(
+            text.contains("(2)"),
+            "case-insensitive match should find 2 pages"
+        );
     }
 
     #[test]
     fn for_flag_json_outputs_page_metadata() {
         let out = run(&["tags", "--json", "--for", "fixture", &fixtures_path_str()]);
         assert!(out.status.success());
-        let json: serde_json::Value =
-            serde_json::from_str(&stdout(&out)).expect("valid JSON");
+        let json: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("valid JSON");
         let arr = json.as_array().expect("should be an array");
         assert_eq!(arr.len(), 2);
         // Pages should be sorted alphabetically by title.

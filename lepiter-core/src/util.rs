@@ -29,16 +29,19 @@ pub fn extract_link_targets(nodes: &[Node]) -> Vec<String> {
 }
 
 /// Extracts `[label](target)` and `[[wikilink]]` targets from inline text.
+///
+/// Works directly with byte offsets instead of collecting into `Vec<char>`.
+/// All delimiters (`[`, `]`, `(`, `)`) are ASCII, so no UTF-8 continuation
+/// byte can produce a false match.
 fn extract_inline_link_targets(text: &str, out: &mut Vec<String>) {
-    let chars: Vec<char> = text.chars().collect();
+    let bytes = text.as_bytes();
     let mut i = 0;
-    while i < chars.len() {
+    while i < bytes.len() {
         // [[wikilink]]
-        if i + 1 < chars.len() && chars[i] == '[' && chars[i + 1] == '[' {
+        if i + 1 < bytes.len() && bytes[i] == b'[' && bytes[i + 1] == b'[' {
             let start = i + 2;
-            if let Some(end) = find_closing_double_bracket(&chars, start) {
-                let target: String = chars[start..end].iter().collect();
-                let target = target.trim();
+            if let Some(end) = find_closing_double_bracket_bytes(bytes, start) {
+                let target = text[start..end].trim();
                 if !target.is_empty() {
                     out.push(target.to_string());
                 }
@@ -47,16 +50,15 @@ fn extract_inline_link_targets(text: &str, out: &mut Vec<String>) {
             }
         }
         // [label](target)
-        if chars[i] == '[' {
+        if bytes[i] == b'[' {
             let label_start = i + 1;
-            if let Some(label_end) = find_char(&chars, ']', label_start)
-                && label_end + 1 < chars.len()
-                && chars[label_end + 1] == '('
+            if let Some(label_end) = find_byte(bytes, b']', label_start)
+                && label_end + 1 < bytes.len()
+                && bytes[label_end + 1] == b'('
             {
                 let target_start = label_end + 2;
-                if let Some(target_end) = find_char(&chars, ')', target_start) {
-                    let target: String = chars[target_start..target_end].iter().collect();
-                    let target = target.trim();
+                if let Some(target_end) = find_byte(bytes, b')', target_start) {
+                    let target = text[target_start..target_end].trim();
                     if !target.is_empty() {
                         out.push(target.to_string());
                     }
@@ -69,10 +71,10 @@ fn extract_inline_link_targets(text: &str, out: &mut Vec<String>) {
     }
 }
 
-fn find_closing_double_bracket(chars: &[char], start: usize) -> Option<usize> {
+fn find_closing_double_bracket_bytes(bytes: &[u8], start: usize) -> Option<usize> {
     let mut i = start;
-    while i + 1 < chars.len() {
-        if chars[i] == ']' && chars[i + 1] == ']' {
+    while i + 1 < bytes.len() {
+        if bytes[i] == b']' && bytes[i + 1] == b']' {
             return Some(i);
         }
         i += 1;
@@ -80,8 +82,8 @@ fn find_closing_double_bracket(chars: &[char], start: usize) -> Option<usize> {
     None
 }
 
-fn find_char(chars: &[char], target: char, start: usize) -> Option<usize> {
-    (start..chars.len()).find(|&i| chars[i] == target)
+fn find_byte(bytes: &[u8], target: u8, start: usize) -> Option<usize> {
+    (start..bytes.len()).find(|&i| bytes[i] == target)
 }
 
 fn starts_with_ignore_ascii_case(haystack: &[u8], needle: &[u8]) -> bool {

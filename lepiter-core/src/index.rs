@@ -210,20 +210,13 @@ impl KnowledgeBaseIndex {
                 })
             })
             .collect();
-        hits.sort_by(|a, b| {
-            b.kind.score().cmp(&a.kind.score()).then_with(|| {
-                let ta = self
-                    .pages
-                    .get(&a.id)
-                    .map(|m| m.title_lower.as_str())
-                    .unwrap_or("");
-                let tb = self
-                    .pages
-                    .get(&b.id)
-                    .map(|m| m.title_lower.as_str())
-                    .unwrap_or("");
-                ta.cmp(tb)
-            })
+        hits.sort_by_cached_key(|h| {
+            let title = self
+                .pages
+                .get(&h.id)
+                .map(|m| m.title_lower.clone())
+                .unwrap_or_default();
+            (std::cmp::Reverse(h.kind.score()), title)
         });
         hits
     }
@@ -314,8 +307,7 @@ impl KnowledgeBaseIndex {
     pub fn build_backlinks(&mut self) {
         let mut back: HashMap<PageId, HashSet<PageId>> = HashMap::new();
         let mut forward: HashMap<PageId, HashSet<PageId>> = HashMap::new();
-        let ids: Vec<PageId> = self.sorted_ids.clone();
-        for source_id in &ids {
+        for source_id in &self.sorted_ids {
             let Ok(page) = self.load_page(source_id) else {
                 continue;
             };

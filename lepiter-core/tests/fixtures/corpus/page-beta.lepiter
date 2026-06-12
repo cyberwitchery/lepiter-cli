@@ -1,6 +1,7 @@
 {
   "uid": { "uuid": "fixture-page-beta" },
   "pageType": { "title": "beta page" },
+  "tags": ["fixture"],
   "children": {
     "items": [
       {

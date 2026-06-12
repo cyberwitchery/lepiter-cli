@@ -714,6 +714,165 @@ mod links {
 }
 
 // ---------------------------------------------------------------------------
+// tags subcommand
+// ---------------------------------------------------------------------------
+
+mod tags {
+    use super::*;
+
+    #[test]
+    fn plain_output_shows_tag_counts() {
+        let out = run(&["tags", &fixtures_path_str()]);
+        assert!(out.status.success());
+        let text = stdout(&out);
+        assert!(
+            text.contains("Tags (2 unique)"),
+            "expected 2 unique tags, got: {text}"
+        );
+        assert!(text.contains("fixture"), "should list fixture tag");
+        assert!(text.contains("alpha"), "should list alpha tag");
+    }
+
+    #[test]
+    fn plain_output_sorted_by_count_desc() {
+        let out = run(&["tags", &fixtures_path_str()]);
+        let text = stdout(&out);
+        // "fixture" appears on 2 pages (alpha, beta), "alpha" on 1 page.
+        // fixture should appear before alpha.
+        let fixture_pos = text.find("fixture").unwrap();
+        let alpha_pos = text.find("alpha").unwrap();
+        assert!(
+            fixture_pos < alpha_pos,
+            "fixture (count 2) should appear before alpha (count 1)"
+        );
+    }
+
+    #[test]
+    fn json_output_is_valid_array() {
+        let out = run(&["tags", "--json", &fixtures_path_str()]);
+        assert!(out.status.success());
+        let json: serde_json::Value =
+            serde_json::from_str(&stdout(&out)).expect("tags --json should produce valid JSON");
+        let arr = json.as_array().expect("should be an array");
+        assert_eq!(arr.len(), 2);
+        // Sorted by count descending: fixture (2), alpha (1).
+        assert_eq!(arr[0]["tag"], "fixture");
+        assert_eq!(arr[0]["count"], 2);
+        assert_eq!(arr[1]["tag"], "alpha");
+        assert_eq!(arr[1]["count"], 1);
+    }
+
+    #[test]
+    fn tsv_output_has_two_columns() {
+        let out = run(&["tags", "--tsv", &fixtures_path_str()]);
+        assert!(out.status.success());
+        let text = stdout(&out);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 2, "expected 2 TSV lines");
+        for line in &lines {
+            let parts: Vec<&str> = line.split('\t').collect();
+            assert_eq!(parts.len(), 2, "expected tag\\tcount, got: {line}");
+        }
+        // First line should be fixture with count 2.
+        assert!(lines[0].starts_with("fixture\t2"));
+    }
+
+    #[test]
+    fn for_flag_lists_pages_for_tag() {
+        let out = run(&["tags", "--for", "fixture", &fixtures_path_str()]);
+        assert!(out.status.success());
+        let text = stdout(&out);
+        assert!(
+            text.contains("Pages tagged \"fixture\""),
+            "should show header, got: {text}"
+        );
+        assert!(
+            text.contains("(2)"),
+            "fixture tag should match 2 pages, got: {text}"
+        );
+        assert!(text.contains("alpha page"));
+        assert!(text.contains("beta page"));
+    }
+
+    #[test]
+    fn for_flag_case_insensitive() {
+        let out = run(&["tags", "--for", "FIXTURE", &fixtures_path_str()]);
+        assert!(out.status.success());
+        let text = stdout(&out);
+        assert!(
+            text.contains("(2)"),
+            "case-insensitive match should find 2 pages"
+        );
+    }
+
+    #[test]
+    fn for_flag_json_outputs_page_metadata() {
+        let out = run(&["tags", "--json", "--for", "fixture", &fixtures_path_str()]);
+        assert!(out.status.success());
+        let json: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("valid JSON");
+        let arr = json.as_array().expect("should be an array");
+        assert_eq!(arr.len(), 2);
+        // Pages should be sorted alphabetically by title.
+        assert_eq!(arr[0]["id"], "fixture-page-alpha");
+        assert_eq!(arr[0]["title"], "alpha page");
+        assert_eq!(arr[1]["id"], "fixture-page-beta");
+        assert_eq!(arr[1]["title"], "beta page");
+    }
+
+    #[test]
+    fn for_flag_tsv_outputs_title_and_id() {
+        let out = run(&["tags", "--tsv", "--for", "fixture", &fixtures_path_str()]);
+        assert!(out.status.success());
+        let text = stdout(&out);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 2);
+        let parts: Vec<&str> = lines[0].split('\t').collect();
+        assert_eq!(parts.len(), 2, "expected title\\tid");
+        assert_eq!(parts[0], "alpha page");
+        assert_eq!(parts[1], "fixture-page-alpha");
+    }
+
+    #[test]
+    fn for_flag_no_match_shows_empty() {
+        let out = run(&["tags", "--for", "nonexistent_tag_xyz", &fixtures_path_str()]);
+        assert!(out.status.success());
+        let text = stdout(&out);
+        assert!(text.contains("(0)"), "non-matching tag should show 0 pages");
+    }
+
+    #[test]
+    fn for_flag_json_no_match_returns_empty_array() {
+        let out = run(&[
+            "tags",
+            "--json",
+            "--for",
+            "nonexistent_tag_xyz",
+            &fixtures_path_str(),
+        ]);
+        assert!(out.status.success());
+        let json: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+        assert_eq!(json.as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn for_flag_missing_argument_fails() {
+        let out = run(&["tags", "--for"]);
+        assert!(!out.status.success());
+    }
+
+    #[test]
+    fn unknown_flag_exits_nonzero() {
+        let out = run(&["tags", "--badarg", &fixtures_path_str()]);
+        assert!(!out.status.success());
+        let err = stderr(&out);
+        assert!(
+            err.contains("unknown flag"),
+            "expected unknown flag error, got: {err}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // help / usage
 // ---------------------------------------------------------------------------
 

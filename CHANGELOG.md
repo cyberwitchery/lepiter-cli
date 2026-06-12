@@ -5,6 +5,10 @@ all notable changes to this project are documented in this file.
 ## Unreleased
 
 ### added
+- `tags` subcommand: lists all unique tags with page counts (sorted by count
+  descending). supports `--for <tag>` to list pages matching a tag
+  (case-insensitive), `--json` for structured output, and `--tsv` for
+  script-friendly tab-separated values
 - `links` subcommand: outputs the page link graph with statistics (total links,
   most-linked pages, isolated pages). supports `--json` for structured output
   with nodes and edges arrays, `--dot` for graphviz DOT format, and

@@ -25,6 +25,10 @@ all notable changes to this project are documented in this file.
   handler error propagation, serialization roundtrip, multiple requests
 
 ### changed
+- content search (`search_hits` with `include_content=true`) now checks each
+  node individually instead of rendering the full page to a string; this avoids
+  a large allocation per non-metadata-matched page and terminates early on first
+  match. new `page_content_contains` helper in `render.rs`
 - `update_backlinks_for()` now maintains a forward links map alongside the
   backlinks map, making incremental backlink updates O(outgoing_links) instead
   of O(total_backlink_entries)

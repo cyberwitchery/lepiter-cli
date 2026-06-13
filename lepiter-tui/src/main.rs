@@ -746,6 +746,10 @@ fn main() -> Result<()> {
             let rest = args.collect::<Vec<_>>();
             run_tags(rest)
         }
+        "check" => {
+            let rest = args.collect::<Vec<_>>();
+            run_check(rest)
+        }
         "-h" | "--help" | "help" => {
             print_usage();
             Ok(())
@@ -775,7 +779,7 @@ fn run_tui(kb_path: PathBuf) -> Result<()> {
 
 fn print_usage() {
     eprintln!(
-        "lepiter-cli <subcommand|kb-path> [args]\n\nsubcommands:\n  tui [kb-path]                                      launch the terminal reader (default path: ./lepiter)\n  info [--detail] [--json] [kb-path]                 print knowledge base metadata summary\n  list [--tsv] [--json] [kb-path]                    list pages (pretty columns by default)\n  ids [kb-path]                                      print page ids only (sorted by title)\n  search [--full-text] [--tsv] [--json] <query> [kb-path]  search by title/id/tags, optionally page content\n  show [--id|--by-title] [--open-links] [--json] <value> [kb-path]  render one page (default: title lookup)\n  links [--dot] [--json] [--for <page>] [kb-path]    show the page link graph\n  tags [--tsv] [--json] [--for <tag>] [kb-path]      list tags with page counts, or pages for a tag\n\nIf the first argument is a directory path, `info` mode is used implicitly.\n\ninfo flags:\n  --detail  show broken links, orphan pages, tag distribution, snippet type breakdown\n  --json    output as json (combinable with --detail)\n\nlinks flags:\n  --dot       output as graphviz dot\n  --json      output as json with nodes and edges arrays\n  --for PAGE  show only links involving PAGE (ego graph, resolved by title)\n\ntags flags:\n  --for TAG   list pages tagged with TAG (case-insensitive)\n  --tsv       output as tab-separated values\n  --json      output as json\n\njson flags:\n  --json on list outputs page metadata as a json array\n  --json on search includes match kind alongside page metadata\n  --json on show serializes the full parsed page structure"
+        "lepiter-cli <subcommand|kb-path> [args]\n\nsubcommands:\n  tui [kb-path]                                      launch the terminal reader (default path: ./lepiter)\n  info [--detail] [--json] [kb-path]                 print knowledge base metadata summary\n  list [--tsv] [--json] [kb-path]                    list pages (pretty columns by default)\n  ids [kb-path]                                      print page ids only (sorted by title)\n  search [--full-text] [--tsv] [--json] <query> [kb-path]  search by title/id/tags, optionally page content\n  show [--id|--by-title] [--open-links] [--json] <value> [kb-path]  render one page (default: title lookup)\n  links [--dot] [--json] [--for <page>] [kb-path]    show the page link graph\n  tags [--tsv] [--json] [--for <tag>] [kb-path]      list tags with page counts, or pages for a tag\n  check [--json] [kb-path]                           validate knowledge base integrity\n\nIf the first argument is a directory path, `info` mode is used implicitly.\n\ninfo flags:\n  --detail  show broken links, orphan pages, tag distribution, snippet type breakdown\n  --json    output as json (combinable with --detail)\n\ncheck flags:\n  --json  output as json\n  exits with status 1 if broken links or orphan pages are found\n\nlinks flags:\n  --dot       output as graphviz dot\n  --json      output as json with nodes and edges arrays\n  --for PAGE  show only links involving PAGE (ego graph, resolved by title)\n\ntags flags:\n  --for TAG   list pages tagged with TAG (case-insensitive)\n  --tsv       output as tab-separated values\n  --json      output as json\n\njson flags:\n  --json on list outputs page metadata as a json array\n  --json on search includes match kind alongside page metadata\n  --json on show serializes the full parsed page structure"
     );
 }
 
@@ -1738,6 +1742,156 @@ fn print_tag_pages(index: &KnowledgeBaseIndex, tag: &str, json: bool, tsv: bool)
             );
         }
     }
+}
+
+fn run_check(args: Vec<String>) -> Result<()> {
+    let mut json = false;
+    let mut positional = Vec::new();
+
+    for arg in &args {
+        match arg.as_str() {
+            "--json" => json = true,
+            _ if arg.starts_with('-') => {
+                eprintln!("unknown flag: {arg}");
+                std::process::exit(2);
+            }
+            _ => positional.push(arg.clone()),
+        }
+    }
+
+    let kb_path = positional
+        .first()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("./lepiter"));
+    let index = KnowledgeBase::open(&kb_path)
+        .with_context(|| format!("failed to open knowledge base at {}", kb_path.display()))?;
+
+    // Read table-of-contents page id from lepiter.properties (excluded from orphans).
+    let props_path = kb_path.join("lepiter.properties");
+    let toc_page_id = if props_path.is_file() {
+        fs::read(&props_path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+            .and_then(|v| {
+                v.get("tableOfContents")
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+            })
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+
+    // Compute broken links and orphan pages.
+    let mut broken_links: Vec<BrokenLink> = Vec::new();
+    let mut linked_to: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for id in &index.sorted_ids {
+        let meta = match index.pages.get(id) {
+            Some(m) => m,
+            None => continue,
+        };
+        let page = match index.load_page(id) {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        for target in lepiter_core::extract_link_targets(&page.content) {
+            match index.classify_link_target(&target) {
+                LinkTargetKind::InternalPage(target_id) if target_id != *id => {
+                    linked_to.insert(target_id);
+                }
+                LinkTargetKind::Unknown(_) => {
+                    broken_links.push(BrokenLink {
+                        source_title: meta.title.clone(),
+                        source_id: id.clone(),
+                        target,
+                    });
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let orphan_ids: Vec<String> = index
+        .sorted_ids
+        .iter()
+        .filter(|id| !linked_to.contains(*id) && id.as_str() != toc_page_id)
+        .cloned()
+        .collect();
+
+    let has_issues = !broken_links.is_empty() || !orphan_ids.is_empty();
+
+    if json {
+        print_check_json(&index, &broken_links, &orphan_ids);
+    } else {
+        print_check_text(&index, &broken_links, &orphan_ids);
+    }
+
+    if has_issues {
+        std::process::exit(1);
+    }
+
+    Ok(())
+}
+
+fn print_check_text(
+    index: &KnowledgeBaseIndex,
+    broken_links: &[BrokenLink],
+    orphan_ids: &[String],
+) {
+    println!("Knowledge Base Check");
+    println!("  broken_links: {}", broken_links.len());
+    println!("  orphan_pages: {}", orphan_ids.len());
+
+    println!("\nBroken Links ({}):", broken_links.len());
+    if broken_links.is_empty() {
+        println!("  (none)");
+    } else {
+        for link in broken_links {
+            println!("  {} -> {}", link.source_title, link.target);
+        }
+    }
+
+    println!("\nOrphan Pages ({}):", orphan_ids.len());
+    if orphan_ids.is_empty() {
+        println!("  (none)");
+    } else {
+        for id in orphan_ids {
+            let title = index.pages.get(id).map(|m| m.title.as_str()).unwrap_or(id);
+            println!("  {title}");
+        }
+    }
+}
+
+fn print_check_json(
+    index: &KnowledgeBaseIndex,
+    broken_links: &[BrokenLink],
+    orphan_ids: &[String],
+) {
+    let broken: Vec<serde_json::Value> = broken_links
+        .iter()
+        .map(|link| {
+            serde_json::json!({
+                "source_title": link.source_title,
+                "source_id": link.source_id,
+                "target": link.target,
+            })
+        })
+        .collect();
+
+    let orphans: Vec<serde_json::Value> = orphan_ids
+        .iter()
+        .map(|id| {
+            let title = index.pages.get(id).map(|m| m.title.as_str()).unwrap_or(id);
+            serde_json::json!({ "id": id, "title": title })
+        })
+        .collect();
+
+    let obj = serde_json::json!({
+        "broken_links": broken,
+        "orphan_pages": orphans,
+    });
+    println!("{}", serde_json::to_string_pretty(&obj).unwrap());
 }
 
 fn truncate_chars(input: &str, max_chars: usize) -> String {

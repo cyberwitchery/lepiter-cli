@@ -5,6 +5,10 @@ all notable changes to this project are documented in this file.
 ## Unreleased
 
 ### added
+- `check` subcommand: validates knowledge base integrity by detecting broken
+  internal links (forward links pointing to non-existent pages) and orphan pages
+  (pages with no incoming backlinks). supports `--json` for structured output.
+  exits with status 1 if any issues are found, making it suitable for CI
 - `tags` subcommand: lists all unique tags with page counts (sorted by count
   descending). supports `--for <tag>` to list pages matching a tag
   (case-insensitive), `--json` for structured output, and `--tsv` for

@@ -873,6 +873,135 @@ mod tags {
 }
 
 // ---------------------------------------------------------------------------
+// check subcommand
+// ---------------------------------------------------------------------------
+
+mod check {
+    use super::*;
+
+    #[test]
+    fn plain_output_shows_summary() {
+        let out = run(&["check", &fixtures_path_str()]);
+        let text = stdout(&out);
+        assert!(
+            text.contains("Knowledge Base Check"),
+            "should show header, got: {text}"
+        );
+        assert!(
+            text.contains("broken_links: 0"),
+            "expected 0 broken links, got: {text}"
+        );
+        assert!(
+            text.contains("orphan_pages: 5"),
+            "expected 5 orphan pages, got: {text}"
+        );
+    }
+
+    #[test]
+    fn plain_output_shows_no_broken_links() {
+        let out = run(&["check", &fixtures_path_str()]);
+        let text = stdout(&out);
+        assert!(
+            text.contains("Broken Links (0)"),
+            "should show broken links header"
+        );
+        assert!(
+            text.contains("(none)"),
+            "no broken links expected, got: {text}"
+        );
+    }
+
+    #[test]
+    fn plain_output_lists_orphan_pages() {
+        let out = run(&["check", &fixtures_path_str()]);
+        let text = stdout(&out);
+        assert!(text.contains("Orphan Pages (5)"));
+        // alpha page is linked to by beta, so it should NOT be orphan
+        assert!(
+            !text.lines().any(|l| l.trim() == "alpha page"),
+            "alpha page should not be orphan (linked by beta)"
+        );
+        // beta page links out but nobody links to it
+        assert!(text.contains("beta page"), "beta should be orphan");
+        assert!(
+            text.contains("gamma unknown page"),
+            "gamma should be orphan"
+        );
+        assert!(text.contains("word page"), "word should be orphan");
+    }
+
+    #[test]
+    fn exits_nonzero_when_issues_found() {
+        let out = run(&["check", &fixtures_path_str()]);
+        assert!(
+            !out.status.success(),
+            "should exit nonzero when orphan pages exist"
+        );
+    }
+
+    #[test]
+    fn json_output_has_expected_fields() {
+        let out = run(&["check", "--json", &fixtures_path_str()]);
+        let text = stdout(&out);
+        let json: serde_json::Value =
+            serde_json::from_str(&text).expect("check --json should produce valid JSON");
+        assert!(json["broken_links"].is_array());
+        assert!(json["orphan_pages"].is_array());
+    }
+
+    #[test]
+    fn json_output_has_correct_counts() {
+        let out = run(&["check", "--json", &fixtures_path_str()]);
+        let json: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+        let broken = json["broken_links"].as_array().unwrap();
+        assert_eq!(broken.len(), 0, "expected 0 broken links");
+        let orphans = json["orphan_pages"].as_array().unwrap();
+        assert_eq!(orphans.len(), 5, "expected 5 orphan pages");
+    }
+
+    #[test]
+    fn json_orphan_pages_have_id_and_title() {
+        let out = run(&["check", "--json", &fixtures_path_str()]);
+        let json: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+        for page in json["orphan_pages"].as_array().unwrap() {
+            assert!(page["id"].is_string(), "orphan should have id");
+            assert!(page["title"].is_string(), "orphan should have title");
+        }
+    }
+
+    #[test]
+    fn json_orphan_excludes_linked_page() {
+        let out = run(&["check", "--json", &fixtures_path_str()]);
+        let json: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+        let orphan_ids: Vec<&str> = json["orphan_pages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|p| p["id"].as_str())
+            .collect();
+        assert!(
+            !orphan_ids.contains(&"fixture-page-alpha"),
+            "alpha should not be orphan (linked by beta)"
+        );
+        assert!(
+            orphan_ids.contains(&"fixture-page-beta"),
+            "beta should be orphan"
+        );
+    }
+
+    #[test]
+    fn unknown_flag_exits_nonzero() {
+        let out = run(&["check", "--badarg", &fixtures_path_str()]);
+        assert!(!out.status.success());
+        let err = stderr(&out);
+        assert!(
+            err.contains("unknown flag"),
+            "expected unknown flag error, got: {err}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // help / usage
 // ---------------------------------------------------------------------------
 

@@ -10,10 +10,6 @@ use serde_json::Value;
 
 use crate::model::{Node, PageMeta};
 
-/// Maximum number of text fragments to harvest from a word-snippet's JSON tree
-/// when neither `wordString` nor `explanationAttachmentNameString` is present.
-const MAX_TEXT_FRAGMENTS: usize = 12;
-
 /// Maximum number of lines kept in a word-snippet paragraph after deduplication.
 const MAX_WORD_SNIPPET_LINES: usize = 8;
 
@@ -354,7 +350,8 @@ fn parse_word_node(item: &Value) -> Node {
     }
 
     if lines.is_empty() {
-        collect_text_fragments(item, &mut lines, 0, MAX_TEXT_FRAGMENTS);
+        let mut chars_left = MAX_WORD_SNIPPET_CHARS;
+        collect_text_fragments(item, &mut lines, 0, MAX_WORD_SNIPPET_LINES, &mut chars_left);
     }
 
     lines.retain(|s| !s.trim().is_empty());
@@ -379,8 +376,14 @@ fn parse_word_node(item: &Value) -> Node {
     Node::Paragraph { text }
 }
 
-fn collect_text_fragments(value: &Value, out: &mut Vec<String>, depth: usize, remaining: usize) {
-    if remaining == 0 || out.len() >= remaining || depth > 4 {
+fn collect_text_fragments(
+    value: &Value,
+    out: &mut Vec<String>,
+    depth: usize,
+    max_lines: usize,
+    chars_left: &mut usize,
+) {
+    if *chars_left == 0 || out.len() >= max_lines || depth > 4 {
         return;
     }
 
@@ -389,14 +392,15 @@ fn collect_text_fragments(value: &Value, out: &mut Vec<String>, depth: usize, re
             let trimmed = s.trim();
             if !trimmed.is_empty() {
                 out.push(trimmed.to_string());
+                *chars_left = chars_left.saturating_sub(trimmed.len());
             }
         }
         Value::Array(items) => {
             for item in items {
-                if out.len() >= remaining {
+                if out.len() >= max_lines || *chars_left == 0 {
                     break;
                 }
-                collect_text_fragments(item, out, depth + 1, remaining);
+                collect_text_fragments(item, out, depth + 1, max_lines, chars_left);
             }
         }
         Value::Object(map) => {
@@ -414,10 +418,10 @@ fn collect_text_fragments(value: &Value, out: &mut Vec<String>, depth: usize, re
                 ) {
                     continue;
                 }
-                if out.len() >= remaining {
+                if out.len() >= max_lines || *chars_left == 0 {
                     break;
                 }
-                collect_text_fragments(item, out, depth + 1, remaining);
+                collect_text_fragments(item, out, depth + 1, max_lines, chars_left);
             }
         }
         _ => {}
@@ -769,6 +773,60 @@ mod tests {
             Node::Paragraph { text } => {
                 assert!(text.contains("refactoring"));
                 assert!(text.contains("attachments/x/explanation.json"));
+            }
+            other => panic!("expected paragraph, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn collect_text_fragments_stops_at_char_budget() {
+        // Each fragment is 100 chars; with a 250-char budget we should collect
+        // at most 3 fragments (100 + 100 + 100 = 300 > 250, so the third
+        // fragment pushes us past the limit and collection stops before the
+        // fourth).
+        let frag = "x".repeat(100);
+        let value = json!(["ignore", frag, frag, frag, frag, frag]);
+        // "ignore" is 6 chars, so after it + first 100-char frag we have 106.
+        // After second 100-char frag: 206. Third: 306 > 250 → stops.
+        let mut out = Vec::new();
+        let mut chars_left: usize = 250;
+        collect_text_fragments(&value, &mut out, 0, MAX_WORD_SNIPPET_LINES, &mut chars_left);
+        // "ignore" (6) + three 100-char fragments: pushed then budget
+        // saturates to 0, stopping further collection → exactly 4.
+        assert_eq!(out.len(), 4);
+    }
+
+    #[test]
+    fn collect_text_fragments_stops_at_line_limit() {
+        let value = json!(["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"]);
+        let mut out = Vec::new();
+        let mut chars_left = usize::MAX;
+        collect_text_fragments(&value, &mut out, 0, 4, &mut chars_left);
+        assert_eq!(out.len(), 4);
+    }
+
+    #[test]
+    fn word_node_fallback_respects_char_budget() {
+        // Build a word snippet without wordString/explanationAttachmentNameString
+        // so it falls through to collect_text_fragments, with fragments large
+        // enough that the char budget kicks in.
+        let big = "a".repeat(500);
+        let item = json!({
+            "__type": "wordSnippet",
+            "field1": big,
+            "field2": big,
+            "field3": big,
+            "field4": big,
+        });
+        let node = parse_node(&item);
+        match node {
+            Node::Paragraph { text } => {
+                // Final text should be at most MAX_WORD_SNIPPET_CHARS + 1 (ellipsis)
+                assert!(
+                    text.chars().count() <= MAX_WORD_SNIPPET_CHARS + 1,
+                    "text too long: {} chars",
+                    text.chars().count()
+                );
             }
             other => panic!("expected paragraph, got {other:?}"),
         }

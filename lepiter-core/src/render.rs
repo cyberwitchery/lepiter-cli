@@ -91,6 +91,84 @@ pub fn render_nodes_to_text(nodes: &[Node]) -> String {
     out
 }
 
+/// Checks whether the rendered text of a page contains `needle`
+/// (case-insensitive) without allocating the full rendered string.
+///
+/// Walks nodes one at a time and returns `true` on the first match,
+/// avoiding the concatenation and allocation overhead of
+/// [`render_page_to_text`] followed by a string search.
+pub fn page_content_contains(page: &Page, needle: &str) -> bool {
+    nodes_contain(&page.content, needle)
+}
+
+fn node_text_contains(text: &str, needle: &str) -> bool {
+    text.to_lowercase().contains(needle)
+}
+
+fn nodes_contain(nodes: &[Node], needle: &str) -> bool {
+    for node in nodes {
+        match node {
+            Node::Heading { text, .. }
+            | Node::Paragraph { text }
+            | Node::Text { text }
+            | Node::Quote { text } => {
+                if node_text_contains(text, needle) {
+                    return true;
+                }
+            }
+            Node::Code { language, code } => {
+                if node_text_contains(code, needle) {
+                    return true;
+                }
+                if let Some(lang) = language
+                    && node_text_contains(lang, needle)
+                {
+                    return true;
+                }
+            }
+            Node::Link { text, url } => {
+                if node_text_contains(text, needle) || node_text_contains(url, needle) {
+                    return true;
+                }
+            }
+            Node::List { items } => {
+                for item in items {
+                    if nodes_contain(item, needle) {
+                        return true;
+                    }
+                }
+            }
+            Node::Rewrite {
+                language,
+                search,
+                replace,
+                scope,
+                ..
+            } => {
+                if node_text_contains(search, needle) || node_text_contains(replace, needle) {
+                    return true;
+                }
+                if let Some(lang) = language
+                    && node_text_contains(lang, needle)
+                {
+                    return true;
+                }
+                if let Some(s) = scope
+                    && node_text_contains(s, needle)
+                {
+                    return true;
+                }
+            }
+            Node::Unknown { typ, .. } => {
+                if node_text_contains(typ, needle) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 pub fn normalize_text(input: &str) -> String {
     input.replace("\r\n", "\n").replace('\r', "\n")
 }
@@ -173,5 +251,138 @@ mod tests {
                 "continuation line not indented: {line:?}"
             );
         }
+    }
+
+    fn make_page(nodes: Vec<Node>) -> Page {
+        Page {
+            id: "test".to_string(),
+            title: "Test".to_string(),
+            updated_at: None,
+            tags: Vec::new(),
+            content: nodes,
+        }
+    }
+
+    #[test]
+    fn page_content_contains_matches_paragraph() {
+        let page = make_page(vec![Node::Paragraph {
+            text: "the quick brown fox".to_string(),
+        }]);
+        assert!(page_content_contains(&page, "quick"));
+        assert!(!page_content_contains(&page, "lazy"));
+    }
+
+    #[test]
+    fn page_content_contains_case_insensitive() {
+        let page = make_page(vec![Node::Paragraph {
+            text: "Hello World".to_string(),
+        }]);
+        assert!(page_content_contains(&page, "hello world"));
+        assert!(page_content_contains(&page, "hello"));
+    }
+
+    #[test]
+    fn page_content_contains_matches_heading() {
+        let page = make_page(vec![Node::Heading {
+            level: 2,
+            text: "Important Section".to_string(),
+        }]);
+        assert!(page_content_contains(&page, "important"));
+    }
+
+    #[test]
+    fn page_content_contains_matches_code() {
+        let page = make_page(vec![Node::Code {
+            language: Some("rust".to_string()),
+            code: "fn main() {}".to_string(),
+        }]);
+        assert!(page_content_contains(&page, "fn main"));
+        assert!(page_content_contains(&page, "rust"));
+    }
+
+    #[test]
+    fn page_content_contains_matches_link() {
+        let page = make_page(vec![Node::Link {
+            text: "click here".to_string(),
+            url: "https://example.com".to_string(),
+        }]);
+        assert!(page_content_contains(&page, "click"));
+        assert!(page_content_contains(&page, "example.com"));
+    }
+
+    #[test]
+    fn page_content_contains_matches_quote() {
+        let page = make_page(vec![Node::Quote {
+            text: "to be or not to be".to_string(),
+        }]);
+        assert!(page_content_contains(&page, "not to be"));
+    }
+
+    #[test]
+    fn page_content_contains_matches_list_items() {
+        let page = make_page(vec![Node::List {
+            items: vec![
+                vec![Node::Paragraph {
+                    text: "first item".to_string(),
+                }],
+                vec![Node::Paragraph {
+                    text: "second item".to_string(),
+                }],
+            ],
+        }]);
+        assert!(page_content_contains(&page, "second"));
+        assert!(!page_content_contains(&page, "third"));
+    }
+
+    #[test]
+    fn page_content_contains_matches_rewrite() {
+        let page = make_page(vec![Node::Rewrite {
+            language: Some("pharo".to_string()),
+            search: "oldMethod".to_string(),
+            replace: "newMethod".to_string(),
+            scope: Some("MyClass".to_string()),
+            is_method_pattern: None,
+        }]);
+        assert!(page_content_contains(&page, "oldmethod"));
+        assert!(page_content_contains(&page, "newmethod"));
+        assert!(page_content_contains(&page, "pharo"));
+        assert!(page_content_contains(&page, "myclass"));
+    }
+
+    #[test]
+    fn page_content_contains_matches_unknown_type() {
+        let page = make_page(vec![Node::Unknown {
+            typ: "wardleyMap".to_string(),
+            raw: json!({}),
+        }]);
+        assert!(page_content_contains(&page, "wardley"));
+    }
+
+    #[test]
+    fn page_content_contains_early_termination() {
+        // First node matches — should not need to check further.
+        let page = make_page(vec![
+            Node::Paragraph {
+                text: "match here".to_string(),
+            },
+            Node::Paragraph {
+                text: "no match".to_string(),
+            },
+        ]);
+        assert!(page_content_contains(&page, "match here"));
+    }
+
+    #[test]
+    fn page_content_contains_empty_content() {
+        let page = make_page(vec![]);
+        assert!(!page_content_contains(&page, "anything"));
+    }
+
+    #[test]
+    fn page_content_contains_matches_text_node() {
+        let page = make_page(vec![Node::Text {
+            text: "plain text line".to_string(),
+        }]);
+        assert!(page_content_contains(&page, "plain text"));
     }
 }

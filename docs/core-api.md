@@ -43,6 +43,7 @@ the block-oriented model includes:
 
 - `render_page_to_text(&Page) -> String`
 - `render_nodes_to_text(&[Node]) -> String`
+- `page_content_contains(&Page, needle) -> bool` — streaming per-node content check (no full-page allocation)
 - `collect_node_types_in_file(path) -> HashMap<String, usize>`
 
 ## probe example

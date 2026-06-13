@@ -14,7 +14,7 @@ use crate::model::{
     SearchMatchKind, TitleResolution,
 };
 use crate::parse::{parse_item_recursive, parse_page_meta};
-use crate::render::render_page_to_text;
+use crate::render::page_content_contains;
 use crate::util::{extract_link_targets, extract_uuid_like, is_external_target};
 
 /// Indexed knowledge base metadata with lazy page loading.
@@ -195,7 +195,7 @@ impl KnowledgeBaseIndex {
                 let Ok(page) = self.load_page(&meta.id) else {
                     continue;
                 };
-                if render_page_to_text(&page).to_lowercase().contains(&needle) {
+                if page_content_contains(&page, &needle) {
                     by_id.insert(meta.id.clone(), SearchMatchKind::Content);
                 }
             }

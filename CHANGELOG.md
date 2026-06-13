@@ -32,6 +32,9 @@ all notable changes to this project are documented in this file.
   of an unbounded `HashMap`, preventing memory growth in long-running TUI
   sessions with large knowledge bases. the default cap is 512 entries,
   configurable via `LEPITER_TUI_TEXT_INDEX_CACHE`
+- `collect_text_fragments` uses a character budget instead of a fragment count
+  limit, stopping collection once `MAX_WORD_SNIPPET_CHARS` (1200) is reached;
+  the former `MAX_TEXT_FRAGMENTS` constant is removed
 
 ### fixed
 - navigation history (`h` to go back) is now capped at 200 entries, matching

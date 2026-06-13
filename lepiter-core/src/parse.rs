@@ -791,15 +791,9 @@ mod tests {
         let mut out = Vec::new();
         let mut chars_left: usize = 250;
         collect_text_fragments(&value, &mut out, 0, MAX_WORD_SNIPPET_LINES, &mut chars_left);
-        // We should have collected "ignore" (6) + two 100-char fragments (206)
-        // + one more (306 > 250, but it's pushed then budget hits 0, stopping
-        // further collection).
-        assert!(
-            out.len() <= 4,
-            "collected too many fragments: {}",
-            out.len()
-        );
-        assert!(out.len() >= 3, "should collect at least 3 fragments");
+        // "ignore" (6) + three 100-char fragments: pushed then budget
+        // saturates to 0, stopping further collection → exactly 4.
+        assert_eq!(out.len(), 4);
     }
 
     #[test]

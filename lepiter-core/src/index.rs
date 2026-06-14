@@ -425,6 +425,98 @@ impl KnowledgeBaseIndex {
     pub fn attachment_resolver(&self) -> AttachmentResolver {
         AttachmentResolver::new(&self.root)
     }
+    /// Analyzes all links in the knowledge base, collecting broken links,
+    /// the set of pages linked to by at least one other page, and any pages
+    /// that could not be loaded.
+    pub fn analyze_links(&self) -> LinkAnalysisResult {
+        let mut broken_links = Vec::new();
+        let mut linked_pages: HashSet<PageId> = HashSet::new();
+        let mut load_errors = Vec::new();
+
+        for id in &self.sorted_ids {
+            let meta = match self.pages.get(id) {
+                Some(m) => m,
+                None => continue,
+            };
+            let page = match self.load_page(id) {
+                Ok(p) => p,
+                Err(e) => {
+                    load_errors.push(PageLoadError {
+                        page_id: id.clone(),
+                        title: meta.title.clone(),
+                        error: format!("{e:#}"),
+                    });
+                    continue;
+                }
+            };
+            for target in extract_link_targets(&page.content) {
+                match self.classify_link_target(&target) {
+                    LinkTargetKind::InternalPage(target_id) if target_id != *id => {
+                        linked_pages.insert(target_id);
+                    }
+                    LinkTargetKind::Unknown(_) => {
+                        broken_links.push(BrokenLink {
+                            source_title: meta.title.clone(),
+                            source_id: id.clone(),
+                            target,
+                        });
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        LinkAnalysisResult {
+            broken_links,
+            linked_pages,
+            load_errors,
+        }
+    }
+
+    /// Returns page ids that are not linked to by any other page.
+    ///
+    /// The `toc_page_id` (table-of-contents) is excluded from the result since
+    /// it serves as the root entry point and is not expected to be linked to.
+    pub fn orphan_ids(&self, linked_pages: &HashSet<PageId>, toc_page_id: &str) -> Vec<PageId> {
+        self.sorted_ids
+            .iter()
+            .filter(|id| !linked_pages.contains(*id) && id.as_str() != toc_page_id)
+            .cloned()
+            .collect()
+    }
+}
+
+/// A link target that could not be resolved to any known page.
+#[derive(Debug, Clone)]
+pub struct BrokenLink {
+    /// Title of the page containing the broken link.
+    pub source_title: String,
+    /// Id of the page containing the broken link.
+    pub source_id: PageId,
+    /// The raw unresolved link target.
+    pub target: String,
+}
+
+/// A page that could not be loaded during link analysis.
+#[derive(Debug, Clone)]
+pub struct PageLoadError {
+    /// Id of the page that failed to load.
+    pub page_id: PageId,
+    /// Title from the metadata index.
+    pub title: String,
+    /// Human-readable error message.
+    pub error: String,
+}
+
+/// Result of [`KnowledgeBaseIndex::analyze_links`].
+#[derive(Debug, Clone)]
+pub struct LinkAnalysisResult {
+    /// Links whose targets could not be resolved.
+    pub broken_links: Vec<BrokenLink>,
+    /// Set of page ids that are linked to by at least one other page.
+    pub linked_pages: HashSet<PageId>,
+    /// Pages that could not be loaded (e.g. corrupted JSON).
+    pub load_errors: Vec<PageLoadError>,
 }
 
 /// A directed edge in the page link graph.
@@ -1447,6 +1539,90 @@ mod tests {
         ]);
         let graph = index.build_link_graph();
         assert!(graph.ego("p3").is_empty());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // -----------------------------------------------------------------------
+    // analyze_links
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn analyze_links_detects_broken_links() {
+        let (dir, index) = make_kb_on_disk(&[
+            ("p1", "Page One", &[], "see [link](page:nonexistent) here"),
+            ("p2", "Page Two", &[], "hello"),
+        ]);
+        let result = index.analyze_links();
+        assert_eq!(result.broken_links.len(), 1);
+        assert_eq!(result.broken_links[0].source_id, "p1");
+        assert_eq!(result.broken_links[0].target, "page:nonexistent");
+        assert!(result.load_errors.is_empty());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn analyze_links_tracks_linked_pages() {
+        let (dir, index) = make_kb_on_disk(&[
+            ("p1", "Page One", &[], "see [link](page:p2) for more"),
+            ("p2", "Page Two", &[], "target page"),
+        ]);
+        let result = index.analyze_links();
+        assert!(result.linked_pages.contains("p2"));
+        assert!(!result.linked_pages.contains("p1"));
+        assert!(result.broken_links.is_empty());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn analyze_links_empty_kb() {
+        let (dir, index) = make_kb_on_disk(&[]);
+        let result = index.analyze_links();
+        assert!(result.broken_links.is_empty());
+        assert!(result.linked_pages.is_empty());
+        assert!(result.load_errors.is_empty());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn analyze_links_captures_load_errors() {
+        // Create a valid page, then corrupt its file after indexing.
+        let (dir, index) = make_kb_on_disk(&[("p1", "Page One", &[], "hello")]);
+        let page_path = dir.join("p1.lepiter");
+        fs::write(&page_path, b"NOT VALID JSON").unwrap();
+        let result = index.analyze_links();
+        assert_eq!(result.load_errors.len(), 1);
+        assert_eq!(result.load_errors[0].page_id, "p1");
+        assert_eq!(result.load_errors[0].title, "Page One");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // -----------------------------------------------------------------------
+    // orphan_ids
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn orphan_ids_excludes_linked_pages() {
+        let (dir, index) = make_kb_on_disk(&[
+            ("p1", "Page One", &[], "see [link](page:p2) for more"),
+            ("p2", "Page Two", &[], "target page"),
+        ]);
+        let result = index.analyze_links();
+        let orphans = index.orphan_ids(&result.linked_pages, "");
+        // p2 is linked to by p1, so only p1 should be orphan.
+        assert_eq!(orphans, vec!["p1"]);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn orphan_ids_excludes_toc_page() {
+        let (dir, index) = make_kb_on_disk(&[
+            ("toc", "Table of Contents", &[], "hello"),
+            ("p1", "Page One", &[], "world"),
+        ]);
+        let result = index.analyze_links();
+        let orphans = index.orphan_ids(&result.linked_pages, "toc");
+        // toc excluded, only p1 should be orphan.
+        assert_eq!(orphans, vec!["p1"]);
         fs::remove_dir_all(&dir).unwrap();
     }
 }

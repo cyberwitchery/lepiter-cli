@@ -895,6 +895,10 @@ mod check {
             text.contains("orphan_pages: 5"),
             "expected 5 orphan pages, got: {text}"
         );
+        assert!(
+            text.contains("load_errors: 0"),
+            "expected 0 load errors, got: {text}"
+        );
     }
 
     #[test]
@@ -947,6 +951,7 @@ mod check {
             serde_json::from_str(&text).expect("check --json should produce valid JSON");
         assert!(json["broken_links"].is_array());
         assert!(json["orphan_pages"].is_array());
+        assert!(json["load_errors"].is_array());
     }
 
     #[test]
@@ -997,6 +1002,121 @@ mod check {
         assert!(
             err.contains("unknown flag"),
             "expected unknown flag error, got: {err}"
+        );
+    }
+
+    // Tests using the broken-links fixture KB.
+
+    fn broken_links_dir() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("lepiter-core")
+            .join("tests")
+            .join("fixtures")
+            .join("broken-links")
+    }
+
+    fn broken_links_path_str() -> String {
+        broken_links_dir().display().to_string()
+    }
+
+    #[test]
+    fn broken_links_fixture_detects_broken_links() {
+        let out = run(&["check", &broken_links_path_str()]);
+        let text = stdout(&out);
+        assert!(
+            text.contains("Broken Links (3)"),
+            "expected 3 broken links, got: {text}"
+        );
+    }
+
+    #[test]
+    fn broken_links_fixture_plain_shows_targets() {
+        let out = run(&["check", &broken_links_path_str()]);
+        let text = stdout(&out);
+        assert!(
+            text.contains("page:bl-page-ghost"),
+            "should report ghost target, got: {text}"
+        );
+        assert!(
+            text.contains("page:bl-page-nope"),
+            "should report nope target, got: {text}"
+        );
+        assert!(
+            text.contains("page:bl-page-also-nope"),
+            "should report also-nope target, got: {text}"
+        );
+    }
+
+    #[test]
+    fn broken_links_fixture_json_has_broken_links() {
+        let out = run(&["check", "--json", &broken_links_path_str()]);
+        let json: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+        let broken = json["broken_links"].as_array().unwrap();
+        assert_eq!(broken.len(), 3, "expected 3 broken links");
+        let targets: Vec<&str> = broken.iter().filter_map(|b| b["target"].as_str()).collect();
+        assert!(targets.contains(&"page:bl-page-ghost"));
+        assert!(targets.contains(&"page:bl-page-nope"));
+        assert!(targets.contains(&"page:bl-page-also-nope"));
+    }
+
+    #[test]
+    fn broken_links_fixture_json_broken_link_has_source() {
+        let out = run(&["check", "--json", &broken_links_path_str()]);
+        let json: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+        let broken = json["broken_links"].as_array().unwrap();
+        let ghost = broken
+            .iter()
+            .find(|b| b["target"] == "page:bl-page-ghost")
+            .expect("ghost link should be in results");
+        assert_eq!(ghost["source_id"], "bl-page-ok");
+        assert_eq!(ghost["source_title"], "ok page");
+    }
+
+    #[test]
+    fn broken_links_fixture_orphans_correct() {
+        let out = run(&["check", "--json", &broken_links_path_str()]);
+        let json: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+        let orphan_ids: Vec<&str> = json["orphan_pages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|p| p["id"].as_str())
+            .collect();
+        // target is linked to by ok, so only ok and multi should be orphans
+        assert!(
+            !orphan_ids.contains(&"bl-page-target"),
+            "target should not be orphan"
+        );
+        assert!(orphan_ids.contains(&"bl-page-ok"), "ok should be orphan");
+        assert!(
+            orphan_ids.contains(&"bl-page-multi"),
+            "multi should be orphan"
+        );
+    }
+
+    #[test]
+    fn broken_links_fixture_exits_nonzero() {
+        let out = run(&["check", &broken_links_path_str()]);
+        assert!(
+            !out.status.success(),
+            "should exit nonzero when broken links exist"
+        );
+    }
+
+    #[test]
+    fn broken_links_fixture_json_has_load_errors_field() {
+        let out = run(&["check", "--json", &broken_links_path_str()]);
+        let json: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+        assert!(
+            json["load_errors"].is_array(),
+            "load_errors should be present"
+        );
+        assert_eq!(
+            json["load_errors"].as_array().unwrap().len(),
+            0,
+            "no load errors expected for valid fixture"
         );
     }
 }

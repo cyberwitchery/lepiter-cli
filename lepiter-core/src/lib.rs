@@ -43,7 +43,10 @@ mod util;
 
 pub mod plugin;
 
-pub use index::{KnowledgeBase, KnowledgeBaseIndex, LinkEdge, LinkGraph};
+pub use index::{
+    BrokenLink, KnowledgeBase, KnowledgeBaseIndex, LinkAnalysisResult, LinkEdge, LinkGraph,
+    PageLoadError,
+};
 pub use model::{
     AttachmentError, AttachmentResolver, LinkTargetKind, Node, Page, PageId, PageMeta, ParseIssue,
     ResolvedAttachment, SearchHit, SearchMatchKind, TitleResolution,

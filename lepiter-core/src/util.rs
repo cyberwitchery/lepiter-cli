@@ -324,6 +324,118 @@ mod tests {
         assert!(!is_external_target("not-a-scheme"));
     }
 
+    // -- extract_inline_link_targets edge cases --
+
+    /// Helper: call the private extract_inline_link_targets directly.
+    fn inline_targets(text: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        extract_inline_link_targets(text, &mut out);
+        out
+    }
+
+    #[test]
+    fn inline_unclosed_bracket() {
+        // [unclosed( — no closing ] so no link is formed
+        assert!(inline_targets("[unclosed(").is_empty());
+    }
+
+    #[test]
+    fn inline_unclosed_paren() {
+        // [text]( — ] found but no closing )
+        assert!(inline_targets("[text](").is_empty());
+    }
+
+    #[test]
+    fn inline_empty_target() {
+        // []() — empty target string is skipped
+        assert!(inline_targets("[]()").is_empty());
+    }
+
+    #[test]
+    fn inline_nested_brackets() {
+        // The first ] found closes [inner], and the char after it is not (,
+        // so the outer link is never matched.
+        assert!(inline_targets("[text with [inner] brackets](url)").is_empty());
+    }
+
+    #[test]
+    fn inline_consecutive_links() {
+        assert_eq!(inline_targets("[a](b)[c](d)"), vec!["b", "d"],);
+    }
+
+    #[test]
+    fn inline_empty_wikilink() {
+        // [[]] — empty target after trim is skipped
+        assert!(inline_targets("[[]]").is_empty());
+    }
+
+    #[test]
+    fn inline_unclosed_wikilink() {
+        // [[ with no closing ]] — no target extracted
+        assert!(inline_targets("[[").is_empty());
+    }
+
+    #[test]
+    fn inline_wikilink_unclosed_single_bracket() {
+        // [[text — no closing ]], falls through to markdown link check which also fails
+        assert!(inline_targets("[[text").is_empty());
+    }
+
+    #[test]
+    fn inline_unicode_link_target() {
+        // Delimiters are ASCII, so multi-byte UTF-8 content is handled correctly
+        assert_eq!(inline_targets("[名前](ページ)"), vec!["ページ"],);
+    }
+
+    #[test]
+    fn inline_unicode_wikilink() {
+        assert_eq!(inline_targets("[[日本語ページ]]"), vec!["日本語ページ"],);
+    }
+
+    #[test]
+    fn inline_whitespace_only_target() {
+        // [label](   ) — target is whitespace-only, trimmed to empty, skipped
+        assert!(inline_targets("[label](   )").is_empty());
+    }
+
+    #[test]
+    fn inline_whitespace_only_wikilink() {
+        // [[   ]] — whitespace-only, trimmed to empty, skipped
+        assert!(inline_targets("[[   ]]").is_empty());
+    }
+
+    #[test]
+    fn inline_target_trimmed() {
+        // Surrounding whitespace is trimmed from the target
+        assert_eq!(inline_targets("[label](  url  )"), vec!["url"],);
+    }
+
+    #[test]
+    fn inline_mixed_links_and_wikilinks() {
+        assert_eq!(
+            inline_targets("see [[wiki]] and [md](target) done"),
+            vec!["wiki", "target"],
+        );
+    }
+
+    #[test]
+    fn inline_bracket_without_paren() {
+        // [text] alone — no ( follows the ], so no link
+        assert!(inline_targets("[text]").is_empty());
+        // [text] followed by something other than (
+        assert!(inline_targets("[text] rest").is_empty());
+    }
+
+    #[test]
+    fn inline_empty_input() {
+        assert!(inline_targets("").is_empty());
+    }
+
+    #[test]
+    fn inline_no_links() {
+        assert!(inline_targets("just plain text").is_empty());
+    }
+
     #[test]
     fn is_external_target_boundary_inputs() {
         // scheme separator at the very start

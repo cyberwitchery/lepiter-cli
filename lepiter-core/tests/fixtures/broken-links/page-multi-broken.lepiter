@@ -1,0 +1,13 @@
+{
+  "uid": { "uuid": "bl-page-multi" },
+  "pageType": { "title": "multi broken page" },
+  "tags": [],
+  "children": {
+    "items": [
+      {
+        "__type": "textSnippet",
+        "string": "links to [missing1](page:bl-page-nope) and [missing2](page:bl-page-also-nope)"
+      }
+    ]
+  }
+}

@@ -59,8 +59,8 @@ use crate::util::{LruCache, cache_limit_from_env, lower_byte_to_raw_byte};
 use anyhow::{Context, Result, bail};
 use crossterm::event::{self, Event, KeyEventKind};
 use lepiter_core::{
-    KnowledgeBase, KnowledgeBaseIndex, LinkEdge, LinkTargetKind, Node, Page, PageId, PageMeta,
-    ParseIssue, SearchMatchKind, TitleResolution, render_page_to_text,
+    BrokenLink, KnowledgeBase, KnowledgeBaseIndex, LinkEdge, LinkTargetKind, Node, Page, PageId,
+    PageMeta, ParseIssue, SearchMatchKind, TitleResolution, render_page_to_text,
 };
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -879,12 +879,6 @@ fn print_kb_info(kb_path: PathBuf, detail: bool, json: bool) -> Result<()> {
     Ok(())
 }
 
-struct BrokenLink {
-    source_title: String,
-    source_id: String,
-    target: String,
-}
-
 struct DetailedInfo {
     broken_links: Vec<BrokenLink>,
     orphan_ids: Vec<PageId>,
@@ -907,20 +901,27 @@ struct KbInfo<'a> {
 }
 
 fn compute_detailed_info(index: &KnowledgeBaseIndex, toc_page_id: &str) -> DetailedInfo {
-    use lepiter_core::{collect_node_types_in_file, extract_link_targets};
-    use std::collections::HashSet;
+    use lepiter_core::collect_node_types_in_file;
 
-    let mut broken_links = Vec::new();
-    let mut linked_to: HashSet<PageId> = HashSet::new();
+    // Link analysis via shared core function.
+    let analysis = index.analyze_links();
+    let orphan_ids = index.orphan_ids(&analysis.linked_pages, toc_page_id);
+
+    // Log page-load errors rather than silently skipping.
+    for err in &analysis.load_errors {
+        eprintln!(
+            "warning: failed to load page {} ({}): {}",
+            err.page_id, err.title, err.error
+        );
+    }
+
+    // Snippet type counting from raw JSON (independent of link analysis).
     let mut snippet_totals: HashMap<String, usize> = HashMap::new();
-
     for id in &index.sorted_ids {
         let meta = match index.pages.get(id) {
             Some(m) => m,
             None => continue,
         };
-
-        // Snippet type counting from raw JSON.
         if let Ok(types) = collect_node_types_in_file(&meta.path) {
             for (typ, count) in types {
                 if is_snippet_type(&typ) {
@@ -928,45 +929,14 @@ fn compute_detailed_info(index: &KnowledgeBaseIndex, toc_page_id: &str) -> Detai
                 }
             }
         }
-
-        // Link analysis.
-        let page = match index.load_page(id) {
-            Ok(p) => p,
-            Err(_) => continue,
-        };
-        for target in extract_link_targets(&page.content) {
-            match index.classify_link_target(&target) {
-                LinkTargetKind::InternalPage(target_id) if target_id != *id => {
-                    linked_to.insert(target_id);
-                }
-                LinkTargetKind::Unknown(_) => {
-                    broken_links.push(BrokenLink {
-                        source_title: meta.title.clone(),
-                        source_id: id.clone(),
-                        target,
-                    });
-                }
-                _ => {}
-            }
-        }
     }
-
-    // Orphan pages: not linked to by any other page.
-    // The table-of-contents page is excluded — it is the root entry point and
-    // is not expected to be linked to by other pages.
-    let orphan_ids: Vec<PageId> = index
-        .sorted_ids
-        .iter()
-        .filter(|id| !linked_to.contains(*id) && id.as_str() != toc_page_id)
-        .cloned()
-        .collect();
 
     // Sort snippet types by count descending.
     let mut snippet_types: Vec<(String, usize)> = snippet_totals.into_iter().collect();
     snippet_types.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
 
     DetailedInfo {
-        broken_links,
+        broken_links: analysis.broken_links,
         orphan_ids,
         snippet_types,
     }
@@ -1782,49 +1752,36 @@ fn run_check(args: Vec<String>) -> Result<()> {
         String::new()
     };
 
-    // Compute broken links and orphan pages.
-    let mut broken_links: Vec<BrokenLink> = Vec::new();
-    let mut linked_to: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // Compute broken links and orphan pages via shared core function.
+    let analysis = index.analyze_links();
+    let orphan_ids = index.orphan_ids(&analysis.linked_pages, &toc_page_id);
 
-    for id in &index.sorted_ids {
-        let meta = match index.pages.get(id) {
-            Some(m) => m,
-            None => continue,
-        };
-        let page = match index.load_page(id) {
-            Ok(p) => p,
-            Err(_) => continue,
-        };
-        for target in lepiter_core::extract_link_targets(&page.content) {
-            match index.classify_link_target(&target) {
-                LinkTargetKind::InternalPage(target_id) if target_id != *id => {
-                    linked_to.insert(target_id);
-                }
-                LinkTargetKind::Unknown(_) => {
-                    broken_links.push(BrokenLink {
-                        source_title: meta.title.clone(),
-                        source_id: id.clone(),
-                        target,
-                    });
-                }
-                _ => {}
-            }
-        }
+    // Surface page-load errors on stderr.
+    for err in &analysis.load_errors {
+        eprintln!(
+            "warning: failed to load page {} ({}): {}",
+            err.page_id, err.title, err.error
+        );
     }
 
-    let orphan_ids: Vec<String> = index
-        .sorted_ids
-        .iter()
-        .filter(|id| !linked_to.contains(*id) && id.as_str() != toc_page_id)
-        .cloned()
-        .collect();
-
-    let has_issues = !broken_links.is_empty() || !orphan_ids.is_empty();
+    let has_issues = !analysis.broken_links.is_empty()
+        || !orphan_ids.is_empty()
+        || !analysis.load_errors.is_empty();
 
     if json {
-        print_check_json(&index, &broken_links, &orphan_ids);
+        print_check_json(
+            &index,
+            &analysis.broken_links,
+            &orphan_ids,
+            &analysis.load_errors,
+        );
     } else {
-        print_check_text(&index, &broken_links, &orphan_ids);
+        print_check_text(
+            &index,
+            &analysis.broken_links,
+            &orphan_ids,
+            &analysis.load_errors,
+        );
     }
 
     if has_issues {
@@ -1838,10 +1795,12 @@ fn print_check_text(
     index: &KnowledgeBaseIndex,
     broken_links: &[BrokenLink],
     orphan_ids: &[String],
+    load_errors: &[lepiter_core::PageLoadError],
 ) {
     println!("Knowledge Base Check");
     println!("  broken_links: {}", broken_links.len());
     println!("  orphan_pages: {}", orphan_ids.len());
+    println!("  load_errors: {}", load_errors.len());
 
     println!("\nBroken Links ({}):", broken_links.len());
     if broken_links.is_empty() {
@@ -1861,12 +1820,20 @@ fn print_check_text(
             println!("  {title}");
         }
     }
+
+    if !load_errors.is_empty() {
+        println!("\nLoad Errors ({}):", load_errors.len());
+        for err in load_errors {
+            println!("  {} ({}): {}", err.title, err.page_id, err.error);
+        }
+    }
 }
 
 fn print_check_json(
     index: &KnowledgeBaseIndex,
     broken_links: &[BrokenLink],
     orphan_ids: &[String],
+    load_errors: &[lepiter_core::PageLoadError],
 ) {
     let broken: Vec<serde_json::Value> = broken_links
         .iter()
@@ -1887,9 +1854,21 @@ fn print_check_json(
         })
         .collect();
 
+    let errors: Vec<serde_json::Value> = load_errors
+        .iter()
+        .map(|err| {
+            serde_json::json!({
+                "page_id": err.page_id,
+                "title": err.title,
+                "error": err.error,
+            })
+        })
+        .collect();
+
     let obj = serde_json::json!({
         "broken_links": broken,
         "orphan_pages": orphans,
+        "load_errors": errors,
     });
     println!("{}", serde_json::to_string_pretty(&obj).unwrap());
 }

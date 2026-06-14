@@ -1,0 +1,13 @@
+{
+  "uid": { "uuid": "bl-page-ok" },
+  "pageType": { "title": "ok page" },
+  "tags": [],
+  "children": {
+    "items": [
+      {
+        "__type": "textSnippet",
+        "string": "this page links to [target](page:bl-page-target) and [ghost](page:bl-page-ghost)"
+      }
+    ]
+  }
+}

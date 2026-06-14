@@ -4,6 +4,14 @@ all notable changes to this project are documented in this file.
 
 ## Unreleased
 
+### changed
+- `check` subcommand: now surfaces page-load errors (e.g. corrupted JSON files)
+  instead of silently skipping them. load errors appear in plain-text output and
+  in the `load_errors` array in `--json` output. pages that fail to load are
+  counted as issues (exit status 1)
+- `check` and `info --detail` share a single `analyze_links` implementation in
+  `lepiter-core` instead of duplicating the link-analysis loop
+
 ### added
 - `check` subcommand: validates knowledge base integrity by detecting broken
   internal links (forward links pointing to non-existent pages) and orphan pages

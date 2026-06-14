@@ -1,0 +1,13 @@
+{
+  "uid": { "uuid": "bl-page-target" },
+  "pageType": { "title": "target page" },
+  "tags": [],
+  "children": {
+    "items": [
+      {
+        "__type": "textSnippet",
+        "string": "this is the target page"
+      }
+    ]
+  }
+}

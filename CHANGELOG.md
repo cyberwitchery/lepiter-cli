@@ -4,6 +4,15 @@ all notable changes to this project are documented in this file.
 
 ## Unreleased
 
+### added
+- `check` subcommand: detects duplicate page titles (case-insensitive) that cause
+  ambiguous link resolution. reports the shared title and all page ids involved
+- `check` subcommand: validates that attachment files referenced in page content
+  exist on disk. reports the source page, attachment target, and resolved path
+  for each missing attachment
+- `KnowledgeBaseIndex::find_duplicate_titles` and `find_missing_attachments`
+  methods in `lepiter-core` for programmatic access to the new checks
+
 ### changed
 - `check` subcommand: now surfaces page-load errors (e.g. corrupted JSON files)
   instead of silently skipping them. load errors appear in plain-text output and

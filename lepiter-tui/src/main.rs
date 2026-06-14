@@ -59,8 +59,9 @@ use crate::util::{LruCache, cache_limit_from_env, lower_byte_to_raw_byte};
 use anyhow::{Context, Result, bail};
 use crossterm::event::{self, Event, KeyEventKind};
 use lepiter_core::{
-    BrokenLink, KnowledgeBase, KnowledgeBaseIndex, LinkEdge, LinkTargetKind, Node, Page, PageId,
-    PageMeta, ParseIssue, SearchMatchKind, TitleResolution, render_page_to_text,
+    BrokenLink, DuplicateTitle, KnowledgeBase, KnowledgeBaseIndex, LinkEdge, LinkTargetKind,
+    MissingAttachment, Node, Page, PageId, PageMeta, ParseIssue, SearchMatchKind, TitleResolution,
+    render_page_to_text,
 };
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -779,7 +780,7 @@ fn run_tui(kb_path: PathBuf) -> Result<()> {
 
 fn print_usage() {
     eprintln!(
-        "lepiter-cli <subcommand|kb-path> [args]\n\nsubcommands:\n  tui [kb-path]                                      launch the terminal reader (default path: ./lepiter)\n  info [--detail] [--json] [kb-path]                 print knowledge base metadata summary\n  list [--tsv] [--json] [kb-path]                    list pages (pretty columns by default)\n  ids [kb-path]                                      print page ids only (sorted by title)\n  search [--full-text] [--tsv] [--json] <query> [kb-path]  search by title/id/tags, optionally page content\n  show [--id|--by-title] [--open-links] [--json] <value> [kb-path]  render one page (default: title lookup)\n  links [--dot] [--json] [--for <page>] [kb-path]    show the page link graph\n  tags [--tsv] [--json] [--for <tag>] [kb-path]      list tags with page counts, or pages for a tag\n  check [--json] [kb-path]                           validate knowledge base integrity\n\nIf the first argument is a directory path, `info` mode is used implicitly.\n\ninfo flags:\n  --detail  show broken links, orphan pages, tag distribution, snippet type breakdown\n  --json    output as json (combinable with --detail)\n\ncheck flags:\n  --json  output as json\n  exits with status 1 if broken links or orphan pages are found\n\nlinks flags:\n  --dot       output as graphviz dot\n  --json      output as json with nodes and edges arrays\n  --for PAGE  show only links involving PAGE (ego graph, resolved by title)\n\ntags flags:\n  --for TAG   list pages tagged with TAG (case-insensitive)\n  --tsv       output as tab-separated values\n  --json      output as json\n\njson flags:\n  --json on list outputs page metadata as a json array\n  --json on search includes match kind alongside page metadata\n  --json on show serializes the full parsed page structure"
+        "lepiter-cli <subcommand|kb-path> [args]\n\nsubcommands:\n  tui [kb-path]                                      launch the terminal reader (default path: ./lepiter)\n  info [--detail] [--json] [kb-path]                 print knowledge base metadata summary\n  list [--tsv] [--json] [kb-path]                    list pages (pretty columns by default)\n  ids [kb-path]                                      print page ids only (sorted by title)\n  search [--full-text] [--tsv] [--json] <query> [kb-path]  search by title/id/tags, optionally page content\n  show [--id|--by-title] [--open-links] [--json] <value> [kb-path]  render one page (default: title lookup)\n  links [--dot] [--json] [--for <page>] [kb-path]    show the page link graph\n  tags [--tsv] [--json] [--for <tag>] [kb-path]      list tags with page counts, or pages for a tag\n  check [--json] [kb-path]                           validate knowledge base integrity\n\nIf the first argument is a directory path, `info` mode is used implicitly.\n\ninfo flags:\n  --detail  show broken links, orphan pages, tag distribution, snippet type breakdown\n  --json    output as json (combinable with --detail)\n\ncheck flags:\n  --json  output as json\n  exits with status 1 if any issues are found (broken links, orphan pages, duplicate titles, missing attachments)\n\nlinks flags:\n  --dot       output as graphviz dot\n  --json      output as json with nodes and edges arrays\n  --for PAGE  show only links involving PAGE (ego graph, resolved by title)\n\ntags flags:\n  --for TAG   list pages tagged with TAG (case-insensitive)\n  --tsv       output as tab-separated values\n  --json      output as json\n\njson flags:\n  --json on list outputs page metadata as a json array\n  --json on search includes match kind alongside page metadata\n  --json on show serializes the full parsed page structure"
     );
 }
 
@@ -1755,6 +1756,8 @@ fn run_check(args: Vec<String>) -> Result<()> {
     // Compute broken links and orphan pages via shared core function.
     let analysis = index.analyze_links();
     let orphan_ids = index.orphan_ids(&analysis.linked_pages, &toc_page_id);
+    let duplicate_titles = index.find_duplicate_titles();
+    let missing_attachments = index.find_missing_attachments();
 
     // Surface page-load errors on stderr.
     for err in &analysis.load_errors {
@@ -1766,7 +1769,9 @@ fn run_check(args: Vec<String>) -> Result<()> {
 
     let has_issues = !analysis.broken_links.is_empty()
         || !orphan_ids.is_empty()
-        || !analysis.load_errors.is_empty();
+        || !analysis.load_errors.is_empty()
+        || !duplicate_titles.is_empty()
+        || !missing_attachments.is_empty();
 
     if json {
         print_check_json(
@@ -1774,6 +1779,8 @@ fn run_check(args: Vec<String>) -> Result<()> {
             &analysis.broken_links,
             &orphan_ids,
             &analysis.load_errors,
+            &duplicate_titles,
+            &missing_attachments,
         );
     } else {
         print_check_text(
@@ -1781,6 +1788,8 @@ fn run_check(args: Vec<String>) -> Result<()> {
             &analysis.broken_links,
             &orphan_ids,
             &analysis.load_errors,
+            &duplicate_titles,
+            &missing_attachments,
         );
     }
 
@@ -1796,10 +1805,14 @@ fn print_check_text(
     broken_links: &[BrokenLink],
     orphan_ids: &[String],
     load_errors: &[lepiter_core::PageLoadError],
+    duplicate_titles: &[DuplicateTitle],
+    missing_attachments: &[MissingAttachment],
 ) {
     println!("Knowledge Base Check");
     println!("  broken_links: {}", broken_links.len());
     println!("  orphan_pages: {}", orphan_ids.len());
+    println!("  duplicate_titles: {}", duplicate_titles.len());
+    println!("  missing_attachments: {}", missing_attachments.len());
     println!("  load_errors: {}", load_errors.len());
 
     println!("\nBroken Links ({}):", broken_links.len());
@@ -1821,6 +1834,27 @@ fn print_check_text(
         }
     }
 
+    println!("\nDuplicate Titles ({}):", duplicate_titles.len());
+    if duplicate_titles.is_empty() {
+        println!("  (none)");
+    } else {
+        for dup in duplicate_titles {
+            println!("  \"{}\" ({} pages)", dup.title, dup.page_ids.len());
+            for id in &dup.page_ids {
+                println!("    - {id}");
+            }
+        }
+    }
+
+    println!("\nMissing Attachments ({}):", missing_attachments.len());
+    if missing_attachments.is_empty() {
+        println!("  (none)");
+    } else {
+        for att in missing_attachments {
+            println!("  {} -> {}", att.source_title, att.resolved_path.display());
+        }
+    }
+
     if !load_errors.is_empty() {
         println!("\nLoad Errors ({}):", load_errors.len());
         for err in load_errors {
@@ -1834,6 +1868,8 @@ fn print_check_json(
     broken_links: &[BrokenLink],
     orphan_ids: &[String],
     load_errors: &[lepiter_core::PageLoadError],
+    duplicate_titles: &[DuplicateTitle],
+    missing_attachments: &[MissingAttachment],
 ) {
     let broken: Vec<serde_json::Value> = broken_links
         .iter()
@@ -1865,9 +1901,33 @@ fn print_check_json(
         })
         .collect();
 
+    let dupes: Vec<serde_json::Value> = duplicate_titles
+        .iter()
+        .map(|dup| {
+            serde_json::json!({
+                "title": dup.title,
+                "page_ids": dup.page_ids,
+            })
+        })
+        .collect();
+
+    let attachments: Vec<serde_json::Value> = missing_attachments
+        .iter()
+        .map(|att| {
+            serde_json::json!({
+                "source_title": att.source_title,
+                "source_id": att.source_id,
+                "target": att.target,
+                "resolved_path": att.resolved_path.display().to_string(),
+            })
+        })
+        .collect();
+
     let obj = serde_json::json!({
         "broken_links": broken,
         "orphan_pages": orphans,
+        "duplicate_titles": dupes,
+        "missing_attachments": attachments,
         "load_errors": errors,
     });
     println!("{}", serde_json::to_string_pretty(&obj).unwrap());

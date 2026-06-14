@@ -44,8 +44,8 @@ mod util;
 pub mod plugin;
 
 pub use index::{
-    BrokenLink, KnowledgeBase, KnowledgeBaseIndex, LinkAnalysisResult, LinkEdge, LinkGraph,
-    PageLoadError,
+    BrokenLink, DuplicateTitle, KnowledgeBase, KnowledgeBaseIndex, LinkAnalysisResult, LinkEdge,
+    LinkGraph, MissingAttachment, PageLoadError,
 };
 pub use model::{
     AttachmentError, AttachmentResolver, LinkTargetKind, Node, Page, PageId, PageMeta, ParseIssue,

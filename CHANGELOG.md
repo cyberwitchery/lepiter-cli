@@ -14,6 +14,9 @@ all notable changes to this project are documented in this file.
   methods in `lepiter-core` for programmatic access to the new checks
 
 ### changed
+- `check` subcommand: now surfaces `index_issues` (metadata parse failures from
+  `open()`) alongside `load_errors`. both appear in plain-text and `--json`
+  output and count toward exit status 1
 - `check` subcommand: now surfaces page-load errors (e.g. corrupted JSON files)
   instead of silently skipping them. load errors appear in plain-text output and
   in the `load_errors` array in `--json` output. pages that fail to load are

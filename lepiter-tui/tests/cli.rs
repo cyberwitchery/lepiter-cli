@@ -899,6 +899,10 @@ mod check {
             text.contains("load_errors: 0"),
             "expected 0 load errors, got: {text}"
         );
+        assert!(
+            text.contains("index_issues: 0"),
+            "expected 0 index issues, got: {text}"
+        );
     }
 
     #[test]
@@ -952,6 +956,7 @@ mod check {
         assert!(json["broken_links"].is_array());
         assert!(json["orphan_pages"].is_array());
         assert!(json["load_errors"].is_array());
+        assert!(json["index_issues"].is_array());
     }
 
     #[test]
@@ -1117,6 +1122,21 @@ mod check {
             json["load_errors"].as_array().unwrap().len(),
             0,
             "no load errors expected for valid fixture"
+        );
+    }
+
+    #[test]
+    fn broken_links_fixture_json_has_index_issues_field() {
+        let out = run(&["check", "--json", &broken_links_path_str()]);
+        let json: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+        assert!(
+            json["index_issues"].is_array(),
+            "index_issues should be present"
+        );
+        assert_eq!(
+            json["index_issues"].as_array().unwrap().len(),
+            0,
+            "no index issues expected for valid fixture"
         );
     }
 }

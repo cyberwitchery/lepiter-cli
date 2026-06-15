@@ -1759,7 +1759,14 @@ fn run_check(args: Vec<String>) -> Result<()> {
     let duplicate_titles = index.find_duplicate_titles();
     let missing_attachments = index.find_missing_attachments();
 
-    // Surface page-load errors on stderr.
+    // Surface index issues and page-load errors on stderr.
+    for issue in &index.index_issues {
+        eprintln!(
+            "warning: index issue at {}: {}",
+            issue.path.display(),
+            issue.message
+        );
+    }
     for err in &analysis.load_errors {
         eprintln!(
             "warning: failed to load page {} ({}): {}",
@@ -1770,6 +1777,7 @@ fn run_check(args: Vec<String>) -> Result<()> {
     let has_issues = !analysis.broken_links.is_empty()
         || !orphan_ids.is_empty()
         || !analysis.load_errors.is_empty()
+        || !index.index_issues.is_empty()
         || !duplicate_titles.is_empty()
         || !missing_attachments.is_empty();
 
@@ -1779,6 +1787,7 @@ fn run_check(args: Vec<String>) -> Result<()> {
             &analysis.broken_links,
             &orphan_ids,
             &analysis.load_errors,
+            &index.index_issues,
             &duplicate_titles,
             &missing_attachments,
         );
@@ -1788,6 +1797,7 @@ fn run_check(args: Vec<String>) -> Result<()> {
             &analysis.broken_links,
             &orphan_ids,
             &analysis.load_errors,
+            &index.index_issues,
             &duplicate_titles,
             &missing_attachments,
         );
@@ -1805,6 +1815,7 @@ fn print_check_text(
     broken_links: &[BrokenLink],
     orphan_ids: &[String],
     load_errors: &[lepiter_core::PageLoadError],
+    index_issues: &[ParseIssue],
     duplicate_titles: &[DuplicateTitle],
     missing_attachments: &[MissingAttachment],
 ) {
@@ -1814,6 +1825,7 @@ fn print_check_text(
     println!("  duplicate_titles: {}", duplicate_titles.len());
     println!("  missing_attachments: {}", missing_attachments.len());
     println!("  load_errors: {}", load_errors.len());
+    println!("  index_issues: {}", index_issues.len());
 
     println!("\nBroken Links ({}):", broken_links.len());
     if broken_links.is_empty() {
@@ -1861,6 +1873,13 @@ fn print_check_text(
             println!("  {} ({}): {}", err.title, err.page_id, err.error);
         }
     }
+
+    if !index_issues.is_empty() {
+        println!("\nIndex Issues ({}):", index_issues.len());
+        for issue in index_issues {
+            println!("  {}: {}", issue.path.display(), issue.message);
+        }
+    }
 }
 
 fn print_check_json(
@@ -1868,6 +1887,7 @@ fn print_check_json(
     broken_links: &[BrokenLink],
     orphan_ids: &[String],
     load_errors: &[lepiter_core::PageLoadError],
+    index_issues: &[ParseIssue],
     duplicate_titles: &[DuplicateTitle],
     missing_attachments: &[MissingAttachment],
 ) {
@@ -1923,12 +1943,23 @@ fn print_check_json(
         })
         .collect();
 
+    let idx_issues: Vec<serde_json::Value> = index_issues
+        .iter()
+        .map(|issue| {
+            serde_json::json!({
+                "path": issue.path.display().to_string(),
+                "message": issue.message,
+            })
+        })
+        .collect();
+
     let obj = serde_json::json!({
         "broken_links": broken,
         "orphan_pages": orphans,
         "duplicate_titles": dupes,
         "missing_attachments": attachments,
         "load_errors": errors,
+        "index_issues": idx_issues,
     });
     println!("{}", serde_json::to_string_pretty(&obj).unwrap());
 }

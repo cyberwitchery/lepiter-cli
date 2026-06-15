@@ -15,7 +15,9 @@ use crate::model::{
 };
 use crate::parse::{parse_item_recursive, parse_page_meta};
 use crate::render::page_content_contains;
-use crate::util::{extract_link_targets, extract_uuid_like, is_external_target};
+use crate::util::{
+    extract_attachment_relative, extract_link_targets, extract_uuid_like, is_external_target,
+};
 
 /// Indexed knowledge base metadata with lazy page loading.
 #[derive(Debug, Clone)]
@@ -484,6 +486,60 @@ impl KnowledgeBaseIndex {
             .cloned()
             .collect()
     }
+
+    /// Finds page titles shared by more than one page (case-insensitive).
+    pub fn find_duplicate_titles(&self) -> Vec<DuplicateTitle> {
+        let mut by_title: HashMap<&str, Vec<&PageMeta>> = HashMap::new();
+        for meta in self.pages.values() {
+            by_title.entry(&meta.title_lower).or_default().push(meta);
+        }
+        let mut dupes: Vec<DuplicateTitle> = by_title
+            .into_iter()
+            .filter(|(_, metas)| metas.len() > 1)
+            .map(|(_, metas)| {
+                let title = metas[0].title.clone();
+                let mut page_ids: Vec<PageId> = metas.iter().map(|m| m.id.clone()).collect();
+                page_ids.sort();
+                DuplicateTitle { title, page_ids }
+            })
+            .collect();
+        dupes.sort_by_key(|a| a.title.to_lowercase());
+        dupes
+    }
+
+    /// Finds attachment references whose files are missing from disk.
+    pub fn find_missing_attachments(&self) -> Vec<MissingAttachment> {
+        let resolver = self.attachment_resolver();
+        let mut missing = Vec::new();
+        let mut seen: HashSet<PathBuf> = HashSet::new();
+        for id in &self.sorted_ids {
+            let meta = match self.pages.get(id) {
+                Some(m) => m,
+                None => continue,
+            };
+            let page = match self.load_page(id) {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            for target in extract_link_targets(&page.content) {
+                if extract_attachment_relative(&target).is_none() {
+                    continue;
+                }
+                if let Ok(resolved) = resolver.resolve(&target)
+                    && !resolved.exists
+                    && seen.insert(resolved.path.clone())
+                {
+                    missing.push(MissingAttachment {
+                        source_title: meta.title.clone(),
+                        source_id: id.clone(),
+                        target,
+                        resolved_path: resolved.path,
+                    });
+                }
+            }
+        }
+        missing
+    }
 }
 
 /// A link target that could not be resolved to any known page.
@@ -533,6 +589,28 @@ pub struct LinkEdge {
 pub struct LinkGraph {
     /// Deduplicated directed edges (self-links excluded).
     pub edges: Vec<LinkEdge>,
+}
+
+/// A set of pages that share the same title (case-insensitive).
+#[derive(Debug, Clone)]
+pub struct DuplicateTitle {
+    /// The shared title (original casing from the first match).
+    pub title: String,
+    /// Page ids sharing this title.
+    pub page_ids: Vec<PageId>,
+}
+
+/// An attachment reference that points to a file not found on disk.
+#[derive(Debug, Clone)]
+pub struct MissingAttachment {
+    /// Title of the page referencing the attachment.
+    pub source_title: String,
+    /// Id of the page referencing the attachment.
+    pub source_id: PageId,
+    /// The raw attachment target string from the page content.
+    pub target: String,
+    /// The resolved path that was not found.
+    pub resolved_path: PathBuf,
 }
 
 impl LinkGraph {
@@ -1623,6 +1701,140 @@ mod tests {
         let orphans = index.orphan_ids(&result.linked_pages, "toc");
         // toc excluded, only p1 should be orphan.
         assert_eq!(orphans, vec!["p1"]);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // -----------------------------------------------------------------------
+    // find_duplicate_titles
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn find_duplicate_titles_none_when_unique() {
+        let (dir, index) =
+            make_kb_on_disk(&[("p1", "Alpha", &[], "body"), ("p2", "Beta", &[], "body")]);
+        assert!(index.find_duplicate_titles().is_empty());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn find_duplicate_titles_detects_exact_match() {
+        let (dir, index) =
+            make_kb_on_disk(&[("p1", "Alpha", &[], "body"), ("p2", "Alpha", &[], "body")]);
+        let dupes = index.find_duplicate_titles();
+        assert_eq!(dupes.len(), 1);
+        assert_eq!(dupes[0].title, "Alpha");
+        assert_eq!(dupes[0].page_ids.len(), 2);
+        assert!(dupes[0].page_ids.contains(&"p1".to_string()));
+        assert!(dupes[0].page_ids.contains(&"p2".to_string()));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn find_duplicate_titles_case_insensitive() {
+        let (dir, index) =
+            make_kb_on_disk(&[("p1", "Alpha", &[], "body"), ("p2", "ALPHA", &[], "body")]);
+        let dupes = index.find_duplicate_titles();
+        assert_eq!(dupes.len(), 1);
+        assert_eq!(dupes[0].page_ids.len(), 2);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn find_duplicate_titles_multiple_groups() {
+        let (dir, index) = make_kb_on_disk(&[
+            ("p1", "Alpha", &[], "body"),
+            ("p2", "Alpha", &[], "body"),
+            ("p3", "Beta", &[], "body"),
+            ("p4", "Beta", &[], "body"),
+            ("p5", "Gamma", &[], "body"),
+        ]);
+        let dupes = index.find_duplicate_titles();
+        assert_eq!(dupes.len(), 2);
+        // sorted alphabetically
+        assert_eq!(dupes[0].title, "Alpha");
+        assert_eq!(dupes[1].title, "Beta");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn find_duplicate_titles_empty_kb() {
+        let (dir, index) = make_kb_on_disk(&[]);
+        assert!(index.find_duplicate_titles().is_empty());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // -----------------------------------------------------------------------
+    // find_missing_attachments
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn find_missing_attachments_none_when_no_refs() {
+        let (dir, index) = make_kb_on_disk(&[("p1", "Alpha", &[], "no attachment refs")]);
+        assert!(index.find_missing_attachments().is_empty());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn find_missing_attachments_detects_missing_file() {
+        let (dir, index) =
+            make_kb_on_disk(&[("p1", "Alpha", &[], "see [img](attachments/missing.png)")]);
+        let missing = index.find_missing_attachments();
+        assert_eq!(missing.len(), 1);
+        assert_eq!(missing[0].source_id, "p1");
+        assert_eq!(missing[0].target, "attachments/missing.png");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn find_missing_attachments_ignores_existing_file() {
+        let (dir, index) =
+            make_kb_on_disk(&[("p1", "Alpha", &[], "see [img](attachments/present.png)")]);
+        let att_dir = dir.join("attachments");
+        fs::create_dir_all(&att_dir).unwrap();
+        fs::write(att_dir.join("present.png"), b"data").unwrap();
+        let missing = index.find_missing_attachments();
+        assert!(missing.is_empty());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn find_missing_attachments_mixed() {
+        let (dir, index) = make_kb_on_disk(&[(
+            "p1",
+            "Alpha",
+            &[],
+            "see [a](attachments/ok.png) and [b](attachments/gone.png)",
+        )]);
+        let att_dir = dir.join("attachments");
+        fs::create_dir_all(&att_dir).unwrap();
+        fs::write(att_dir.join("ok.png"), b"data").unwrap();
+        let missing = index.find_missing_attachments();
+        assert_eq!(missing.len(), 1);
+        assert_eq!(missing[0].target, "attachments/gone.png");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn find_missing_attachments_deduplicates_across_pages() {
+        let (dir, index) = make_kb_on_disk(&[
+            ("p1", "Alpha", &[], "see [img](attachments/missing.png)"),
+            ("p2", "Beta", &[], "see [img](attachments/missing.png)"),
+        ]);
+        let missing = index.find_missing_attachments();
+        // Same missing file referenced from two pages — reported once.
+        assert_eq!(missing.len(), 1);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn find_missing_attachments_ignores_non_attachment_links() {
+        let (dir, index) = make_kb_on_disk(&[(
+            "p1",
+            "Alpha",
+            &[],
+            "see [link](page:p2) and [ext](https://example.com)",
+        )]);
+        assert!(index.find_missing_attachments().is_empty());
         fs::remove_dir_all(&dir).unwrap();
     }
 }

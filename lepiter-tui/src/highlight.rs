@@ -38,14 +38,18 @@ pub fn tokenize_code_line<'a>(line: &'a str, language: Option<&str>) -> Vec<Code
     while i < bytes.len() {
         let b = bytes[i];
 
-        // line comments: # for python / shell / bash
-        if matches!(language, Some("python") | Some("shell") | Some("bash")) && b == b'#' {
+        // line comments: # for python / shell / bash / toml
+        if matches!(
+            language,
+            Some("python") | Some("shell") | Some("bash") | Some("toml")
+        ) && b == b'#'
+        {
             tokens.push(CodeToken::Comment(&line[i..]));
             return tokens;
         }
 
-        // line comments: // for javascript
-        if language == Some("javascript")
+        // line comments: // for javascript / rust / go
+        if matches!(language, Some("javascript") | Some("rust") | Some("go"))
             && i + 1 < bytes.len()
             && b == b'/'
             && bytes[i + 1] == b'/'
@@ -151,6 +155,43 @@ pub fn keywords_for_language(language: &str) -> &'static [&'static str] {
             "echo", "exit",
         ],
         "pharo" => &["self", "super", "true", "false", "nil", "thisContext", "^"],
+        "rust" => &[
+            "as", "break", "const", "continue", "crate", "else", "enum", "extern", "false", "fn",
+            "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub", "ref",
+            "return", "self", "Self", "static", "struct", "super", "trait", "true", "type",
+            "unsafe", "use", "where", "while", "async", "await", "dyn",
+        ],
+        "go" => &[
+            "break",
+            "case",
+            "chan",
+            "const",
+            "continue",
+            "default",
+            "defer",
+            "else",
+            "fallthrough",
+            "for",
+            "func",
+            "go",
+            "goto",
+            "if",
+            "import",
+            "interface",
+            "map",
+            "package",
+            "range",
+            "return",
+            "select",
+            "struct",
+            "switch",
+            "type",
+            "var",
+            "true",
+            "false",
+            "nil",
+        ],
+        "toml" => &["true", "false"],
         _ => &[],
     }
 }
@@ -208,6 +249,51 @@ mod tests {
         let tokens = tokenize_code_line("def foo():", Some("python"));
         assert_eq!(tokens[0], CodeToken::Keyword("def"));
         assert_eq!(tokens[2], CodeToken::Ident("foo"));
+    }
+
+    #[test]
+    fn rust_comment() {
+        let tokens = tokenize_code_line("let x = 1; // todo", Some("rust"));
+        assert!(tokens.iter().any(|t| matches!(t, CodeToken::Comment(_))));
+        let comment = tokens.last().unwrap();
+        assert_eq!(comment, &CodeToken::Comment("// todo"));
+    }
+
+    #[test]
+    fn rust_keyword() {
+        let tokens = tokenize_code_line("fn main() {", Some("rust"));
+        assert_eq!(tokens[0], CodeToken::Keyword("fn"));
+        assert_eq!(tokens[2], CodeToken::Ident("main"));
+    }
+
+    #[test]
+    fn go_comment() {
+        let tokens = tokenize_code_line("x := 1 // note", Some("go"));
+        assert!(tokens.iter().any(|t| matches!(t, CodeToken::Comment(_))));
+        let comment = tokens.last().unwrap();
+        assert_eq!(comment, &CodeToken::Comment("// note"));
+    }
+
+    #[test]
+    fn go_keyword() {
+        let tokens = tokenize_code_line("func main() {", Some("go"));
+        assert_eq!(tokens[0], CodeToken::Keyword("func"));
+        assert_eq!(tokens[2], CodeToken::Ident("main"));
+    }
+
+    #[test]
+    fn toml_comment() {
+        let tokens = tokenize_code_line("key = \"val\" # a comment", Some("toml"));
+        assert!(tokens.iter().any(|t| matches!(t, CodeToken::Comment(_))));
+        let comment = tokens.last().unwrap();
+        assert_eq!(comment, &CodeToken::Comment("# a comment"));
+    }
+
+    #[test]
+    fn toml_keyword() {
+        let tokens = tokenize_code_line("enabled = true", Some("toml"));
+        assert_eq!(tokens[0], CodeToken::Ident("enabled"));
+        assert_eq!(tokens[4], CodeToken::Keyword("true"));
     }
 
     #[test]

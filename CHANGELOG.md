@@ -5,6 +5,10 @@ all notable changes to this project are documented in this file.
 ## Unreleased
 
 ### added
+- syntax highlighting for Rust, Go, and TOML: keyword highlighting and
+  line comment support (`//` for Rust/Go, `#` for TOML)
+
+### added
 - `check` subcommand: detects duplicate page titles (case-insensitive) that cause
   ambiguous link resolution. reports the shared title and all page ids involved
 - `check` subcommand: validates that attachment files referenced in page content

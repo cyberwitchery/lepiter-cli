@@ -39,6 +39,22 @@ pub fn lower_byte_to_raw_byte(raw: &str, lower_pos: usize) -> usize {
     raw_byte
 }
 
+pub fn truncate_chars(input: &str, max_chars: usize) -> String {
+    let mut chars = input.chars();
+    let mut out = String::new();
+    for _ in 0..max_chars {
+        let Some(c) = chars.next() else {
+            return out;
+        };
+        out.push(c);
+    }
+    if chars.next().is_some() && max_chars >= 1 {
+        out.pop();
+        out.push('…');
+    }
+    out
+}
+
 pub struct LruCache<K, V> {
     map: IndexMap<K, V>,
     max_entries: usize,

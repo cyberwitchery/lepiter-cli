@@ -4,6 +4,14 @@ all notable changes to this project are documented in this file.
 
 ## Unreleased
 
+### changed
+- `check` subcommand: loads each page once instead of twice. the link analysis
+  and missing-attachment detection now share a single page-loading pass via
+  `KnowledgeBaseIndex::analyze_all`, halving I/O for the `check` subcommand
+- `LinkAnalysisResult` now includes a `missing_attachments` field, so callers of
+  `analyze_all` get broken links, linked pages, load errors, and missing
+  attachments from one call
+
 ### added
 - `check` subcommand: detects duplicate page titles (case-insensitive) that cause
   ambiguous link resolution. reports the shared title and all page ids involved

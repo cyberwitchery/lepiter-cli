@@ -125,8 +125,8 @@ struct KbInfo<'a> {
 fn compute_detailed_info(index: &KnowledgeBaseIndex, toc_page_id: &str) -> DetailedInfo {
     use lepiter_core::collect_node_types_in_file;
 
-    // Link analysis via shared core function.
-    let analysis = index.analyze_links();
+    // Link analysis via unified core function.
+    let analysis = index.analyze_all();
     let orphan_ids = index.orphan_ids(&analysis.linked_pages, toc_page_id);
 
     // Log page-load errors rather than silently skipping.

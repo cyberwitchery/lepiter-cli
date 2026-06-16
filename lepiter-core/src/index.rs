@@ -427,13 +427,19 @@ impl KnowledgeBaseIndex {
     pub fn attachment_resolver(&self) -> AttachmentResolver {
         AttachmentResolver::new(&self.root)
     }
-    /// Analyzes all links in the knowledge base, collecting broken links,
-    /// the set of pages linked to by at least one other page, and any pages
-    /// that could not be loaded.
-    pub fn analyze_links(&self) -> LinkAnalysisResult {
+    /// Analyzes all pages in a single pass, collecting broken links,
+    /// linked pages, missing attachments, and load errors.
+    ///
+    /// This loads and parses each page exactly once, combining the work
+    /// previously split between [`Self::analyze_links`] and
+    /// [`Self::find_missing_attachments`].
+    pub fn analyze_all(&self) -> LinkAnalysisResult {
+        let resolver = self.attachment_resolver();
         let mut broken_links = Vec::new();
         let mut linked_pages: HashSet<PageId> = HashSet::new();
         let mut load_errors = Vec::new();
+        let mut missing_attachments = Vec::new();
+        let mut seen_attachments: HashSet<PathBuf> = HashSet::new();
 
         for id in &self.sorted_ids {
             let meta = match self.pages.get(id) {
@@ -452,6 +458,7 @@ impl KnowledgeBaseIndex {
                 }
             };
             for target in extract_link_targets(&page.content) {
+                // Link classification (broken links + linked pages).
                 match self.classify_link_target(&target) {
                     LinkTargetKind::InternalPage(target_id) if target_id != *id => {
                         linked_pages.insert(target_id);
@@ -460,10 +467,24 @@ impl KnowledgeBaseIndex {
                         broken_links.push(BrokenLink {
                             source_title: meta.title.clone(),
                             source_id: id.clone(),
-                            target,
+                            target: target.clone(),
                         });
                     }
                     _ => {}
+                }
+
+                // Missing attachment detection.
+                if extract_attachment_relative(&target).is_some()
+                    && let Ok(resolved) = resolver.resolve(&target)
+                    && !resolved.exists
+                    && seen_attachments.insert(resolved.path.clone())
+                {
+                    missing_attachments.push(MissingAttachment {
+                        source_title: meta.title.clone(),
+                        source_id: id.clone(),
+                        target,
+                        resolved_path: resolved.path,
+                    });
                 }
             }
         }
@@ -472,7 +493,18 @@ impl KnowledgeBaseIndex {
             broken_links,
             linked_pages,
             load_errors,
+            missing_attachments,
         }
+    }
+
+    /// Analyzes all links in the knowledge base, collecting broken links,
+    /// the set of pages linked to by at least one other page, and any pages
+    /// that could not be loaded.
+    ///
+    /// Prefer [`Self::analyze_all`] when you also need missing attachments,
+    /// to avoid loading every page twice.
+    pub fn analyze_links(&self) -> LinkAnalysisResult {
+        self.analyze_all()
     }
 
     /// Returns page ids that are not linked to by any other page.
@@ -508,37 +540,11 @@ impl KnowledgeBaseIndex {
     }
 
     /// Finds attachment references whose files are missing from disk.
+    ///
+    /// Prefer [`Self::analyze_all`] when you also need broken links,
+    /// to avoid loading every page twice.
     pub fn find_missing_attachments(&self) -> Vec<MissingAttachment> {
-        let resolver = self.attachment_resolver();
-        let mut missing = Vec::new();
-        let mut seen: HashSet<PathBuf> = HashSet::new();
-        for id in &self.sorted_ids {
-            let meta = match self.pages.get(id) {
-                Some(m) => m,
-                None => continue,
-            };
-            let page = match self.load_page(id) {
-                Ok(p) => p,
-                Err(_) => continue,
-            };
-            for target in extract_link_targets(&page.content) {
-                if extract_attachment_relative(&target).is_none() {
-                    continue;
-                }
-                if let Ok(resolved) = resolver.resolve(&target)
-                    && !resolved.exists
-                    && seen.insert(resolved.path.clone())
-                {
-                    missing.push(MissingAttachment {
-                        source_title: meta.title.clone(),
-                        source_id: id.clone(),
-                        target,
-                        resolved_path: resolved.path,
-                    });
-                }
-            }
-        }
-        missing
+        self.analyze_all().missing_attachments
     }
 }
 
@@ -564,7 +570,7 @@ pub struct PageLoadError {
     pub error: String,
 }
 
-/// Result of [`KnowledgeBaseIndex::analyze_links`].
+/// Result of [`KnowledgeBaseIndex::analyze_all`].
 #[derive(Debug, Clone)]
 pub struct LinkAnalysisResult {
     /// Links whose targets could not be resolved.
@@ -573,6 +579,8 @@ pub struct LinkAnalysisResult {
     pub linked_pages: HashSet<PageId>,
     /// Pages that could not be loaded (e.g. corrupted JSON).
     pub load_errors: Vec<PageLoadError>,
+    /// Attachment references whose files are missing from disk.
+    pub missing_attachments: Vec<MissingAttachment>,
 }
 
 /// A directed edge in the page link graph.
@@ -1835,6 +1843,112 @@ mod tests {
             "see [link](page:p2) and [ext](https://example.com)",
         )]);
         assert!(index.find_missing_attachments().is_empty());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // -----------------------------------------------------------------------
+    // analyze_all
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn analyze_all_combines_broken_links_and_missing_attachments() {
+        let (dir, index) = make_kb_on_disk(&[(
+            "p1",
+            "Alpha",
+            &[],
+            "see [link](page:nonexistent) and [img](attachments/gone.png)",
+        )]);
+        let result = index.analyze_all();
+        assert_eq!(result.broken_links.len(), 1);
+        assert_eq!(result.broken_links[0].target, "page:nonexistent");
+        assert_eq!(result.missing_attachments.len(), 1);
+        assert_eq!(result.missing_attachments[0].target, "attachments/gone.png");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn analyze_all_tracks_linked_pages() {
+        let (dir, index) = make_kb_on_disk(&[
+            ("p1", "Alpha", &[], "see [link](page:p2) here"),
+            ("p2", "Beta", &[], "nothing"),
+        ]);
+        let result = index.analyze_all();
+        assert!(result.linked_pages.contains("p2"));
+        assert!(!result.linked_pages.contains("p1"));
+        assert!(result.broken_links.is_empty());
+        assert!(result.missing_attachments.is_empty());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn analyze_all_empty_kb() {
+        let (dir, index) = make_kb_on_disk(&[]);
+        let result = index.analyze_all();
+        assert!(result.broken_links.is_empty());
+        assert!(result.linked_pages.is_empty());
+        assert!(result.load_errors.is_empty());
+        assert!(result.missing_attachments.is_empty());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn analyze_all_captures_load_errors() {
+        let (dir, index) = make_kb_on_disk(&[("p1", "Page One", &[], "hello")]);
+        fs::write(dir.join("p1.lepiter"), b"NOT VALID JSON").unwrap();
+        let result = index.analyze_all();
+        assert_eq!(result.load_errors.len(), 1);
+        assert_eq!(result.load_errors[0].page_id, "p1");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn analyze_all_skips_existing_attachments() {
+        let (dir, index) =
+            make_kb_on_disk(&[("p1", "Alpha", &[], "see [img](attachments/present.png)")]);
+        let att_dir = dir.join("attachments");
+        fs::create_dir_all(&att_dir).unwrap();
+        fs::write(att_dir.join("present.png"), b"data").unwrap();
+        let result = index.analyze_all();
+        assert!(result.missing_attachments.is_empty());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn analyze_all_deduplicates_missing_attachments() {
+        let (dir, index) = make_kb_on_disk(&[
+            ("p1", "Alpha", &[], "see [img](attachments/missing.png)"),
+            ("p2", "Beta", &[], "see [img](attachments/missing.png)"),
+        ]);
+        let result = index.analyze_all();
+        assert_eq!(result.missing_attachments.len(), 1);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn analyze_all_mixed_links_and_attachments() {
+        let (dir, index) = make_kb_on_disk(&[
+            (
+                "p1",
+                "Alpha",
+                &[],
+                "see [link](page:p2) and [img](attachments/gone.png)",
+            ),
+            (
+                "p2",
+                "Beta",
+                &[],
+                "see [link](page:nonexistent) and [ext](https://example.com)",
+            ),
+        ]);
+        let result = index.analyze_all();
+        // p1 links to p2 (valid), p2 has a broken link
+        assert!(result.linked_pages.contains("p2"));
+        assert_eq!(result.broken_links.len(), 1);
+        assert_eq!(result.broken_links[0].source_id, "p2");
+        // p1 has a missing attachment
+        assert_eq!(result.missing_attachments.len(), 1);
+        assert_eq!(result.missing_attachments[0].source_id, "p1");
+        assert!(result.load_errors.is_empty());
         fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -44,11 +44,10 @@ pub fn run_check(args: Vec<String>) -> Result<()> {
         String::new()
     };
 
-    // Compute broken links and orphan pages via shared core function.
-    let analysis = index.analyze_links();
+    // Compute broken links, orphan pages, and missing attachments in a single pass.
+    let analysis = index.analyze_all();
     let orphan_ids = index.orphan_ids(&analysis.linked_pages, &toc_page_id);
     let duplicate_titles = index.find_duplicate_titles();
-    let missing_attachments = index.find_missing_attachments();
 
     // Surface index issues and page-load errors on stderr.
     for issue in &index.index_issues {
@@ -70,7 +69,7 @@ pub fn run_check(args: Vec<String>) -> Result<()> {
         || !analysis.load_errors.is_empty()
         || !index.index_issues.is_empty()
         || !duplicate_titles.is_empty()
-        || !missing_attachments.is_empty();
+        || !analysis.missing_attachments.is_empty();
 
     if json {
         print_check_json(
@@ -80,7 +79,7 @@ pub fn run_check(args: Vec<String>) -> Result<()> {
             &analysis.load_errors,
             &index.index_issues,
             &duplicate_titles,
-            &missing_attachments,
+            &analysis.missing_attachments,
         );
     } else {
         print_check_text(
@@ -90,7 +89,7 @@ pub fn run_check(args: Vec<String>) -> Result<()> {
             &analysis.load_errors,
             &index.index_issues,
             &duplicate_titles,
-            &missing_attachments,
+            &analysis.missing_attachments,
         );
     }
 

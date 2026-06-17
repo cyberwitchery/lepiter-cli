@@ -2,7 +2,7 @@ use std::io::IsTerminal;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
-use lepiter_core::{KnowledgeBase, LinkTargetKind, Node};
+use lepiter_core::{KnowledgeBase, KnowledgeBaseIndex, LinkTargetKind, Node};
 
 use super::format::render_page_pretty;
 use super::resolve_page_id_by_title;
@@ -56,12 +56,10 @@ pub fn run_show(args: Vec<String>) -> Result<()> {
         return Ok(());
     }
 
-    print_page(kb_path, &page_id, open_links)
+    print_page(&index, &page_id, open_links)
 }
 
-fn print_page(kb_path: PathBuf, page_id: &str, show_links: bool) -> Result<()> {
-    let index = KnowledgeBase::open(&kb_path)
-        .with_context(|| format!("failed to open knowledge base at {}", kb_path.display()))?;
+fn print_page(index: &KnowledgeBaseIndex, page_id: &str, show_links: bool) -> Result<()> {
     let page = index
         .load_page(page_id)
         .with_context(|| format!("failed to load page id `{page_id}`"))?;

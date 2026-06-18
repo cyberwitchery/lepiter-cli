@@ -42,6 +42,7 @@ use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::io::Write as _;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::edit::{
@@ -91,7 +92,7 @@ struct App {
     visible_ids: Vec<PageId>,
     selected: usize,
     opened: Option<PageId>,
-    parsed_cache: LruCache<String, Page>,
+    parsed_cache: LruCache<String, Arc<Page>>,
     rendered_cache: LruCache<String, RenderedPage>,
     page_scroll: usize,
     selected_link: usize,
@@ -382,7 +383,8 @@ impl App {
 
     fn refresh_after_edit(&mut self, id: &str) {
         if let Ok(page) = self.index.load_page(id) {
-            self.parsed_cache.insert(id.to_string(), page.clone());
+            let page = Arc::new(page);
+            self.parsed_cache.insert(id.to_string(), Arc::clone(&page));
             let rendered = render_page(&page, &mut self.plugins);
             self.rendered_cache.insert(id.to_string(), rendered);
             let raw = render_page_to_text(&page);
@@ -397,13 +399,13 @@ impl App {
         self.index.update_backlinks_for(id);
     }
 
-    fn get_or_load_page(&mut self, id: &str) -> Result<Page> {
+    fn get_or_load_page(&mut self, id: &str) -> Result<Arc<Page>> {
         if let Some(page) = self.parsed_cache.get(id) {
-            return Ok(page.clone());
+            return Ok(Arc::clone(page));
         }
 
-        let page = self.index.load_page(id)?;
-        self.parsed_cache.insert(id.to_string(), page.clone());
+        let page = Arc::new(self.index.load_page(id)?);
+        self.parsed_cache.insert(id.to_string(), Arc::clone(&page));
         Ok(page)
     }
 

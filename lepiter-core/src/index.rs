@@ -99,10 +99,20 @@ impl KnowledgeBase {
 }
 
 impl KnowledgeBaseIndex {
-    /// Registers a new page in the index and re-sorts the id list.
+    /// Registers a page in the index, inserting it at the correct
+    /// sorted position via binary search instead of re-sorting the
+    /// entire list.  If the page already exists, its old sort position
+    /// is removed first so re-registration never creates duplicates
+    /// (and handles title changes correctly).
     pub fn register_page(&mut self, meta: PageMeta) {
-        self.pages.insert(meta.id.clone(), meta);
-        self.sorted_ids = compute_sorted_ids(&self.pages);
+        let id = meta.id.clone();
+        if self.pages.contains_key(&id)
+            && let Some(pos) = self.sorted_ids.iter().position(|i| i == &id)
+        {
+            self.sorted_ids.remove(pos);
+        }
+        self.pages.insert(id.clone(), meta);
+        insert_sorted_by_title(&mut self.sorted_ids, &self.pages, id);
     }
 
     /// Loads and parses a single page by canonical id.
@@ -1554,6 +1564,47 @@ mod tests {
         assert_eq!(index.sorted_ids.len(), 1);
         assert_eq!(index.sorted_ids[0], "new-page");
         assert!(index.pages.contains_key("new-page"));
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn register_page_reregistration_no_duplicate() {
+        let dir = temp_dir_path("reregister");
+        fs::create_dir_all(&dir).unwrap();
+        let mut index = KnowledgeBase::open(&dir).unwrap();
+
+        let meta = PageMeta {
+            id: "dup".to_string(),
+            id_lower: "dup".to_string(),
+            title: "Original".to_string(),
+            title_lower: "original".to_string(),
+            path: dir.join("dup.lepiter"),
+            updated_at: None,
+            tags: Vec::new(),
+            tags_lower: Vec::new(),
+        };
+        index.register_page(meta);
+        assert_eq!(index.sorted_ids.len(), 1);
+
+        // Re-register same id with a different title.
+        let updated = PageMeta {
+            id: "dup".to_string(),
+            id_lower: "dup".to_string(),
+            title: "Renamed".to_string(),
+            title_lower: "renamed".to_string(),
+            path: dir.join("dup.lepiter"),
+            updated_at: None,
+            tags: Vec::new(),
+            tags_lower: Vec::new(),
+        };
+        index.register_page(updated);
+
+        // sorted_ids must still contain the id exactly once.
+        assert_eq!(index.sorted_ids.len(), 1);
+        assert_eq!(index.sorted_ids[0], "dup");
+        // The page data should reflect the updated title.
+        assert_eq!(index.pages["dup"].title, "Renamed");
 
         fs::remove_dir_all(&dir).unwrap();
     }

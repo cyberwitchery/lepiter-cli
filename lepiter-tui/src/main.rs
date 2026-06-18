@@ -38,6 +38,7 @@ mod plugins;
 mod render;
 mod util;
 
+use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::io::Write as _;
@@ -199,24 +200,16 @@ impl App {
             }
 
             let mut ids: Vec<_> = hit_kind.keys().cloned().collect();
-            ids.sort_by(|a, b| {
-                let sa = hit_kind[a].score();
-                let sb = hit_kind[b].score();
-                sb.cmp(&sa).then_with(|| {
-                    let ta = self
-                        .index
-                        .pages
-                        .get(a)
-                        .map(|m| m.title_lower.as_str())
-                        .unwrap_or("");
-                    let tb = self
-                        .index
-                        .pages
-                        .get(b)
-                        .map(|m| m.title_lower.as_str())
-                        .unwrap_or("");
-                    ta.cmp(tb)
-                })
+            ids.sort_by_cached_key(|id| {
+                let score = Reverse(hit_kind[id].score());
+                let title = self
+                    .index
+                    .pages
+                    .get(id)
+                    .map(|m| m.title_lower.as_str())
+                    .unwrap_or("")
+                    .to_owned();
+                (score, title)
             });
             self.visible_ids = ids;
             self.search_hit_kind = hit_kind;

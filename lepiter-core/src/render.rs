@@ -98,42 +98,47 @@ pub fn render_nodes_to_text(nodes: &[Node]) -> String {
 /// avoiding the concatenation and allocation overhead of
 /// [`render_page_to_text`] followed by a string search.
 pub fn page_content_contains(page: &Page, needle: &str) -> bool {
-    nodes_contain(&page.content, needle)
+    let mut buf = String::new();
+    nodes_contain(&page.content, needle, &mut buf)
 }
 
-fn node_text_contains(text: &str, needle: &str) -> bool {
-    text.to_lowercase().contains(needle)
+/// case-insensitive substring check that reuses `buf` to avoid
+/// allocating a new lowercased string on every call.
+fn node_text_contains(text: &str, needle: &str, buf: &mut String) -> bool {
+    buf.clear();
+    buf.extend(text.chars().flat_map(char::to_lowercase));
+    buf.contains(needle)
 }
 
-fn nodes_contain(nodes: &[Node], needle: &str) -> bool {
+fn nodes_contain(nodes: &[Node], needle: &str, buf: &mut String) -> bool {
     for node in nodes {
         match node {
             Node::Heading { text, .. }
             | Node::Paragraph { text }
             | Node::Text { text }
             | Node::Quote { text } => {
-                if node_text_contains(text, needle) {
+                if node_text_contains(text, needle, buf) {
                     return true;
                 }
             }
             Node::Code { language, code } => {
-                if node_text_contains(code, needle) {
+                if node_text_contains(code, needle, buf) {
                     return true;
                 }
                 if let Some(lang) = language
-                    && node_text_contains(lang, needle)
+                    && node_text_contains(lang, needle, buf)
                 {
                     return true;
                 }
             }
             Node::Link { text, url } => {
-                if node_text_contains(text, needle) || node_text_contains(url, needle) {
+                if node_text_contains(text, needle, buf) || node_text_contains(url, needle, buf) {
                     return true;
                 }
             }
             Node::List { items } => {
                 for item in items {
-                    if nodes_contain(item, needle) {
+                    if nodes_contain(item, needle, buf) {
                         return true;
                     }
                 }
@@ -145,22 +150,24 @@ fn nodes_contain(nodes: &[Node], needle: &str) -> bool {
                 scope,
                 ..
             } => {
-                if node_text_contains(search, needle) || node_text_contains(replace, needle) {
+                if node_text_contains(search, needle, buf)
+                    || node_text_contains(replace, needle, buf)
+                {
                     return true;
                 }
                 if let Some(lang) = language
-                    && node_text_contains(lang, needle)
+                    && node_text_contains(lang, needle, buf)
                 {
                     return true;
                 }
                 if let Some(s) = scope
-                    && node_text_contains(s, needle)
+                    && node_text_contains(s, needle, buf)
                 {
                     return true;
                 }
             }
             Node::Unknown { typ, .. } => {
-                if node_text_contains(typ, needle) {
+                if node_text_contains(typ, needle, buf) {
                     return true;
                 }
             }

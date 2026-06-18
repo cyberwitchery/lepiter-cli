@@ -4,6 +4,14 @@ all notable changes to this project are documented in this file.
 
 ## Unreleased
 
+### changed
+- search: reuse a single buffer in `node_text_contains` instead of allocating a
+  lowercased string per node per page
+- tui: use `sort_by_cached_key` in `rebuild_visible_ids` to pre-compute sort
+  keys once instead of repeated hash-map lookups during comparisons
+- `register_page` uses binary insertion (`partition_point`) instead of
+  re-sorting the entire id list on every call
+
 ### added
 - `check` subcommand: detects duplicate page titles (case-insensitive) that cause
   ambiguous link resolution. reports the shared title and all page ids involved

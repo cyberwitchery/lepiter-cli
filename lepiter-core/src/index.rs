@@ -99,10 +99,13 @@ impl KnowledgeBase {
 }
 
 impl KnowledgeBaseIndex {
-    /// Registers a new page in the index and re-sorts the id list.
+    /// Registers a new page in the index, inserting it at the correct
+    /// sorted position via binary search instead of re-sorting the
+    /// entire list.
     pub fn register_page(&mut self, meta: PageMeta) {
-        self.pages.insert(meta.id.clone(), meta);
-        self.sorted_ids = compute_sorted_ids(&self.pages);
+        let id = meta.id.clone();
+        self.pages.insert(id.clone(), meta);
+        insert_sorted_by_title(&mut self.sorted_ids, &self.pages, id);
     }
 
     /// Loads and parses a single page by canonical id.

@@ -4,12 +4,6 @@ all notable changes to this project are documented in this file.
 
 ## Unreleased
 
-### changed
-- parsed page cache stores `Arc<Page>` instead of `Page`, eliminating deep
-  clones on every cache hit. `get_or_load_page` and `refresh_after_edit` now
-  share pages via reference-counted pointers instead of copying the full
-  `Vec<Node>` tree
-
 ### added
 - `check` subcommand: detects duplicate page titles (case-insensitive) that cause
   ambiguous link resolution. reports the shared title and all page ids involved

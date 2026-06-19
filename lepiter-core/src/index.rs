@@ -405,27 +405,14 @@ impl KnowledgeBaseIndex {
     ///
     /// Each edge represents one internal page-to-page link (deduplicated per
     /// source/target pair).  Self-links are excluded.
+    ///
+    /// This delegates to [`Self::scan_all_pages`] and extracts the graph
+    /// edges.  If you also need broken links or missing attachments, call
+    /// `scan_all_pages` directly to avoid a second pass.
     pub fn build_link_graph(&self) -> LinkGraph {
-        let mut edges = Vec::new();
-        let mut seen = HashSet::new();
-        for source_id in &self.sorted_ids {
-            let Ok(page) = self.load_page(source_id) else {
-                continue;
-            };
-            seen.clear();
-            for target in extract_link_targets(&page.content) {
-                if let LinkTargetKind::InternalPage(target_id) = self.classify_link_target(&target)
-                    && target_id != *source_id
-                    && seen.insert(target_id.clone())
-                {
-                    edges.push(LinkEdge {
-                        source: source_id.clone(),
-                        target: target_id,
-                    });
-                }
-            }
+        LinkGraph {
+            edges: self.scan_all_pages().edges,
         }
-        LinkGraph { edges }
     }
 
     /// Returns the root path used to build this index.
@@ -437,19 +424,23 @@ impl KnowledgeBaseIndex {
     pub fn attachment_resolver(&self) -> AttachmentResolver {
         AttachmentResolver::new(&self.root)
     }
-    /// Analyzes all pages in a single pass, collecting broken links,
-    /// linked pages, missing attachments, and load errors.
+    /// Scans all pages in a single pass, collecting broken links, linked
+    /// pages, link graph edges, missing attachments, and load errors.
     ///
     /// This loads and parses each page exactly once, combining the work
-    /// previously split between [`Self::analyze_links`] and
-    /// [`Self::find_missing_attachments`].
-    pub fn analyze_all(&self) -> LinkAnalysisResult {
+    /// that [`Self::build_link_graph`] and the former `analyze_all` did
+    /// independently.  Callers that need both the link graph and the
+    /// integrity-check results can call this once instead of paying the
+    /// full I/O and parse cost twice.
+    pub fn scan_all_pages(&self) -> LinkAnalysisResult {
         let resolver = self.attachment_resolver();
         let mut broken_links = Vec::new();
         let mut linked_pages: HashSet<PageId> = HashSet::new();
         let mut load_errors = Vec::new();
         let mut missing_attachments = Vec::new();
         let mut seen_attachments: HashSet<PathBuf> = HashSet::new();
+        let mut edges = Vec::new();
+        let mut seen_edges = HashSet::new();
 
         for id in &self.sorted_ids {
             let meta = match self.pages.get(id) {
@@ -467,11 +458,18 @@ impl KnowledgeBaseIndex {
                     continue;
                 }
             };
+            seen_edges.clear();
             for target in extract_link_targets(&page.content) {
-                // Link classification (broken links + linked pages).
+                // Link classification (broken links + linked pages + graph edges).
                 match self.classify_link_target(&target) {
                     LinkTargetKind::InternalPage(target_id) if target_id != *id => {
-                        linked_pages.insert(target_id);
+                        linked_pages.insert(target_id.clone());
+                        if seen_edges.insert(target_id.clone()) {
+                            edges.push(LinkEdge {
+                                source: id.clone(),
+                                target: target_id,
+                            });
+                        }
                     }
                     LinkTargetKind::Unknown(_) => {
                         broken_links.push(BrokenLink {
@@ -504,17 +502,25 @@ impl KnowledgeBaseIndex {
             linked_pages,
             load_errors,
             missing_attachments,
+            edges,
         }
+    }
+
+    /// Analyzes all pages, collecting broken links, linked pages, missing
+    /// attachments, and load errors.
+    ///
+    /// This is a convenience wrapper around [`Self::scan_all_pages`].
+    pub fn analyze_all(&self) -> LinkAnalysisResult {
+        self.scan_all_pages()
     }
 
     /// Analyzes all links in the knowledge base, collecting broken links,
     /// the set of pages linked to by at least one other page, and any pages
     /// that could not be loaded.
     ///
-    /// Prefer [`Self::analyze_all`] when you also need missing attachments,
-    /// to avoid loading every page twice.
+    /// This is a convenience wrapper around [`Self::scan_all_pages`].
     pub fn analyze_links(&self) -> LinkAnalysisResult {
-        self.analyze_all()
+        self.scan_all_pages()
     }
 
     /// Returns page ids that are not linked to by any other page.
@@ -551,10 +557,9 @@ impl KnowledgeBaseIndex {
 
     /// Finds attachment references whose files are missing from disk.
     ///
-    /// Prefer [`Self::analyze_all`] when you also need broken links,
-    /// to avoid loading every page twice.
+    /// This is a convenience wrapper around [`Self::scan_all_pages`].
     pub fn find_missing_attachments(&self) -> Vec<MissingAttachment> {
-        self.analyze_all().missing_attachments
+        self.scan_all_pages().missing_attachments
     }
 }
 
@@ -580,7 +585,7 @@ pub struct PageLoadError {
     pub error: String,
 }
 
-/// Result of [`KnowledgeBaseIndex::analyze_all`].
+/// Result of [`KnowledgeBaseIndex::scan_all_pages`].
 #[derive(Debug, Clone)]
 pub struct LinkAnalysisResult {
     /// Links whose targets could not be resolved.
@@ -591,6 +596,8 @@ pub struct LinkAnalysisResult {
     pub load_errors: Vec<PageLoadError>,
     /// Attachment references whose files are missing from disk.
     pub missing_attachments: Vec<MissingAttachment>,
+    /// Deduplicated directed link graph edges (self-links excluded).
+    pub edges: Vec<LinkEdge>,
 }
 
 /// A directed edge in the page link graph.
@@ -2000,6 +2007,104 @@ mod tests {
         assert_eq!(result.missing_attachments.len(), 1);
         assert_eq!(result.missing_attachments[0].source_id, "p1");
         assert!(result.load_errors.is_empty());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // -----------------------------------------------------------------------
+    // scan_all_pages
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn scan_all_pages_collects_edges_and_analysis() {
+        let (dir, index) = make_kb_on_disk(&[
+            ("p1", "Alpha", &[], "see [[Beta]]"),
+            ("p2", "Beta", &[], "links to [a](page:p1) and [[Gamma]]"),
+            ("p3", "Gamma", &[], "no links here"),
+        ]);
+        let result = index.scan_all_pages();
+        // edges match build_link_graph output
+        assert_eq!(result.edges.len(), 3);
+        let pairs: Vec<(&str, &str)> = result
+            .edges
+            .iter()
+            .map(|e| (e.source.as_str(), e.target.as_str()))
+            .collect();
+        assert!(pairs.contains(&("p1", "p2")));
+        assert!(pairs.contains(&("p2", "p1")));
+        assert!(pairs.contains(&("p2", "p3")));
+        // linked_pages consistent with edges
+        assert!(result.linked_pages.contains("p1"));
+        assert!(result.linked_pages.contains("p2"));
+        assert!(result.linked_pages.contains("p3"));
+        assert!(result.broken_links.is_empty());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn scan_all_pages_edges_exclude_self_links() {
+        let (dir, index) = make_kb_on_disk(&[("p1", "Alpha", &[], "see [[Alpha]]")]);
+        let result = index.scan_all_pages();
+        assert!(result.edges.is_empty());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn scan_all_pages_edges_deduplicated() {
+        let (dir, index) = make_kb_on_disk(&[
+            ("p1", "Alpha", &[], "[[Beta]] and [[Beta]] again"),
+            ("p2", "Beta", &[], "nothing"),
+        ]);
+        let result = index.scan_all_pages();
+        assert_eq!(result.edges.len(), 1);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn scan_all_pages_mixed_edges_and_broken() {
+        let (dir, index) = make_kb_on_disk(&[
+            (
+                "p1",
+                "Alpha",
+                &[],
+                "see [link](page:p2) and [bad](page:nonexistent)",
+            ),
+            ("p2", "Beta", &[], "nothing"),
+        ]);
+        let result = index.scan_all_pages();
+        assert_eq!(result.edges.len(), 1);
+        assert_eq!(result.edges[0].source, "p1");
+        assert_eq!(result.edges[0].target, "p2");
+        assert_eq!(result.broken_links.len(), 1);
+        assert_eq!(result.broken_links[0].target, "page:nonexistent");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn scan_all_pages_empty_kb() {
+        let (dir, index) = make_kb_on_disk(&[]);
+        let result = index.scan_all_pages();
+        assert!(result.edges.is_empty());
+        assert!(result.broken_links.is_empty());
+        assert!(result.linked_pages.is_empty());
+        assert!(result.load_errors.is_empty());
+        assert!(result.missing_attachments.is_empty());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn scan_all_pages_edges_match_build_link_graph() {
+        let (dir, index) = make_kb_on_disk(&[
+            ("p1", "Alpha", &[], "see [[Beta]]"),
+            ("p2", "Beta", &[], "see [[Gamma]]"),
+            ("p3", "Gamma", &[], "nothing"),
+        ]);
+        let scan = index.scan_all_pages();
+        let graph = index.build_link_graph();
+        assert_eq!(scan.edges.len(), graph.edges.len());
+        for (a, b) in scan.edges.iter().zip(graph.edges.iter()) {
+            assert_eq!(a.source, b.source);
+            assert_eq!(a.target, b.target);
+        }
         fs::remove_dir_all(&dir).unwrap();
     }
 }

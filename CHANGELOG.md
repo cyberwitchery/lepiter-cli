@@ -4,6 +4,15 @@ all notable changes to this project are documented in this file.
 
 ## Unreleased
 
+### added
+- `KnowledgeBaseIndex::scan_all_pages` unifies `build_link_graph` and
+  `analyze_all` into a single pass that loads each page once, returning
+  broken links, linked pages, graph edges, missing attachments, and load
+  errors together. `LinkAnalysisResult` now includes an `edges` field
+- `build_link_graph` and `analyze_all` now delegate to `scan_all_pages`,
+  so callers that need both can call `scan_all_pages` once instead of
+  paying the full I/O and parse cost twice
+
 ### changed
 - search: reuse a single buffer in `node_text_contains` instead of allocating a
   lowercased string per node per page

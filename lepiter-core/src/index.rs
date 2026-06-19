@@ -405,10 +405,6 @@ impl KnowledgeBaseIndex {
     ///
     /// Each edge represents one internal page-to-page link (deduplicated per
     /// source/target pair).  Self-links are excluded.
-    ///
-    /// This delegates to [`Self::scan_all_pages`] and extracts the graph
-    /// edges.  If you also need broken links or missing attachments, call
-    /// `scan_all_pages` directly to avoid a second pass.
     pub fn build_link_graph(&self) -> LinkGraph {
         LinkGraph {
             edges: self.scan_all_pages().edges,
@@ -426,12 +422,6 @@ impl KnowledgeBaseIndex {
     }
     /// Scans all pages in a single pass, collecting broken links, linked
     /// pages, link graph edges, missing attachments, and load errors.
-    ///
-    /// This loads and parses each page exactly once, combining the work
-    /// that [`Self::build_link_graph`] and the former `analyze_all` did
-    /// independently.  Callers that need both the link graph and the
-    /// integrity-check results can call this once instead of paying the
-    /// full I/O and parse cost twice.
     pub fn scan_all_pages(&self) -> LinkAnalysisResult {
         let resolver = self.attachment_resolver();
         let mut broken_links = Vec::new();
@@ -460,7 +450,6 @@ impl KnowledgeBaseIndex {
             };
             seen_edges.clear();
             for target in extract_link_targets(&page.content) {
-                // Link classification (broken links + linked pages + graph edges).
                 match self.classify_link_target(&target) {
                     LinkTargetKind::InternalPage(target_id) if target_id != *id => {
                         linked_pages.insert(target_id.clone());
@@ -508,8 +497,6 @@ impl KnowledgeBaseIndex {
 
     /// Analyzes all pages, collecting broken links, linked pages, missing
     /// attachments, and load errors.
-    ///
-    /// This is a convenience wrapper around [`Self::scan_all_pages`].
     pub fn analyze_all(&self) -> LinkAnalysisResult {
         self.scan_all_pages()
     }
@@ -517,8 +504,6 @@ impl KnowledgeBaseIndex {
     /// Analyzes all links in the knowledge base, collecting broken links,
     /// the set of pages linked to by at least one other page, and any pages
     /// that could not be loaded.
-    ///
-    /// This is a convenience wrapper around [`Self::scan_all_pages`].
     pub fn analyze_links(&self) -> LinkAnalysisResult {
         self.scan_all_pages()
     }
@@ -556,8 +541,6 @@ impl KnowledgeBaseIndex {
     }
 
     /// Finds attachment references whose files are missing from disk.
-    ///
-    /// This is a convenience wrapper around [`Self::scan_all_pages`].
     pub fn find_missing_attachments(&self) -> Vec<MissingAttachment> {
         self.scan_all_pages().missing_attachments
     }

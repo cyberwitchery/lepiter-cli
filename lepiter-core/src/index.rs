@@ -470,7 +470,6 @@ impl KnowledgeBaseIndex {
                     _ => {}
                 }
 
-                // Missing attachment detection.
                 if extract_attachment_relative(&target).is_some()
                     && let Ok(resolved) = resolver.resolve(&target)
                     && !resolved.exists

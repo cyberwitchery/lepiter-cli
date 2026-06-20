@@ -5,8 +5,6 @@ all notable changes to this project are documented in this file.
 ## Unreleased
 
 ### changed
-- analysis results include link graph edges, removing the need for a separate
-  `build_link_graph` call when both integrity checks and the graph are needed
 - search: reuse a single buffer in `node_text_contains` instead of allocating a
   lowercased string per node per page
 - tui: use `sort_by_cached_key` in `rebuild_visible_ids` to pre-compute sort

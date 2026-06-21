@@ -7,6 +7,27 @@ use lepiter_core::{
     BrokenLink, DuplicateTitle, KnowledgeBase, KnowledgeBaseIndex, MissingAttachment, ParseIssue,
 };
 
+struct CheckReport<'a> {
+    index: &'a KnowledgeBaseIndex,
+    broken_links: &'a [BrokenLink],
+    orphan_ids: &'a [String],
+    load_errors: &'a [lepiter_core::PageLoadError],
+    index_issues: &'a [ParseIssue],
+    duplicate_titles: &'a [DuplicateTitle],
+    missing_attachments: &'a [MissingAttachment],
+}
+
+impl CheckReport<'_> {
+    fn ok(&self) -> bool {
+        self.broken_links.is_empty()
+            && self.orphan_ids.is_empty()
+            && self.load_errors.is_empty()
+            && self.index_issues.is_empty()
+            && self.duplicate_titles.is_empty()
+            && self.missing_attachments.is_empty()
+    }
+}
+
 pub fn run_check(args: Vec<String>) -> Result<()> {
     let mut json = false;
     let mut positional = Vec::new();
@@ -65,88 +86,76 @@ pub fn run_check(args: Vec<String>) -> Result<()> {
         );
     }
 
-    let has_issues = !analysis.broken_links.is_empty()
-        || !orphan_ids.is_empty()
-        || !analysis.load_errors.is_empty()
-        || !index.index_issues.is_empty()
-        || !duplicate_titles.is_empty()
-        || !analysis.missing_attachments.is_empty();
+    let report = CheckReport {
+        index: &index,
+        broken_links: &analysis.broken_links,
+        orphan_ids: &orphan_ids,
+        load_errors: &analysis.load_errors,
+        index_issues: &index.index_issues,
+        duplicate_titles: &duplicate_titles,
+        missing_attachments: &analysis.missing_attachments,
+    };
 
     let mut out = std::io::stdout().lock();
     if json {
-        write_check_json(
-            &mut out,
-            &index,
-            &analysis.broken_links,
-            &orphan_ids,
-            &analysis.load_errors,
-            &index.index_issues,
-            &duplicate_titles,
-            &analysis.missing_attachments,
-        );
+        write_check_json(&mut out, &report);
     } else {
-        write_check_text(
-            &mut out,
-            &index,
-            &analysis.broken_links,
-            &orphan_ids,
-            &analysis.load_errors,
-            &index.index_issues,
-            &duplicate_titles,
-            &analysis.missing_attachments,
-        );
+        write_check_text(&mut out, &report);
     }
 
-    if has_issues {
+    if !report.ok() {
         std::process::exit(1);
     }
 
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-fn write_check_text(
-    out: &mut impl Write,
-    index: &KnowledgeBaseIndex,
-    broken_links: &[BrokenLink],
-    orphan_ids: &[String],
-    load_errors: &[lepiter_core::PageLoadError],
-    index_issues: &[ParseIssue],
-    duplicate_titles: &[DuplicateTitle],
-    missing_attachments: &[MissingAttachment],
-) {
+fn write_check_text(out: &mut impl Write, report: &CheckReport) {
     let _ = writeln!(out, "Knowledge Base Check");
-    let _ = writeln!(out, "  broken_links: {}", broken_links.len());
-    let _ = writeln!(out, "  orphan_pages: {}", orphan_ids.len());
-    let _ = writeln!(out, "  duplicate_titles: {}", duplicate_titles.len());
-    let _ = writeln!(out, "  missing_attachments: {}", missing_attachments.len());
-    let _ = writeln!(out, "  load_errors: {}", load_errors.len());
-    let _ = writeln!(out, "  index_issues: {}", index_issues.len());
+    let _ = writeln!(out, "  broken_links: {}", report.broken_links.len());
+    let _ = writeln!(out, "  orphan_pages: {}", report.orphan_ids.len());
+    let _ = writeln!(out, "  duplicate_titles: {}", report.duplicate_titles.len());
+    let _ = writeln!(
+        out,
+        "  missing_attachments: {}",
+        report.missing_attachments.len()
+    );
+    let _ = writeln!(out, "  load_errors: {}", report.load_errors.len());
+    let _ = writeln!(out, "  index_issues: {}", report.index_issues.len());
 
-    let _ = writeln!(out, "\nBroken Links ({}):", broken_links.len());
-    if broken_links.is_empty() {
+    let _ = writeln!(out, "\nBroken Links ({}):", report.broken_links.len());
+    if report.broken_links.is_empty() {
         let _ = writeln!(out, "  (none)");
     } else {
-        for link in broken_links {
+        for link in report.broken_links {
             let _ = writeln!(out, "  {} -> {}", link.source_title, link.target);
         }
     }
 
-    let _ = writeln!(out, "\nOrphan Pages ({}):", orphan_ids.len());
-    if orphan_ids.is_empty() {
+    let _ = writeln!(out, "\nOrphan Pages ({}):", report.orphan_ids.len());
+    if report.orphan_ids.is_empty() {
         let _ = writeln!(out, "  (none)");
     } else {
-        for id in orphan_ids {
-            let title = index.pages.get(id).map(|m| m.title.as_str()).unwrap_or(id);
+        for id in report.orphan_ids {
+            let title = report
+                .index
+                .pages
+                .get(id)
+                .map(|m| m.title.as_str())
+                .unwrap_or(id);
             let _ = writeln!(out, "  {title}");
         }
     }
 
-    let _ = writeln!(out, "\nDuplicate Titles ({}):", duplicate_titles.len());
-    if duplicate_titles.is_empty() {
+    let _ = writeln!(
+        out,
+        "\nDuplicate Titles ({}):",
+        report.duplicate_titles.len()
+    );
+    if report.duplicate_titles.is_empty() {
         let _ = writeln!(out, "  (none)");
     } else {
-        for dup in duplicate_titles {
+        for dup in report.duplicate_titles {
             let _ = writeln!(out, "  \"{}\" ({} pages)", dup.title, dup.page_ids.len());
             for id in &dup.page_ids {
                 let _ = writeln!(out, "    - {id}");
@@ -157,12 +166,12 @@ fn write_check_text(
     let _ = writeln!(
         out,
         "\nMissing Attachments ({}):",
-        missing_attachments.len()
+        report.missing_attachments.len()
     );
-    if missing_attachments.is_empty() {
+    if report.missing_attachments.is_empty() {
         let _ = writeln!(out, "  (none)");
     } else {
-        for att in missing_attachments {
+        for att in report.missing_attachments {
             let _ = writeln!(
                 out,
                 "  {} -> {}",
@@ -172,33 +181,24 @@ fn write_check_text(
         }
     }
 
-    if !load_errors.is_empty() {
-        let _ = writeln!(out, "\nLoad Errors ({}):", load_errors.len());
-        for err in load_errors {
+    if !report.load_errors.is_empty() {
+        let _ = writeln!(out, "\nLoad Errors ({}):", report.load_errors.len());
+        for err in report.load_errors {
             let _ = writeln!(out, "  {} ({}): {}", err.title, err.page_id, err.error);
         }
     }
 
-    if !index_issues.is_empty() {
-        let _ = writeln!(out, "\nIndex Issues ({}):", index_issues.len());
-        for issue in index_issues {
+    if !report.index_issues.is_empty() {
+        let _ = writeln!(out, "\nIndex Issues ({}):", report.index_issues.len());
+        for issue in report.index_issues {
             let _ = writeln!(out, "  {}: {}", issue.path.display(), issue.message);
         }
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn write_check_json(
-    out: &mut impl Write,
-    index: &KnowledgeBaseIndex,
-    broken_links: &[BrokenLink],
-    orphan_ids: &[String],
-    load_errors: &[lepiter_core::PageLoadError],
-    index_issues: &[ParseIssue],
-    duplicate_titles: &[DuplicateTitle],
-    missing_attachments: &[MissingAttachment],
-) {
-    let broken: Vec<serde_json::Value> = broken_links
+fn write_check_json(out: &mut impl Write, report: &CheckReport) {
+    let broken: Vec<serde_json::Value> = report
+        .broken_links
         .iter()
         .map(|link| {
             serde_json::json!({
@@ -209,15 +209,22 @@ fn write_check_json(
         })
         .collect();
 
-    let orphans: Vec<serde_json::Value> = orphan_ids
+    let orphans: Vec<serde_json::Value> = report
+        .orphan_ids
         .iter()
         .map(|id| {
-            let title = index.pages.get(id).map(|m| m.title.as_str()).unwrap_or(id);
+            let title = report
+                .index
+                .pages
+                .get(id)
+                .map(|m| m.title.as_str())
+                .unwrap_or(id);
             serde_json::json!({ "id": id, "title": title })
         })
         .collect();
 
-    let errors: Vec<serde_json::Value> = load_errors
+    let errors: Vec<serde_json::Value> = report
+        .load_errors
         .iter()
         .map(|err| {
             serde_json::json!({
@@ -228,7 +235,8 @@ fn write_check_json(
         })
         .collect();
 
-    let dupes: Vec<serde_json::Value> = duplicate_titles
+    let dupes: Vec<serde_json::Value> = report
+        .duplicate_titles
         .iter()
         .map(|dup| {
             serde_json::json!({
@@ -238,7 +246,8 @@ fn write_check_json(
         })
         .collect();
 
-    let attachments: Vec<serde_json::Value> = missing_attachments
+    let attachments: Vec<serde_json::Value> = report
+        .missing_attachments
         .iter()
         .map(|att| {
             serde_json::json!({
@@ -250,7 +259,8 @@ fn write_check_json(
         })
         .collect();
 
-    let idx_issues: Vec<serde_json::Value> = index_issues
+    let idx_issues: Vec<serde_json::Value> = report
+        .index_issues
         .iter()
         .map(|issue| {
             serde_json::json!({
@@ -261,6 +271,7 @@ fn write_check_json(
         .collect();
 
     let obj = serde_json::json!({
+        "ok": report.ok(),
         "broken_links": broken,
         "orphan_pages": orphans,
         "duplicate_titles": dupes,
@@ -306,13 +317,46 @@ mod tests {
         String::from_utf8(buf).unwrap()
     }
 
+    fn empty_report(index: &KnowledgeBaseIndex) -> CheckReport {
+        CheckReport {
+            index,
+            broken_links: &[],
+            orphan_ids: &[],
+            load_errors: &[],
+            index_issues: &[],
+            duplicate_titles: &[],
+            missing_attachments: &[],
+        }
+    }
+
+    // --- CheckReport::ok ---
+
+    #[test]
+    fn report_ok_when_empty() {
+        let (_dir, index) = make_test_kb(&[]);
+        let report = empty_report(&index);
+        assert!(report.ok());
+    }
+
+    #[test]
+    fn report_not_ok_with_broken_links() {
+        let (_dir, index) = make_test_kb(&[("p1", "Page One", "see [link](page:gone)")]);
+        let analysis = index.analyze_all();
+        let report = CheckReport {
+            broken_links: &analysis.broken_links,
+            ..empty_report(&index)
+        };
+        assert!(!report.ok());
+    }
+
     // --- write_check_text: clean KB ---
 
     #[test]
     fn check_text_clean_kb_shows_zero_counts() {
         let (dir, index) = make_test_kb(&[]);
+        let report = empty_report(&index);
         let out = output_string(|buf| {
-            write_check_text(buf, &index, &[], &[], &[], &[], &[], &[]);
+            write_check_text(buf, &report);
         });
         assert!(out.contains("broken_links: 0"));
         assert!(out.contains("orphan_pages: 0"));
@@ -326,8 +370,9 @@ mod tests {
     #[test]
     fn check_text_clean_kb_shows_none_sections() {
         let (dir, index) = make_test_kb(&[]);
+        let report = empty_report(&index);
         let out = output_string(|buf| {
-            write_check_text(buf, &index, &[], &[], &[], &[], &[], &[]);
+            write_check_text(buf, &report);
         });
         assert!(out.contains("Broken Links (0):"));
         assert!(out.contains("Orphan Pages (0):"));
@@ -345,8 +390,12 @@ mod tests {
     fn check_text_broken_links_listed() {
         let (dir, index) = make_test_kb(&[("p1", "Page One", "see [link](page:gone)")]);
         let analysis = index.analyze_all();
+        let report = CheckReport {
+            broken_links: &analysis.broken_links,
+            ..empty_report(&index)
+        };
         let out = output_string(|buf| {
-            write_check_text(buf, &index, &analysis.broken_links, &[], &[], &[], &[], &[]);
+            write_check_text(buf, &report);
         });
         assert!(out.contains("broken_links: 1"));
         assert!(out.contains("Page One -> page:gone"));
@@ -360,8 +409,12 @@ mod tests {
         let (dir, index) = make_test_kb(&[("p1", "Alpha", "hello"), ("p2", "Beta", "world")]);
         let analysis = index.analyze_all();
         let orphan_ids = index.orphan_ids(&analysis.linked_pages, "");
+        let report = CheckReport {
+            orphan_ids: &orphan_ids,
+            ..empty_report(&index)
+        };
         let out = output_string(|buf| {
-            write_check_text(buf, &index, &[], &orphan_ids, &[], &[], &[], &[]);
+            write_check_text(buf, &report);
         });
         assert!(out.contains("orphan_pages: 2"));
         assert!(out.contains("  Alpha\n"));
@@ -375,8 +428,12 @@ mod tests {
     fn check_text_duplicate_titles_listed() {
         let (dir, index) = make_test_kb(&[("p1", "Alpha", "body"), ("p2", "Alpha", "body")]);
         let dupes = index.find_duplicate_titles();
+        let report = CheckReport {
+            duplicate_titles: &dupes,
+            ..empty_report(&index)
+        };
         let out = output_string(|buf| {
-            write_check_text(buf, &index, &[], &[], &[], &[], &dupes, &[]);
+            write_check_text(buf, &report);
         });
         assert!(out.contains("duplicate_titles: 1"));
         assert!(out.contains("\"Alpha\" (2 pages)"));
@@ -391,17 +448,12 @@ mod tests {
     fn check_text_missing_attachments_listed() {
         let (dir, index) = make_test_kb(&[("p1", "Alpha", "see [img](attachments/missing.png)")]);
         let analysis = index.analyze_all();
+        let report = CheckReport {
+            missing_attachments: &analysis.missing_attachments,
+            ..empty_report(&index)
+        };
         let out = output_string(|buf| {
-            write_check_text(
-                buf,
-                &index,
-                &[],
-                &[],
-                &[],
-                &[],
-                &[],
-                &analysis.missing_attachments,
-            );
+            write_check_text(buf, &report);
         });
         assert!(out.contains("missing_attachments: 1"));
         assert!(out.contains("Alpha -> "));
@@ -419,8 +471,12 @@ mod tests {
             title: "Broken Page".into(),
             error: "invalid JSON".into(),
         }];
+        let report = CheckReport {
+            load_errors: &errors,
+            ..empty_report(&index)
+        };
         let out = output_string(|buf| {
-            write_check_text(buf, &index, &[], &[], &errors, &[], &[], &[]);
+            write_check_text(buf, &report);
         });
         assert!(out.contains("Load Errors (1):"));
         assert!(out.contains("Broken Page (p1): invalid JSON"));
@@ -436,8 +492,12 @@ mod tests {
             path: PathBuf::from("/kb/bad.lepiter"),
             message: "failed to decode".into(),
         }];
+        let report = CheckReport {
+            index_issues: &issues,
+            ..empty_report(&index)
+        };
         let out = output_string(|buf| {
-            write_check_text(buf, &index, &[], &[], &[], &issues, &[], &[]);
+            write_check_text(buf, &report);
         });
         assert!(out.contains("Index Issues (1):"));
         assert!(out.contains("/kb/bad.lepiter: failed to decode"));
@@ -447,12 +507,14 @@ mod tests {
     // --- write_check_json: clean KB ---
 
     #[test]
-    fn check_json_clean_kb_has_empty_arrays() {
+    fn check_json_clean_kb_has_empty_arrays_and_ok_true() {
         let (dir, index) = make_test_kb(&[]);
+        let report = empty_report(&index);
         let out = output_string(|buf| {
-            write_check_json(buf, &index, &[], &[], &[], &[], &[], &[]);
+            write_check_json(buf, &report);
         });
         let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(parsed["ok"], true);
         assert_eq!(parsed["broken_links"].as_array().unwrap().len(), 0);
         assert_eq!(parsed["orphan_pages"].as_array().unwrap().len(), 0);
         assert_eq!(parsed["duplicate_titles"].as_array().unwrap().len(), 0);
@@ -468,10 +530,15 @@ mod tests {
     fn check_json_broken_links_populated() {
         let (dir, index) = make_test_kb(&[("p1", "Page One", "see [link](page:gone)")]);
         let analysis = index.analyze_all();
+        let report = CheckReport {
+            broken_links: &analysis.broken_links,
+            ..empty_report(&index)
+        };
         let out = output_string(|buf| {
-            write_check_json(buf, &index, &analysis.broken_links, &[], &[], &[], &[], &[]);
+            write_check_json(buf, &report);
         });
         let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(parsed["ok"], false);
         let broken = parsed["broken_links"].as_array().unwrap();
         assert_eq!(broken.len(), 1);
         assert_eq!(broken[0]["source_title"], "Page One");
@@ -487,8 +554,12 @@ mod tests {
         let (dir, index) = make_test_kb(&[("p1", "Alpha", "hello")]);
         let analysis = index.analyze_all();
         let orphan_ids = index.orphan_ids(&analysis.linked_pages, "");
+        let report = CheckReport {
+            orphan_ids: &orphan_ids,
+            ..empty_report(&index)
+        };
         let out = output_string(|buf| {
-            write_check_json(buf, &index, &[], &orphan_ids, &[], &[], &[], &[]);
+            write_check_json(buf, &report);
         });
         let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
         let orphans = parsed["orphan_pages"].as_array().unwrap();
@@ -504,8 +575,12 @@ mod tests {
     fn check_json_duplicate_titles_populated() {
         let (dir, index) = make_test_kb(&[("p1", "Alpha", "body"), ("p2", "Alpha", "body")]);
         let dupes = index.find_duplicate_titles();
+        let report = CheckReport {
+            duplicate_titles: &dupes,
+            ..empty_report(&index)
+        };
         let out = output_string(|buf| {
-            write_check_json(buf, &index, &[], &[], &[], &[], &dupes, &[]);
+            write_check_json(buf, &report);
         });
         let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
         let dt = parsed["duplicate_titles"].as_array().unwrap();
@@ -522,17 +597,12 @@ mod tests {
     fn check_json_missing_attachments_populated() {
         let (dir, index) = make_test_kb(&[("p1", "Alpha", "see [img](attachments/missing.png)")]);
         let analysis = index.analyze_all();
+        let report = CheckReport {
+            missing_attachments: &analysis.missing_attachments,
+            ..empty_report(&index)
+        };
         let out = output_string(|buf| {
-            write_check_json(
-                buf,
-                &index,
-                &[],
-                &[],
-                &[],
-                &[],
-                &[],
-                &analysis.missing_attachments,
-            );
+            write_check_json(buf, &report);
         });
         let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
         let att = parsed["missing_attachments"].as_array().unwrap();
@@ -553,8 +623,12 @@ mod tests {
             title: "Broken".into(),
             error: "bad json".into(),
         }];
+        let report = CheckReport {
+            load_errors: &errors,
+            ..empty_report(&index)
+        };
         let out = output_string(|buf| {
-            write_check_json(buf, &index, &[], &[], &errors, &[], &[], &[]);
+            write_check_json(buf, &report);
         });
         let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
         let errs = parsed["load_errors"].as_array().unwrap();
@@ -577,17 +651,17 @@ mod tests {
         let analysis = index.analyze_all();
         let orphan_ids = index.orphan_ids(&analysis.linked_pages, "");
         let dupes = index.find_duplicate_titles();
+        let report = CheckReport {
+            broken_links: &analysis.broken_links,
+            orphan_ids: &orphan_ids,
+            load_errors: &analysis.load_errors,
+            index_issues: &index.index_issues,
+            duplicate_titles: &dupes,
+            missing_attachments: &analysis.missing_attachments,
+            ..empty_report(&index)
+        };
         let out = output_string(|buf| {
-            write_check_text(
-                buf,
-                &index,
-                &analysis.broken_links,
-                &orphan_ids,
-                &analysis.load_errors,
-                &index.index_issues,
-                &dupes,
-                &analysis.missing_attachments,
-            );
+            write_check_text(buf, &report);
         });
         assert!(out.starts_with("Knowledge Base Check\n"));
         assert!(out.contains("broken_links: 1"));
@@ -608,21 +682,23 @@ mod tests {
         let analysis = index.analyze_all();
         let orphan_ids = index.orphan_ids(&analysis.linked_pages, "");
         let dupes = index.find_duplicate_titles();
+        let report = CheckReport {
+            broken_links: &analysis.broken_links,
+            orphan_ids: &orphan_ids,
+            load_errors: &analysis.load_errors,
+            index_issues: &index.index_issues,
+            duplicate_titles: &dupes,
+            missing_attachments: &analysis.missing_attachments,
+            ..empty_report(&index)
+        };
         let out = output_string(|buf| {
-            write_check_json(
-                buf,
-                &index,
-                &analysis.broken_links,
-                &orphan_ids,
-                &analysis.load_errors,
-                &index.index_issues,
-                &dupes,
-                &analysis.missing_attachments,
-            );
+            write_check_json(buf, &report);
         });
         let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert!(parsed.is_object());
-        // All six top-level keys present.
+        assert_eq!(parsed["ok"], false);
+        // All seven top-level keys present.
+        assert!(parsed.get("ok").is_some());
         assert!(parsed.get("broken_links").is_some());
         assert!(parsed.get("orphan_pages").is_some());
         assert!(parsed.get("duplicate_titles").is_some());

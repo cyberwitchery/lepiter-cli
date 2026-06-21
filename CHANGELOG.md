@@ -5,6 +5,8 @@ all notable changes to this project are documented in this file.
 ## Unreleased
 
 ### changed
+- `check --json` output now includes a top-level `"ok"` boolean so machine
+  consumers can check knowledge base health without inspecting every array
 - search: reuse a single buffer in `node_text_contains` instead of allocating a
   lowercased string per node per page
 - tui: use `sort_by_cached_key` in `rebuild_visible_ids` to pre-compute sort

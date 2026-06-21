@@ -317,7 +317,7 @@ mod tests {
         String::from_utf8(buf).unwrap()
     }
 
-    fn empty_report(index: &KnowledgeBaseIndex) -> CheckReport {
+    fn empty_report(index: &KnowledgeBaseIndex) -> CheckReport<'_> {
         CheckReport {
             index,
             broken_links: &[],

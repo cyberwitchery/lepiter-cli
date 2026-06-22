@@ -10,6 +10,11 @@ all notable changes to this project are documented in this file.
   links. wikilinks and `page:` links that resolve to known pages are converted
   to relative `.md` paths; unresolvable links are left as-is
 
+### fixed
+- `export`: slug deduplication now tracks globally assigned slugs, preventing
+  cross-base collisions (e.g. pages "Alpha", "Alpha", "Alpha-2" no longer
+  produce two files named `alpha-2.md`)
+
 ### changed
 - `check --json` output now includes a top-level `"ok"` boolean so machine
   consumers can check knowledge base health without inspecting every array

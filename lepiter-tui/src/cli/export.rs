@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 
@@ -74,17 +74,22 @@ pub fn run_export(args: Vec<String>) -> Result<()> {
 
 fn build_slug_map(index: &KnowledgeBaseIndex) -> HashMap<String, String> {
     let mut slugs: HashMap<String, String> = HashMap::new();
-    let mut used: HashMap<String, usize> = HashMap::new();
+    let mut assigned: HashSet<String> = HashSet::new();
+    let mut base_counts: HashMap<String, usize> = HashMap::new();
 
     for meta in index.sorted_pages() {
         let base = slugify(&meta.title);
-        let count = used.entry(base.clone()).or_insert(0);
+        let count = base_counts.entry(base.clone()).or_insert(0);
         *count += 1;
-        let slug = if *count == 1 {
-            base
+        let mut slug = if *count == 1 {
+            base.clone()
         } else {
             format!("{base}-{count}")
         };
+        while !assigned.insert(slug.clone()) {
+            *count += 1;
+            slug = format!("{base}-{count}");
+        }
         slugs.insert(meta.id.clone(), slug);
     }
 
@@ -466,10 +471,7 @@ mod tests {
         assert!(!fm.contains("tags:"));
     }
 
-    #[test]
-    fn build_slug_map_handles_duplicates() {
-        use lepiter_core::PageMeta;
-
+    fn make_test_kb(pages: &[(&str, &str)]) -> (std::path::PathBuf, KnowledgeBaseIndex) {
         let dir = std::env::temp_dir().join(format!(
             "lepiter-export-test-{}",
             std::time::SystemTime::now()
@@ -479,7 +481,7 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
 
-        for (id, title) in &[("p1", "Alpha"), ("p2", "Alpha"), ("p3", "Beta")] {
+        for (id, title) in pages {
             let content = serde_json::json!({
                 "uid": {"uuid": id},
                 "pageType": {"title": title},
@@ -493,11 +495,40 @@ mod tests {
         }
 
         let index = KnowledgeBase::open(&dir).unwrap();
+        (dir, index)
+    }
+
+    #[test]
+    fn build_slug_map_handles_duplicates() {
+        let (dir, index) = make_test_kb(&[("p1", "Alpha"), ("p2", "Alpha"), ("p3", "Beta")]);
         let slugs = build_slug_map(&index);
 
-        assert_eq!(slugs["p1"], "alpha");
-        assert_eq!(slugs["p2"], "alpha-2");
-        assert_eq!(slugs["p3"], "beta");
+        let mut values: Vec<&str> = slugs.values().map(|s| s.as_str()).collect();
+        values.sort();
+        assert_eq!(values, vec!["alpha", "alpha-2", "beta"]);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn build_slug_map_cross_slug_collision() {
+        let (dir, index) = make_test_kb(&[("p1", "Alpha"), ("p2", "Alpha"), ("p3", "Alpha-2")]);
+        let slugs = build_slug_map(&index);
+
+        let mut values: Vec<&str> = slugs.values().map(|s| s.as_str()).collect();
+        values.sort();
+        // all three must get distinct slugs — no silent overwrites
+        assert_eq!(values.len(), 3);
+        assert!(
+            values[0] != values[1] && values[1] != values[2],
+            "duplicate slug in {:?}",
+            values
+        );
+        assert!(values.contains(&"alpha"));
+        assert!(values.contains(&"alpha-2"));
+        // "Alpha-2" base collides with the suffix-assigned "alpha-2", so it
+        // gets bumped to "alpha-2-2"
+        assert!(values.contains(&"alpha-2-2"));
 
         std::fs::remove_dir_all(&dir).unwrap();
     }

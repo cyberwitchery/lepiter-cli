@@ -5,6 +5,10 @@ all notable changes to this project are documented in this file.
 ## Unreleased
 
 ### added
+- `import` subcommand: converts exported markdown files (with yaml frontmatter)
+  back into lepiter page json files. parses heading, paragraph, code, list,
+  link, quote, and rewrite nodes. rewrites `.md` link targets back to internal
+  `page:` references using the frontmatter id map from sibling files
 - `export` subcommand: bulk-exports all pages to a directory of markdown files
   with yaml frontmatter (title, id, tags, updated_at) and rewritten internal
   links. wikilinks and `page:` links that resolve to known pages are converted

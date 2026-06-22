@@ -1,4 +1,5 @@
 mod check;
+mod export;
 mod format;
 mod ids;
 mod info;
@@ -9,6 +10,7 @@ mod show;
 mod tags;
 
 pub use check::run_check;
+pub use export::run_export;
 pub use ids::run_ids;
 pub use info::{print_kb_info, run_info};
 pub use links::run_links;

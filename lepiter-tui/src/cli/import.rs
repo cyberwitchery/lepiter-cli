@@ -15,7 +15,10 @@ pub fn run_import(args: Vec<String>) -> Result<()> {
                 eprintln!(
                     "usage: lepiter-cli import <input-dir> [kb-path]\n\n\
                      converts exported markdown files (with yaml frontmatter) back\n\
-                     into lepiter page json files. reverses the `export` subcommand."
+                     into lepiter page json files. reverses the `export` subcommand.\n\n\
+                     note: binary attachments (images, etc.) are not copied. picture\n\
+                     snippet references are preserved but the files must be restored\n\
+                     separately."
                 );
                 return Ok(());
             }
@@ -234,6 +237,9 @@ enum Snippet {
         scope: Option<String>,
         is_method_pattern: Option<bool>,
     },
+    Unknown {
+        typ: String,
+    },
 }
 
 fn parse_markdown_body(body: &str, slug_to_id: &HashMap<String, String>) -> Vec<Snippet> {
@@ -301,6 +307,18 @@ fn parse_markdown_body(body: &str, slug_to_id: &HashMap<String, String>) -> Vec<
             let (text, url) = extract_standalone_link(line);
             let url = rewrite_link_target_to_internal(&url, slug_to_id);
             snippets.push(Snippet::Link { text, url });
+            continue;
+        }
+
+        // unknown snippet type marker from export: [[unknown: TYPE]]
+        if let Some(typ) = line
+            .trim()
+            .strip_prefix("[[unknown: ")
+            .and_then(|rest| rest.strip_suffix("]]"))
+        {
+            snippets.push(Snippet::Unknown {
+                typ: typ.to_string(),
+            });
             continue;
         }
 
@@ -479,7 +497,7 @@ fn snippet_type_for_language(lang: &str) -> &str {
         "javascript" => "javascriptSnippet",
         "json" => "jsonSnippet",
         "yaml" => "yamlSnippet",
-        "shellcommand" | "shell" | "bash" | "sh" => "shellCommandSnippet",
+        "shellcommand" => "shellCommandSnippet",
         "gemstone" => "gemstoneSnippet",
         "example" => "exampleSnippet",
         "changes" => "changesSnippet",
@@ -553,6 +571,9 @@ fn build_page_json(fm: &Frontmatter, snippets: &[Snippet]) -> serde_json::Value 
                 // language is implicit in the __type for now
                 let _ = language;
                 items.push(obj);
+            }
+            Snippet::Unknown { typ } => {
+                items.push(json!({ "__type": typ }));
             }
         }
     }
@@ -934,8 +955,65 @@ mod tests {
         assert_eq!(snippet_type_for_language("javascript"), "javascriptSnippet");
         assert_eq!(snippet_type_for_language("json"), "jsonSnippet");
         assert_eq!(snippet_type_for_language("yaml"), "yamlSnippet");
-        assert_eq!(snippet_type_for_language("bash"), "shellCommandSnippet");
+        assert_eq!(
+            snippet_type_for_language("shellcommand"),
+            "shellCommandSnippet"
+        );
         assert_eq!(snippet_type_for_language("unknown"), "textSnippet");
+    }
+
+    #[test]
+    fn shell_fences_map_to_text_snippet() {
+        assert_eq!(snippet_type_for_language("bash"), "textSnippet");
+        assert_eq!(snippet_type_for_language("sh"), "textSnippet");
+        assert_eq!(snippet_type_for_language("shell"), "textSnippet");
+    }
+
+    #[test]
+    fn parse_unknown_marker() {
+        let slug_map = HashMap::new();
+        let input = "[[unknown: wardleyMap]]\n\n";
+        let snippets = parse_markdown_body(input, &slug_map);
+        assert_eq!(snippets.len(), 1);
+        match &snippets[0] {
+            Snippet::Unknown { typ } => assert_eq!(typ, "wardleyMap"),
+            other => panic!("expected Unknown, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_page_json_unknown() {
+        let fm = Frontmatter {
+            title: "Unknown".to_string(),
+            id: "unk-1".to_string(),
+            tags: Vec::new(),
+            updated_at: None,
+        };
+        let snippets = vec![Snippet::Unknown {
+            typ: "wardleyMap".to_string(),
+        }];
+        let json = build_page_json(&fm, &snippets);
+        let items = json["children"]["items"].as_array().unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["__type"], "wardleyMap");
+    }
+
+    #[test]
+    fn bash_fence_roundtrips_as_text_snippet() {
+        let slug_map = HashMap::new();
+        let input = "```bash\necho hello\n```\n\n";
+        let snippets = parse_markdown_body(input, &slug_map);
+        assert_eq!(snippets.len(), 1);
+        let fm = Frontmatter {
+            title: "Shell".to_string(),
+            id: "sh-1".to_string(),
+            tags: Vec::new(),
+            updated_at: None,
+        };
+        let json = build_page_json(&fm, &snippets);
+        let items = json["children"]["items"].as_array().unwrap();
+        assert_eq!(items[0]["__type"], "textSnippet");
+        assert_eq!(items[0]["string"], "```bash\necho hello\n```");
     }
 
     #[test]

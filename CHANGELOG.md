@@ -8,13 +8,20 @@ all notable changes to this project are documented in this file.
 - `import` subcommand: converts exported markdown files (with yaml frontmatter)
   back into lepiter page json files. parses heading, paragraph, code, list,
   link, quote, and rewrite nodes. rewrites `.md` link targets back to internal
-  `page:` references using the frontmatter id map from sibling files
+  `page:` references using the frontmatter id map from sibling files.
+  unknown snippet types exported as `[[unknown: TYPE]]` markers are passed
+  through with the original `__type` preserved. binary attachments are not
+  copied (picture snippet references are kept but files must be restored
+  separately)
 - `export` subcommand: bulk-exports all pages to a directory of markdown files
   with yaml frontmatter (title, id, tags, updated_at) and rewritten internal
   links. wikilinks and `page:` links that resolve to known pages are converted
   to relative `.md` paths; unresolvable links are left as-is
 
 ### fixed
+- `import`: `bash`/`sh`/`shell` code fences are no longer upgraded to
+  `shellCommandSnippet` — only the native `shellcommand` fence maps to that
+  type. standard shell fences now correctly round-trip as `textSnippet`
 - `export`: slug deduplication now tracks globally assigned slugs, preventing
   cross-base collisions (e.g. pages "Alpha", "Alpha", "Alpha-2" no longer
   produce two files named `alpha-2.md`)

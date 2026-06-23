@@ -148,7 +148,12 @@ pub(crate) fn extract_uuid_like(input: &str) -> Option<&str> {
     }
 
     for i in 0..=bytes.len() - 36 {
-        let cand = &input[i..i + 36];
+        // `i` walks byte offsets, so it can land inside a multi-byte UTF-8
+        // char; `get` yields None there instead of panicking. A UUID is pure
+        // ASCII, so a non-boundary slice can never be a real candidate.
+        let Some(cand) = input.get(i..i + 36) else {
+            continue;
+        };
         let ok = cand.chars().enumerate().all(|(idx, c)| match idx {
             8 | 13 | 18 | 23 => c == '-',
             _ => c.is_ascii_hexdigit(),

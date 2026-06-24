@@ -468,8 +468,6 @@ mod tests {
 
     #[test]
     fn build_slug_map_handles_duplicates() {
-        use lepiter_core::PageMeta;
-
         let dir = std::env::temp_dir().join(format!(
             "lepiter-export-test-{}",
             std::time::SystemTime::now()
@@ -500,5 +498,150 @@ mod tests {
         assert_eq!(slugs["p3"], "beta");
 
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn e2e_temp_dir(label: &str) -> PathBuf {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("lepiter-export-{label}-{ts}"))
+    }
+
+    fn write_page(dir: &std::path::Path, id: &str, content: &serde_json::Value) {
+        std::fs::write(
+            dir.join(format!("{id}.lepiter")),
+            serde_json::to_vec(content).unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn export_full_pipeline() {
+        let kb_dir = e2e_temp_dir("e2e");
+        std::fs::create_dir_all(&kb_dir).unwrap();
+        let out_dir = e2e_temp_dir("e2e-out");
+
+        // page 1: wikilink to page 2, python code block, tags, timestamp
+        write_page(
+            &kb_dir,
+            "p1",
+            &serde_json::json!({
+                "uid": {"uuid": "p1"},
+                "pageType": {"title": "Getting Started"},
+                "editTime": {"time": {"dateAndTimeString": "2024-06-15T10:30:00+00:00"}},
+                "tags": ["tutorial", "intro"],
+                "children": {"items": [
+                    {"__type": "textSnippet", "string": "Welcome! See [[Advanced Topics]] for more."},
+                    {"__type": "pythonSnippet", "code": "print('hello world')"}
+                ]}
+            }),
+        );
+
+        // page 2: page: link back to p1, a quote
+        write_page(
+            &kb_dir,
+            "p2",
+            &serde_json::json!({
+                "uid": {"uuid": "p2"},
+                "pageType": {"title": "Advanced Topics"},
+                "tags": ["advanced"],
+                "children": {"items": [
+                    {"__type": "textSnippet", "string": "See [basics](page:p1) for the intro."},
+                    {"__type": "textSnippet", "string": "> important note"}
+                ]}
+            }),
+        );
+
+        // page 3: wikilink to page 1, js code block, no tags
+        write_page(
+            &kb_dir,
+            "p3",
+            &serde_json::json!({
+                "uid": {"uuid": "p3"},
+                "pageType": {"title": "Code Examples"},
+                "children": {"items": [
+                    {"__type": "textSnippet", "string": "Based on [[Getting Started]]."},
+                    {"__type": "javascriptSnippet", "code": "console.log('test');"}
+                ]}
+            }),
+        );
+
+        run_export(vec![
+            out_dir.to_str().unwrap().to_string(),
+            kb_dir.to_str().unwrap().to_string(),
+        ])
+        .unwrap();
+
+        // correct number of output files
+        let md_count = std::fs::read_dir(&out_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().map_or(false, |ext| ext == "md"))
+            .count();
+        assert_eq!(md_count, 3);
+
+        let gs = std::fs::read_to_string(out_dir.join("getting-started.md")).unwrap();
+        let at = std::fs::read_to_string(out_dir.join("advanced-topics.md")).unwrap();
+        let ce = std::fs::read_to_string(out_dir.join("code-examples.md")).unwrap();
+
+        // frontmatter structure
+        assert!(gs.starts_with("---\n"));
+        assert!(gs.contains("title: \"Getting Started\""));
+        assert!(gs.contains("id: p1"));
+        assert!(gs.contains("tags: [\"tutorial\", \"intro\"]"));
+        assert!(gs.contains("updated_at: 2024-06-15"));
+
+        assert!(at.contains("title: \"Advanced Topics\""));
+        assert!(at.contains("id: p2"));
+        assert!(at.contains("tags: [\"advanced\"]"));
+
+        assert!(ce.contains("title: \"Code Examples\""));
+        assert!(ce.contains("id: p3"));
+        assert!(!ce.contains("tags:"));
+
+        // wikilinks to known pages become [label](slug.md)
+        assert!(gs.contains("[Advanced Topics](advanced-topics.md)"));
+        assert!(ce.contains("[Getting Started](getting-started.md)"));
+
+        // page: links to known pages get rewritten
+        assert!(at.contains("[basics](getting-started.md)"));
+
+        // code blocks preserve language and content
+        assert!(gs.contains("```python\nprint('hello world')\n```"));
+        assert!(ce.contains("```javascript\nconsole.log('test');\n```"));
+
+        // quote rendering
+        assert!(at.contains("> important note"));
+
+        std::fs::remove_dir_all(&kb_dir).unwrap();
+        std::fs::remove_dir_all(&out_dir).unwrap();
+    }
+
+    #[test]
+    fn export_uncreatable_output_dir_returns_error() {
+        let kb_dir = e2e_temp_dir("err");
+        std::fs::create_dir_all(&kb_dir).unwrap();
+
+        write_page(
+            &kb_dir,
+            "p1",
+            &serde_json::json!({
+                "uid": {"uuid": "p1"},
+                "pageType": {"title": "Test"},
+                "children": {"items": [
+                    {"__type": "textSnippet", "string": "hello"}
+                ]}
+            }),
+        );
+
+        // /dev/null is not a directory, so create_dir_all under it fails
+        let result = run_export(vec![
+            "/dev/null/impossible".to_string(),
+            kb_dir.to_str().unwrap().to_string(),
+        ]);
+        assert!(result.is_err());
+
+        std::fs::remove_dir_all(&kb_dir).unwrap();
     }
 }

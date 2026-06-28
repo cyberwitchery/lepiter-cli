@@ -36,6 +36,7 @@
 //! ```
 
 mod index;
+mod inline_link;
 mod model;
 mod parse;
 mod render;
@@ -47,6 +48,7 @@ pub use index::{
     BrokenLink, DuplicateTitle, KnowledgeBase, KnowledgeBaseIndex, LinkAnalysisResult, LinkEdge,
     LinkGraph, MissingAttachment, PageLoadError,
 };
+pub use inline_link::{InlineLink, InlineLinks, LinkKind, rewrite_inline_links, scan_inline_links};
 pub use model::{
     AttachmentError, AttachmentResolver, LinkTargetKind, Node, Page, PageId, PageMeta, ParseIssue,
     ResolvedAttachment, SearchHit, SearchMatchKind, TitleResolution,
@@ -55,7 +57,8 @@ pub use parse::{
     collect_node_types_in_file, extract_type, is_code_snippet, parse_heading, parse_node_from_raw,
 };
 pub use render::{
-    normalize_text, page_content_contains, render_nodes_to_text, render_page_to_text,
+    normalize_text, page_content_contains, render_nodes_to_text, render_nodes_to_text_with,
+    render_page_to_text,
 };
 pub use util::extract_link_targets;
 

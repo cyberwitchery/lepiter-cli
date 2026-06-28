@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use chrono::DateTime;
+use lepiter_core::{LinkKind, rewrite_inline_links};
 use serde_json::json;
 
 pub fn run_import(args: Vec<String>) -> Result<()> {
@@ -451,43 +452,16 @@ fn rewrite_link_target_to_internal(target: &str, slug_to_id: &HashMap<String, St
     target.to_string()
 }
 
+/// Rewrites `[label](slug.md)` markdown links whose target is an exported page
+/// back to `[label](page:id)`. `[[wikilinks]]` and any other links are left
+/// untouched, mirroring the export direction's asymmetry.
 fn rewrite_links_to_internal(text: &str, slug_to_id: &HashMap<String, String>) -> String {
-    let bytes = text.as_bytes();
-    let mut out = String::with_capacity(text.len());
-    let mut i = 0;
-
-    while i < bytes.len() {
-        // [label](target) — rewrite .md targets to page:id
-        if bytes[i] == b'['
-            && let label_start = i + 1
-            && let Some(label_end) = find_byte(bytes, b']', label_start)
-            && label_end + 1 < bytes.len()
-            && bytes[label_end + 1] == b'('
-            && let target_start = label_end + 2
-            && let Some(target_end) = find_byte(bytes, b')', target_start)
-        {
-            let label = &text[label_start..label_end];
-            let target = text[target_start..target_end].trim();
-            if !target.is_empty()
-                && target.ends_with(".md")
-                && let Some(id) = slug_to_id.get(target)
-            {
-                out.push_str(&format!("[{label}](page:{id})"));
-                i = target_end + 1;
-                continue;
-            }
+    rewrite_inline_links(text, |kind, target| match kind {
+        LinkKind::Markdown if target.ends_with(".md") => {
+            slug_to_id.get(target).map(|id| format!("page:{id}"))
         }
-
-        let ch = text[i..].chars().next().unwrap();
-        out.push(ch);
-        i += ch.len_utf8();
-    }
-
-    out
-}
-
-fn find_byte(bytes: &[u8], target: u8, start: usize) -> Option<usize> {
-    (start..bytes.len()).find(|&i| bytes[i] == target)
+        _ => None,
+    })
 }
 
 fn snippet_type_for_language(lang: &str) -> &str {

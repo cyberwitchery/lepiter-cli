@@ -3,7 +3,10 @@ use std::fs;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
-use lepiter_core::{KnowledgeBase, KnowledgeBaseIndex, LinkTargetKind, Node, Page, normalize_text};
+use lepiter_core::{
+    KnowledgeBase, KnowledgeBaseIndex, LinkKind, LinkTargetKind, Node, Page,
+    render_nodes_to_text_with,
+};
 
 pub fn run_export(args: Vec<String>) -> Result<()> {
     let mut positional = Vec::new();
@@ -148,181 +151,32 @@ fn render_with_rewritten_links(
     index: &KnowledgeBaseIndex,
     slug_map: &HashMap<String, String>,
 ) -> String {
-    let rewrite = |target: &str| -> Option<String> {
+    let resolve = |target: &str| -> Option<String> {
         match index.classify_link_target(target) {
             LinkTargetKind::InternalPage(id) => slug_map.get(&id).map(|slug| format!("{slug}.md")),
             _ => None,
         }
     };
-
-    let mut out = String::new();
-    render_nodes_rewritten(nodes, &rewrite, &mut out);
-    out
+    render_nodes_to_text_with(nodes, &mut export_link_rewriter(resolve))
 }
 
-fn render_nodes_rewritten(
-    nodes: &[Node],
-    rewrite: &impl Fn(&str) -> Option<String>,
-    out: &mut String,
-) {
-    for node in nodes {
-        match node {
-            Node::Heading { level, text } => {
-                out.push_str(&"#".repeat((*level).max(1) as usize));
-                out.push(' ');
-                out.push_str(&rewrite_inline_links(text, rewrite));
-                out.push_str("\n\n");
-            }
-            Node::Paragraph { text } => {
-                out.push_str(&rewrite_inline_links(text, rewrite));
-                out.push_str("\n\n");
-            }
-            Node::Text { text } => {
-                out.push_str(&rewrite_inline_links(text, rewrite));
-                out.push('\n');
-            }
-            Node::List { items } => {
-                for item in items {
-                    let mut item_out = String::new();
-                    render_nodes_rewritten(item, rewrite, &mut item_out);
-                    let mut lines = item_out.trim().lines();
-                    if let Some(first) = lines.next() {
-                        out.push_str("- ");
-                        out.push_str(first);
-                        out.push('\n');
-                        for line in lines {
-                            out.push_str("  ");
-                            out.push_str(line);
-                            out.push('\n');
-                        }
-                    }
-                }
-                out.push('\n');
-            }
-            Node::Code { language, code } => {
-                out.push_str("```");
-                if let Some(lang) = language {
-                    out.push_str(lang);
-                }
-                out.push('\n');
-                out.push_str(code);
-                out.push_str("\n```\n\n");
-            }
-            Node::Link { text, url } => {
-                let rewritten = rewrite(url).unwrap_or_else(|| url.clone());
-                out.push_str(&format!("[{text}]({rewritten})\n\n"));
-            }
-            Node::Quote { text } => {
-                out.push_str(&format!("> {}\n\n", rewrite_inline_links(text, rewrite)));
-            }
-            Node::Rewrite {
-                language,
-                search,
-                replace,
-                scope,
-                is_method_pattern,
-            } => {
-                let lang = language.clone().unwrap_or_else(|| "rewrite".to_string());
-                out.push_str(&format!("```diff {lang}\n"));
-                if let Some(scope) = scope {
-                    out.push_str(&format!("# scope: {scope}\n"));
-                }
-                if let Some(is_method_pattern) = is_method_pattern {
-                    out.push_str(&format!("# method_pattern: {is_method_pattern}\n"));
-                }
-                for line in normalize_text(search).lines() {
-                    out.push('-');
-                    out.push_str(line);
-                    out.push('\n');
-                }
-                for line in normalize_text(replace).lines() {
-                    out.push('+');
-                    out.push_str(line);
-                    out.push('\n');
-                }
-                out.push_str("```\n\n");
-            }
-            Node::Unknown { typ, .. } => {
-                out.push_str(&format!("[[unknown: {typ}]]\n\n"));
-            }
-        }
+/// The export link policy, layered over the shared [`lepiter_core`] scanner:
+/// `[[wikilink]]` becomes a markdown link only when its target resolves to an
+/// exported page (otherwise left verbatim), while `[label](target)` always
+/// keeps markdown syntax with the target resolved when possible.
+fn export_link_rewriter(
+    resolve: impl Fn(&str) -> Option<String>,
+) -> impl FnMut(LinkKind, &str) -> Option<String> {
+    move |kind, target| match kind {
+        LinkKind::Wiki => resolve(target),
+        LinkKind::Markdown => Some(resolve(target).unwrap_or_else(|| target.to_string())),
     }
-}
-
-/// Rewrites `[[wikilink]]` and `[label](target)` inline links using the
-/// provided rewriter. Wikilinks that resolve to an internal page are
-/// converted to standard markdown links; unresolvable links are left as-is.
-fn rewrite_inline_links(text: &str, rewrite: &impl Fn(&str) -> Option<String>) -> String {
-    let bytes = text.as_bytes();
-    let mut out = String::with_capacity(text.len());
-    let mut i = 0;
-
-    while i < bytes.len() {
-        // [[wikilink]]
-        if i + 1 < bytes.len() && bytes[i] == b'[' && bytes[i + 1] == b'[' {
-            let start = i + 2;
-            if let Some(end) = find_closing_double_bracket(bytes, start) {
-                let target = text[start..end].trim();
-                if !target.is_empty() {
-                    if let Some(slug) = rewrite(target) {
-                        out.push_str(&format!("[{target}]({slug})"));
-                    } else {
-                        // keep original [[...]] syntax
-                        out.push_str(&text[i..end + 2]);
-                    }
-                    i = end + 2;
-                    continue;
-                }
-            }
-        }
-
-        // [label](target)
-        if bytes[i] == b'[' {
-            let label_start = i + 1;
-            if let Some(label_end) = find_byte(bytes, b']', label_start)
-                && label_end + 1 < bytes.len()
-                && bytes[label_end + 1] == b'('
-            {
-                let target_start = label_end + 2;
-                if let Some(target_end) = find_byte(bytes, b')', target_start) {
-                    let label = &text[label_start..label_end];
-                    let target = text[target_start..target_end].trim();
-                    if !target.is_empty() {
-                        let rewritten = rewrite(target).unwrap_or_else(|| target.to_string());
-                        out.push_str(&format!("[{label}]({rewritten})"));
-                        i = target_end + 1;
-                        continue;
-                    }
-                }
-            }
-        }
-
-        let ch = text[i..].chars().next().unwrap();
-        out.push(ch);
-        i += ch.len_utf8();
-    }
-
-    out
-}
-
-fn find_closing_double_bracket(bytes: &[u8], start: usize) -> Option<usize> {
-    let mut i = start;
-    while i + 1 < bytes.len() {
-        if bytes[i] == b']' && bytes[i + 1] == b']' {
-            return Some(i);
-        }
-        i += 1;
-    }
-    None
-}
-
-fn find_byte(bytes: &[u8], target: u8, start: usize) -> Option<usize> {
-    (start..bytes.len()).find(|&i| bytes[i] == target)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lepiter_core::rewrite_inline_links;
 
     #[test]
     fn slugify_basic_title() {
@@ -355,7 +209,7 @@ mod tests {
 
     #[test]
     fn rewrite_wikilinks() {
-        let rewrite = |target: &str| -> Option<String> {
+        let resolve = |target: &str| -> Option<String> {
             if target == "Other Page" {
                 Some("other-page.md".to_string())
             } else {
@@ -363,23 +217,23 @@ mod tests {
             }
         };
         assert_eq!(
-            rewrite_inline_links("see [[Other Page]] here", &rewrite),
+            rewrite_inline_links("see [[Other Page]] here", export_link_rewriter(resolve)),
             "see [Other Page](other-page.md) here"
         );
     }
 
     #[test]
     fn rewrite_wikilinks_unresolved() {
-        let rewrite = |_: &str| -> Option<String> { None };
+        let resolve = |_: &str| -> Option<String> { None };
         assert_eq!(
-            rewrite_inline_links("see [[Unknown]] here", &rewrite),
+            rewrite_inline_links("see [[Unknown]] here", export_link_rewriter(resolve)),
             "see [[Unknown]] here"
         );
     }
 
     #[test]
     fn rewrite_markdown_links() {
-        let rewrite = |target: &str| -> Option<String> {
+        let resolve = |target: &str| -> Option<String> {
             if target == "page:abc" {
                 Some("alpha.md".to_string())
             } else {
@@ -387,23 +241,23 @@ mod tests {
             }
         };
         assert_eq!(
-            rewrite_inline_links("see [link](page:abc) done", &rewrite),
+            rewrite_inline_links("see [link](page:abc) done", export_link_rewriter(resolve)),
             "see [link](alpha.md) done"
         );
     }
 
     #[test]
     fn rewrite_preserves_external_links() {
-        let rewrite = |_: &str| -> Option<String> { None };
+        let resolve = |_: &str| -> Option<String> { None };
         assert_eq!(
-            rewrite_inline_links("[docs](https://example.com)", &rewrite),
+            rewrite_inline_links("[docs](https://example.com)", export_link_rewriter(resolve)),
             "[docs](https://example.com)"
         );
     }
 
     #[test]
     fn rewrite_mixed_links() {
-        let rewrite = |target: &str| -> Option<String> {
+        let resolve = |target: &str| -> Option<String> {
             match target {
                 "Other" => Some("other.md".to_string()),
                 "page:p1" => Some("alpha.md".to_string()),
@@ -413,7 +267,7 @@ mod tests {
         assert_eq!(
             rewrite_inline_links(
                 "see [[Other]] and [link](page:p1) and [[Missing]]",
-                &rewrite
+                export_link_rewriter(resolve)
             ),
             "see [Other](other.md) and [link](alpha.md) and [[Missing]]"
         );
@@ -421,9 +275,9 @@ mod tests {
 
     #[test]
     fn rewrite_unicode_text() {
-        let rewrite = |_: &str| -> Option<String> { None };
+        let resolve = |_: &str| -> Option<String> { None };
         assert_eq!(
-            rewrite_inline_links("日本語テキスト [[リンク]]", &rewrite),
+            rewrite_inline_links("日本語テキスト [[リンク]]", export_link_rewriter(resolve)),
             "日本語テキスト [[リンク]]"
         );
     }

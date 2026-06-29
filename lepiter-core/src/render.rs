@@ -1,3 +1,4 @@
+use crate::inline_link::{LinkKind, rewrite_inline_links};
 use crate::model::{Node, Page};
 
 /// Renders a parsed page to plain text.
@@ -7,27 +8,52 @@ pub fn render_page_to_text(page: &Page) -> String {
 
 /// Renders normalized nodes to plain text.
 pub fn render_nodes_to_text(nodes: &[Node]) -> String {
+    render_nodes_to_text_with(nodes, &mut |_, _| None)
+}
+
+/// Renders normalized nodes to plain text, rewriting inline and explicit links
+/// through `rewrite`.
+///
+/// `rewrite(kind, target)` is invoked for every `[[wikilink]]` and
+/// `[label](target)` found in text-bearing nodes, and for every
+/// [`Node::Link`] url (as [`LinkKind::Markdown`]). Returning `Some(new_target)`
+/// substitutes the target; returning `None` leaves the link verbatim. A no-op
+/// rewriter reproduces [`render_nodes_to_text`] exactly.
+pub fn render_nodes_to_text_with(
+    nodes: &[Node],
+    rewrite: &mut impl FnMut(LinkKind, &str) -> Option<String>,
+) -> String {
     let mut out = String::new();
+    render_nodes_into(nodes, rewrite, &mut out);
+    out
+}
+
+fn render_nodes_into(
+    nodes: &[Node],
+    rewrite: &mut impl FnMut(LinkKind, &str) -> Option<String>,
+    out: &mut String,
+) {
     for node in nodes {
         match node {
             Node::Heading { level, text } => {
                 out.push_str(&"#".repeat((*level).max(1) as usize));
                 out.push(' ');
-                out.push_str(text);
+                out.push_str(&rewrite_inline_links(text, &mut *rewrite));
                 out.push_str("\n\n");
             }
             Node::Paragraph { text } => {
-                out.push_str(text);
+                out.push_str(&rewrite_inline_links(text, &mut *rewrite));
                 out.push_str("\n\n");
             }
             Node::Text { text } => {
-                out.push_str(text);
+                out.push_str(&rewrite_inline_links(text, &mut *rewrite));
                 out.push('\n');
             }
             Node::List { items } => {
                 for item in items {
-                    let rendered = render_nodes_to_text(item);
-                    let mut lines = rendered.trim().lines();
+                    let mut item_out = String::new();
+                    render_nodes_into(item, rewrite, &mut item_out);
+                    let mut lines = item_out.trim().lines();
                     if let Some(first) = lines.next() {
                         out.push_str("- ");
                         out.push_str(first);
@@ -51,10 +77,14 @@ pub fn render_nodes_to_text(nodes: &[Node]) -> String {
                 out.push_str("\n```\n\n");
             }
             Node::Link { text, url } => {
-                out.push_str(&format!("[{text}]({url})\n\n"));
+                let rewritten = rewrite(LinkKind::Markdown, url).unwrap_or_else(|| url.clone());
+                out.push_str(&format!("[{text}]({rewritten})\n\n"));
             }
             Node::Quote { text } => {
-                out.push_str(&format!("> {text}\n\n"));
+                out.push_str(&format!(
+                    "> {}\n\n",
+                    rewrite_inline_links(text, &mut *rewrite)
+                ));
             }
             Node::Rewrite {
                 language,
@@ -88,7 +118,6 @@ pub fn render_nodes_to_text(nodes: &[Node]) -> String {
             }
         }
     }
-    out
 }
 
 /// Checks whether the rendered text of a page contains `needle`
@@ -208,6 +237,51 @@ mod tests {
         assert!(text.contains("-a"));
         assert!(text.contains("+b"));
         assert!(text.contains("[[unknown: weird]]"));
+    }
+
+    #[test]
+    fn render_nodes_to_text_with_rewrites_inline_and_explicit_links() {
+        let mut rewrite = |kind: LinkKind, target: &str| match (kind, target) {
+            (LinkKind::Wiki, "Topic") => Some("topic.md".to_string()),
+            (LinkKind::Markdown, "page:abc") => Some("alpha.md".to_string()),
+            _ => None,
+        };
+        let text = render_nodes_to_text_with(
+            &[
+                Node::Paragraph {
+                    text: "see [[Topic]] and [x](page:abc)".to_string(),
+                },
+                Node::Link {
+                    text: "go".to_string(),
+                    url: "page:abc".to_string(),
+                },
+            ],
+            &mut rewrite,
+        );
+        assert!(text.contains("see [Topic](topic.md) and [x](alpha.md)"));
+        assert!(text.contains("[go](alpha.md)"));
+    }
+
+    #[test]
+    fn render_nodes_to_text_noop_matches_plain_render() {
+        let nodes = vec![
+            Node::Heading {
+                level: 1,
+                text: "see [[Topic]]".to_string(),
+            },
+            Node::Paragraph {
+                text: "a [x](page:abc) b".to_string(),
+            },
+            Node::Link {
+                text: "go".to_string(),
+                url: "page:abc".to_string(),
+            },
+        ];
+        // The default renderer must leave every link untouched.
+        let plain = render_nodes_to_text(&nodes);
+        assert!(plain.contains("see [[Topic]]"));
+        assert!(plain.contains("a [x](page:abc) b"));
+        assert!(plain.contains("[go](page:abc)"));
     }
 
     #[test]

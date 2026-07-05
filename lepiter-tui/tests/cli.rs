@@ -237,6 +237,17 @@ mod list {
             );
         }
     }
+
+    #[test]
+    fn unknown_flag_exits_nonzero() {
+        let out = run(&["list", "--badarg", &fixtures_path_str()]);
+        assert!(!out.status.success());
+        let err = stderr(&out);
+        assert!(
+            err.contains("unknown flag"),
+            "expected unknown flag error, got: {err}"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -365,6 +376,17 @@ mod search {
             json.as_array().unwrap().len(),
             0,
             "metadata-only search should not match page content"
+        );
+    }
+
+    #[test]
+    fn unknown_flag_exits_nonzero() {
+        let out = run(&["search", "--badarg", &fixtures_path_str()]);
+        assert!(!out.status.success());
+        let err = stderr(&out);
+        assert!(
+            err.contains("unknown flag"),
+            "expected unknown flag error, got: {err}"
         );
     }
 }
@@ -557,6 +579,17 @@ mod show {
         assert!(!out.status.success());
         let err = stderr(&out);
         assert!(err.contains("ambiguous"));
+    }
+
+    #[test]
+    fn unknown_flag_exits_nonzero() {
+        let out = run(&["show", "--badarg", &fixtures_path_str()]);
+        assert!(!out.status.success());
+        let err = stderr(&out);
+        assert!(
+            err.contains("unknown flag"),
+            "expected unknown flag error, got: {err}"
+        );
     }
 }
 

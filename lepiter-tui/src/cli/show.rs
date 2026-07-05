@@ -20,6 +20,10 @@ pub fn run_show(args: Vec<String>) -> Result<()> {
             "--by-title" => by_title = true,
             "--open-links" => open_links = true,
             "--json" => json = true,
+            _ if arg.starts_with('-') => {
+                eprintln!("unknown flag: {arg}");
+                std::process::exit(2);
+            }
             _ => positional.push(arg),
         }
     }

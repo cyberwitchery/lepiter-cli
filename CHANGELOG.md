@@ -33,6 +33,10 @@ all notable changes to this project are documented in this file.
 - `export`: slug deduplication now tracks globally assigned slugs, preventing
   cross-base collisions (e.g. pages "Alpha", "Alpha", "Alpha-2" no longer
   produce two files named `alpha-2.md`)
+- `search`, `list`, and `show` now reject unknown `--flags` with an error and a
+  non-zero exit, matching the other subcommands, instead of silently treating a
+  typo'd flag as the query or a positional path (e.g. `search --full-tekst fox`
+  no longer runs a search for the literal text `--full-tekst`)
 
 ### changed
 - `check --json` output now includes a top-level `"ok"` boolean so machine

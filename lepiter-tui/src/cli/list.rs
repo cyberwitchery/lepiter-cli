@@ -14,6 +14,10 @@ pub fn run_list(args: Vec<String>) -> Result<()> {
         match arg.as_str() {
             "--tsv" => tsv = true,
             "--json" => json = true,
+            _ if arg.starts_with('-') => {
+                eprintln!("unknown flag: {arg}");
+                std::process::exit(2);
+            }
             _ => positional.push(arg),
         }
     }

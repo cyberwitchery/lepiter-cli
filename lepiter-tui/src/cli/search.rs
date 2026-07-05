@@ -16,6 +16,10 @@ pub fn run_search(args: Vec<String>) -> Result<()> {
             "--full-text" => full_text = true,
             "--tsv" => tsv = true,
             "--json" => json = true,
+            _ if arg.starts_with('-') => {
+                eprintln!("unknown flag: {arg}");
+                std::process::exit(2);
+            }
             _ => positional.push(arg),
         }
     }

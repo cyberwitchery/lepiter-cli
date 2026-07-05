@@ -73,6 +73,15 @@ pub fn run_import(args: Vec<String>) -> Result<()> {
             continue;
         }
 
+        if !id_is_safe(&fm.id) {
+            eprintln!(
+                "warning: skipping {} (unsafe id would escape output directory: {})",
+                path.display(),
+                fm.id
+            );
+            continue;
+        }
+
         if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
             let slug_file = format!("{stem}.md");
             slug_to_id.insert(slug_file, fm.id.clone());
@@ -179,9 +188,21 @@ fn parse_frontmatter(content: &str) -> Option<Frontmatter> {
     })
 }
 
+/// Rejects frontmatter ids that would escape the output directory when joined as
+/// a filename. Real Lepiter ids are UUIDs, so this never rejects legitimate input.
+fn id_is_safe(id: &str) -> bool {
+    !id.contains('/')
+        && !id.contains('\\')
+        && !id.contains("..")
+        && !PathBuf::from(id).is_absolute()
+}
+
 fn parse_yaml_string(s: &str) -> String {
     let s = s.trim();
-    if (s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')) {
+    // the len check keeps a lone quote (start == end) from slicing `1..0` and panicking
+    if s.len() >= 2
+        && ((s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')))
+    {
         let inner = &s[1..s.len() - 1];
         inner.replace("\\\"", "\"").replace("\\\\", "\\")
     } else {
@@ -618,6 +639,85 @@ mod tests {
         let fm = parse_frontmatter(content).unwrap();
         assert_eq!(fm.title, "BOM");
         assert_eq!(fm.id, "bom-1");
+    }
+
+    #[test]
+    fn parse_yaml_string_lone_quote_does_not_panic() {
+        // a value that is a single quote char used to slice `1..0` and panic
+        assert_eq!(parse_yaml_string("\""), "\"");
+        assert_eq!(parse_yaml_string("'"), "'");
+        // normal quoting still works
+        assert_eq!(parse_yaml_string("\"\""), "");
+        assert_eq!(parse_yaml_string("\"hello\""), "hello");
+        assert_eq!(parse_yaml_string("'hello'"), "hello");
+        assert_eq!(parse_yaml_string("plain"), "plain");
+    }
+
+    #[test]
+    fn parse_yaml_tags_lone_quote_does_not_panic() {
+        // `tags: ["]` — the bracket-stripped inner is a lone quote
+        assert_eq!(parse_yaml_tags("[\"]"), vec!["\""]);
+    }
+
+    #[test]
+    fn parse_frontmatter_lone_quote_title_does_not_panic() {
+        // a whole import run used to abort on a single stray quote in any file
+        let content = "---\ntitle: \"\nid: lone-1\n---\n\nbody\n";
+        let fm = parse_frontmatter(content).unwrap();
+        assert_eq!(fm.title, "\"");
+        assert_eq!(fm.id, "lone-1");
+    }
+
+    #[test]
+    fn id_is_safe_rejects_traversal_and_absolute() {
+        // real UUID-style ids pass
+        assert!(id_is_safe("550e8400-e29b-41d4-a716-446655440000"));
+        assert!(id_is_safe("simple-id-123"));
+        // path-escaping ids are rejected
+        assert!(!id_is_safe("../../tmp/evil"));
+        assert!(!id_is_safe("/tmp/evil"));
+        assert!(!id_is_safe("foo/bar"));
+        assert!(!id_is_safe("foo\\bar"));
+        assert!(!id_is_safe(".."));
+    }
+
+    #[test]
+    fn import_skips_traversal_id_without_writing_outside_kb() {
+        let dir = std::env::temp_dir().join(format!(
+            "lepiter-import-traversal-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let input_dir = dir.join("input");
+        let out_dir = dir.join("output");
+        std::fs::create_dir_all(&input_dir).unwrap();
+
+        // `id: ../escaped` would resolve to `<dir>/escaped.lepiter`, outside kb
+        std::fs::write(
+            input_dir.join("evil.md"),
+            "---\ntitle: \"Evil\"\nid: ../escaped\n---\n\nbody\n",
+        )
+        .unwrap();
+        // a well-formed sibling confirms the run continues after skipping
+        std::fs::write(
+            input_dir.join("good.md"),
+            "---\ntitle: \"Good\"\nid: good-id\n---\n\nbody\n",
+        )
+        .unwrap();
+
+        run_import(vec![
+            input_dir.to_str().unwrap().to_string(),
+            out_dir.to_str().unwrap().to_string(),
+        ])
+        .unwrap();
+
+        assert!(!dir.join("escaped.lepiter").exists());
+        assert!(!out_dir.join("../escaped.lepiter").exists());
+        assert!(out_dir.join("good-id.lepiter").exists());
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

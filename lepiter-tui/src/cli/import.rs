@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 
@@ -44,6 +44,7 @@ pub fn run_import(args: Vec<String>) -> Result<()> {
     // collect all .md files and parse their frontmatter to build a slug→id map
     let mut md_files: Vec<(PathBuf, String)> = Vec::new();
     let mut slug_to_id: HashMap<String, String> = HashMap::new();
+    let mut claimed_ids: HashSet<String> = HashSet::new();
 
     let mut entries: Vec<_> = fs::read_dir(&input_dir)
         .with_context(|| format!("failed to read directory {}", input_dir.display()))?
@@ -69,6 +70,26 @@ pub fn run_import(args: Vec<String>) -> Result<()> {
             eprintln!(
                 "warning: skipping {} (no id in frontmatter)",
                 path.display()
+            );
+            continue;
+        }
+
+        if !id_is_safe(&fm.id) {
+            eprintln!(
+                "warning: skipping {} (unsafe id would escape output directory: {})",
+                path.display(),
+                fm.id
+            );
+            continue;
+        }
+
+        // first-seen id wins; entries are sorted by filename, so the survivor is
+        // deterministic rather than dependent on directory iteration order.
+        if !claimed_ids.insert(fm.id.clone()) {
+            eprintln!(
+                "warning: skipping {} (duplicate id already used by an earlier file: {})",
+                path.display(),
+                fm.id
             );
             continue;
         }
@@ -179,9 +200,21 @@ fn parse_frontmatter(content: &str) -> Option<Frontmatter> {
     })
 }
 
+/// Rejects frontmatter ids that would escape the output directory when joined as
+/// a filename. Real Lepiter ids are UUIDs, so this never rejects legitimate input.
+fn id_is_safe(id: &str) -> bool {
+    !id.contains('/')
+        && !id.contains('\\')
+        && !id.contains("..")
+        && !PathBuf::from(id).is_absolute()
+}
+
 fn parse_yaml_string(s: &str) -> String {
     let s = s.trim();
-    if (s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')) {
+    // the len check keeps a lone quote (start == end) from slicing `1..0` and panicking
+    if s.len() >= 2
+        && ((s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')))
+    {
         let inner = &s[1..s.len() - 1];
         inner.replace("\\\"", "\"").replace("\\\\", "\\")
     } else {
@@ -618,6 +651,148 @@ mod tests {
         let fm = parse_frontmatter(content).unwrap();
         assert_eq!(fm.title, "BOM");
         assert_eq!(fm.id, "bom-1");
+    }
+
+    #[test]
+    fn parse_yaml_string_lone_quote_does_not_panic() {
+        // a value that is a single quote char used to slice `1..0` and panic
+        assert_eq!(parse_yaml_string("\""), "\"");
+        assert_eq!(parse_yaml_string("'"), "'");
+        // normal quoting still works
+        assert_eq!(parse_yaml_string("\"\""), "");
+        assert_eq!(parse_yaml_string("\"hello\""), "hello");
+        assert_eq!(parse_yaml_string("'hello'"), "hello");
+        assert_eq!(parse_yaml_string("plain"), "plain");
+    }
+
+    #[test]
+    fn parse_yaml_tags_lone_quote_does_not_panic() {
+        // `tags: ["]` — the bracket-stripped inner is a lone quote
+        assert_eq!(parse_yaml_tags("[\"]"), vec!["\""]);
+    }
+
+    #[test]
+    fn parse_frontmatter_lone_quote_title_does_not_panic() {
+        // a whole import run used to abort on a single stray quote in any file
+        let content = "---\ntitle: \"\nid: lone-1\n---\n\nbody\n";
+        let fm = parse_frontmatter(content).unwrap();
+        assert_eq!(fm.title, "\"");
+        assert_eq!(fm.id, "lone-1");
+    }
+
+    #[test]
+    fn id_is_safe_rejects_traversal_and_absolute() {
+        // real UUID-style ids pass
+        assert!(id_is_safe("550e8400-e29b-41d4-a716-446655440000"));
+        assert!(id_is_safe("simple-id-123"));
+        // path-escaping ids are rejected
+        assert!(!id_is_safe("../../tmp/evil"));
+        assert!(!id_is_safe("/tmp/evil"));
+        assert!(!id_is_safe("foo/bar"));
+        assert!(!id_is_safe("foo\\bar"));
+        assert!(!id_is_safe(".."));
+    }
+
+    #[test]
+    fn import_skips_traversal_id_without_writing_outside_kb() {
+        let dir = std::env::temp_dir().join(format!(
+            "lepiter-import-traversal-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let input_dir = dir.join("input");
+        let out_dir = dir.join("output");
+        std::fs::create_dir_all(&input_dir).unwrap();
+
+        // `id: ../escaped` would resolve to `<dir>/escaped.lepiter`, outside kb
+        std::fs::write(
+            input_dir.join("evil.md"),
+            "---\ntitle: \"Evil\"\nid: ../escaped\n---\n\nbody\n",
+        )
+        .unwrap();
+        // a well-formed sibling confirms the run continues after skipping
+        std::fs::write(
+            input_dir.join("good.md"),
+            "---\ntitle: \"Good\"\nid: good-id\n---\n\nbody\n",
+        )
+        .unwrap();
+
+        run_import(vec![
+            input_dir.to_str().unwrap().to_string(),
+            out_dir.to_str().unwrap().to_string(),
+        ])
+        .unwrap();
+
+        assert!(!dir.join("escaped.lepiter").exists());
+        assert!(!out_dir.join("../escaped.lepiter").exists());
+        assert!(out_dir.join("good-id.lepiter").exists());
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn import_skips_duplicate_id_keeping_first_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "lepiter-import-dup-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let input_dir = dir.join("input");
+        let out_dir = dir.join("output");
+        std::fs::create_dir_all(&input_dir).unwrap();
+
+        // two files share `id: shared`; the alphabetically-first filename wins
+        std::fs::write(
+            input_dir.join("a-first.md"),
+            "---\ntitle: \"First\"\nid: shared\n---\n\nfirst body\n",
+        )
+        .unwrap();
+        std::fs::write(
+            input_dir.join("b-second.md"),
+            "---\ntitle: \"Second\"\nid: shared\n---\n\nsecond body\n",
+        )
+        .unwrap();
+        // a sibling with a distinct id must still import
+        std::fs::write(
+            input_dir.join("c-sibling.md"),
+            "---\ntitle: \"Sibling\"\nid: sibling\n---\n\nsibling body\n",
+        )
+        .unwrap();
+
+        run_import(vec![
+            input_dir.to_str().unwrap().to_string(),
+            out_dir.to_str().unwrap().to_string(),
+        ])
+        .unwrap();
+
+        // exactly one output for the shared id, and it is the first file's content
+        let shared_path = out_dir.join("shared.lepiter");
+        assert!(shared_path.exists());
+        let shared: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&shared_path).unwrap()).unwrap();
+        assert_eq!(shared["pageType"]["title"], "First");
+
+        // the sibling still imports
+        assert!(out_dir.join("sibling.lepiter").exists());
+
+        // only two files total: the survivor and the sibling
+        let count = std::fs::read_dir(&out_dir)
+            .unwrap()
+            .filter(|e| {
+                e.as_ref()
+                    .unwrap()
+                    .path()
+                    .extension()
+                    .is_some_and(|ext| ext == "lepiter")
+            })
+            .count();
+        assert_eq!(count, 2);
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

@@ -19,6 +19,14 @@ all notable changes to this project are documented in this file.
   to relative `.md` paths; unresolvable links are left as-is
 
 ### fixed
+- `import`: a stray single quote in a file's yaml frontmatter no longer crashes
+  the entire import run; the offending value is now read literally
+- `import`: a frontmatter `id` containing `/`, `\`, or `..`, or an absolute
+  path, is now rejected (with a warning) instead of writing the page outside the
+  target knowledge base directory
+- `import`: two input files sharing the same frontmatter `id` no longer silently
+  overwrite each other; the first file (by filename order) is kept and the
+  duplicate is skipped with a warning
 - `import`: `bash`/`sh`/`shell` code fences are no longer upgraded to
   `shellCommandSnippet` — only the native `shellcommand` fence maps to that
   type. standard shell fences now correctly round-trip as `textSnippet`

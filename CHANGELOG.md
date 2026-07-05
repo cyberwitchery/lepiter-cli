@@ -2,7 +2,7 @@
 
 all notable changes to this project are documented in this file.
 
-## Unreleased
+## 0.9.0 - 2026-07-05
 
 ### added
 - `import` subcommand: converts exported markdown files (with yaml frontmatter)

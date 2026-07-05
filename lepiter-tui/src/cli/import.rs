@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 
@@ -44,6 +44,7 @@ pub fn run_import(args: Vec<String>) -> Result<()> {
     // collect all .md files and parse their frontmatter to build a slug→id map
     let mut md_files: Vec<(PathBuf, String)> = Vec::new();
     let mut slug_to_id: HashMap<String, String> = HashMap::new();
+    let mut claimed_ids: HashSet<String> = HashSet::new();
 
     let mut entries: Vec<_> = fs::read_dir(&input_dir)
         .with_context(|| format!("failed to read directory {}", input_dir.display()))?
@@ -76,6 +77,17 @@ pub fn run_import(args: Vec<String>) -> Result<()> {
         if !id_is_safe(&fm.id) {
             eprintln!(
                 "warning: skipping {} (unsafe id would escape output directory: {})",
+                path.display(),
+                fm.id
+            );
+            continue;
+        }
+
+        // first-seen id wins; entries are sorted by filename, so the survivor is
+        // deterministic rather than dependent on directory iteration order.
+        if !claimed_ids.insert(fm.id.clone()) {
+            eprintln!(
+                "warning: skipping {} (duplicate id already used by an earlier file: {})",
                 path.display(),
                 fm.id
             );
@@ -716,6 +728,69 @@ mod tests {
         assert!(!dir.join("escaped.lepiter").exists());
         assert!(!out_dir.join("../escaped.lepiter").exists());
         assert!(out_dir.join("good-id.lepiter").exists());
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn import_skips_duplicate_id_keeping_first_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "lepiter-import-dup-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let input_dir = dir.join("input");
+        let out_dir = dir.join("output");
+        std::fs::create_dir_all(&input_dir).unwrap();
+
+        // two files share `id: shared`; the alphabetically-first filename wins
+        std::fs::write(
+            input_dir.join("a-first.md"),
+            "---\ntitle: \"First\"\nid: shared\n---\n\nfirst body\n",
+        )
+        .unwrap();
+        std::fs::write(
+            input_dir.join("b-second.md"),
+            "---\ntitle: \"Second\"\nid: shared\n---\n\nsecond body\n",
+        )
+        .unwrap();
+        // a sibling with a distinct id must still import
+        std::fs::write(
+            input_dir.join("c-sibling.md"),
+            "---\ntitle: \"Sibling\"\nid: sibling\n---\n\nsibling body\n",
+        )
+        .unwrap();
+
+        run_import(vec![
+            input_dir.to_str().unwrap().to_string(),
+            out_dir.to_str().unwrap().to_string(),
+        ])
+        .unwrap();
+
+        // exactly one output for the shared id, and it is the first file's content
+        let shared_path = out_dir.join("shared.lepiter");
+        assert!(shared_path.exists());
+        let shared: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&shared_path).unwrap()).unwrap();
+        assert_eq!(shared["pageType"]["title"], "First");
+
+        // the sibling still imports
+        assert!(out_dir.join("sibling.lepiter").exists());
+
+        // only two files total: the survivor and the sibling
+        let count = std::fs::read_dir(&out_dir)
+            .unwrap()
+            .filter(|e| {
+                e.as_ref()
+                    .unwrap()
+                    .path()
+                    .extension()
+                    .is_some_and(|ext| ext == "lepiter")
+            })
+            .count();
+        assert_eq!(count, 2);
 
         std::fs::remove_dir_all(&dir).unwrap();
     }

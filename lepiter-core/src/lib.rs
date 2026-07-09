@@ -54,7 +54,8 @@ pub use model::{
     ResolvedAttachment, SearchHit, SearchMatchKind, TitleResolution,
 };
 pub use parse::{
-    collect_node_types_in_file, extract_type, is_code_snippet, parse_heading, parse_node_from_raw,
+    collect_node_types_in_file, extract_type, is_code_snippet, language_to_snippet_type,
+    parse_heading, parse_node_from_raw,
 };
 pub use render::{
     normalize_text, page_content_contains, render_nodes_to_text, render_nodes_to_text_with,

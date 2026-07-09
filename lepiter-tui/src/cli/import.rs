@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use chrono::DateTime;
-use lepiter_core::{LinkKind, rewrite_inline_links};
+use lepiter_core::{LinkKind, language_to_snippet_type, rewrite_inline_links};
 use serde_json::json;
 
 pub fn run_import(args: Vec<String>) -> Result<()> {
@@ -498,19 +498,13 @@ fn rewrite_links_to_internal(text: &str, slug_to_id: &HashMap<String, String>) -
 }
 
 fn snippet_type_for_language(lang: &str) -> &str {
-    match lang {
-        "pharo" => "pharoSnippet",
-        "python" => "pythonSnippet",
-        "javascript" => "javascriptSnippet",
-        "json" => "jsonSnippet",
-        "yaml" => "yamlSnippet",
-        "shellcommand" => "shellCommandSnippet",
-        "gemstone" => "gemstoneSnippet",
-        "example" => "exampleSnippet",
-        "changes" => "changesSnippet",
-        "element" => "elementSnippet",
-        _ => "textSnippet",
+    // elementSnippet renders as an `element` fence through its own parse path
+    // (it is not a code snippet), so map it back explicitly to keep it
+    // round-tripping. every other code language comes from the shared table.
+    if lang == "element" {
+        return "elementSnippet";
     }
+    language_to_snippet_type(lang).unwrap_or("textSnippet")
 }
 
 fn build_code_snippet_json(language: &Option<String>, code: &str) -> serde_json::Value {
@@ -1108,6 +1102,13 @@ mod tests {
             snippet_type_for_language("shellcommand"),
             "shellCommandSnippet"
         );
+        // regression: this arm was missing and degraded the snippet to text.
+        assert_eq!(
+            snippet_type_for_language("robocodermetamodel"),
+            "robocoderMetamodelSnippet"
+        );
+        // elementSnippet round-trips through the `element` fence.
+        assert_eq!(snippet_type_for_language("element"), "elementSnippet");
         assert_eq!(snippet_type_for_language("unknown"), "textSnippet");
     }
 
@@ -1163,6 +1164,27 @@ mod tests {
         let items = json["children"]["items"].as_array().unwrap();
         assert_eq!(items[0]["__type"], "textSnippet");
         assert_eq!(items[0]["string"], "```bash\necho hello\n```");
+    }
+
+    #[test]
+    fn robocoder_metamodel_fence_roundtrips_to_its_snippet_type() {
+        // regression: a `robocoderMetamodelSnippet` exports as a
+        // `robocodermetamodel` fence and used to re-import as a plain
+        // textSnippet, silently losing its type.
+        let slug_map = HashMap::new();
+        let input = "```robocodermetamodel\nMetamodel new\n```\n\n";
+        let snippets = parse_markdown_body(input, &slug_map);
+        assert_eq!(snippets.len(), 1);
+        let fm = Frontmatter {
+            title: "Robocoder".to_string(),
+            id: "robo-1".to_string(),
+            tags: Vec::new(),
+            updated_at: None,
+        };
+        let json = build_page_json(&fm, &snippets);
+        let items = json["children"]["items"].as_array().unwrap();
+        assert_eq!(items[0]["__type"], "robocoderMetamodelSnippet");
+        assert_eq!(items[0]["code"], "Metamodel new");
     }
 
     #[test]

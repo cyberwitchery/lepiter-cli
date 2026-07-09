@@ -449,21 +449,27 @@ pub fn extract_type(item: &Value) -> Option<&str> {
         .or_else(|| item.get("__type").and_then(Value::as_str))
 }
 
+/// Canonical snippet `__type` ↔ code-fence language mapping. Single source of
+/// truth behind [`is_code_snippet`], [`infer_language`], and
+/// [`language_to_snippet_type`]; each language equals what `infer_language`
+/// derives for the type, so export→import round-trips. Languages must stay
+/// unique so the reverse lookup is unambiguous.
+const CODE_SNIPPET_LANGUAGES: &[(&str, &str)] = &[
+    ("pharoSnippet", "pharo"),
+    ("pythonSnippet", "python"),
+    ("javascriptSnippet", "javascript"),
+    ("jsonSnippet", "json"),
+    ("yamlSnippet", "yaml"),
+    ("shellCommandSnippet", "shellcommand"),
+    ("gemstoneSnippet", "gemstone"),
+    ("exampleSnippet", "example"),
+    ("changesSnippet", "changes"),
+    ("robocoderMetamodelSnippet", "robocodermetamodel"),
+];
+
 /// Returns `true` if the given snippet type name is a code snippet.
 pub fn is_code_snippet(typ: &str) -> bool {
-    matches!(
-        typ,
-        "pharoSnippet"
-            | "pythonSnippet"
-            | "javascriptSnippet"
-            | "jsonSnippet"
-            | "yamlSnippet"
-            | "shellCommandSnippet"
-            | "gemstoneSnippet"
-            | "exampleSnippet"
-            | "changesSnippet"
-            | "robocoderMetamodelSnippet"
-    )
+    CODE_SNIPPET_LANGUAGES.iter().any(|(t, _)| *t == typ)
 }
 
 fn extract_text(item: &Value) -> Option<String> {
@@ -511,20 +517,25 @@ fn has_link(item: &Value) -> bool {
 
 fn infer_language(typ: Option<&str>) -> Option<String> {
     let typ = typ?;
-    match typ {
-        "pharoSnippet" => Some("pharo".to_string()),
-        "pythonSnippet" => Some("python".to_string()),
-        "javascriptSnippet" => Some("javascript".to_string()),
-        "jsonSnippet" => Some("json".to_string()),
-        "yamlSnippet" => Some("yaml".to_string()),
-        _ => {
-            if typ.ends_with("Snippet") {
-                Some(typ.trim_end_matches("Snippet").to_lowercase())
-            } else {
-                None
-            }
-        }
+    if let Some((_, lang)) = CODE_SNIPPET_LANGUAGES.iter().find(|(t, _)| *t == typ) {
+        return Some((*lang).to_string());
     }
+    // unknown `*Snippet` types fall back to a lowercased, de-suffixed name.
+    if typ.ends_with("Snippet") {
+        Some(typ.trim_end_matches("Snippet").to_lowercase())
+    } else {
+        None
+    }
+}
+
+/// Maps a code-fence language back to its snippet `__type`, inverting
+/// [`infer_language`] over the canonical table. Returns `None` when no code
+/// snippet type produces that language.
+pub fn language_to_snippet_type(lang: &str) -> Option<&'static str> {
+    CODE_SNIPPET_LANGUAGES
+        .iter()
+        .find(|(_, l)| *l == lang)
+        .map(|(t, _)| *t)
 }
 
 /// Collects all observed `type`/`__type` values and their counts in one page file.
@@ -664,6 +675,28 @@ mod tests {
             Some("custom".to_string())
         );
         assert_eq!(infer_language(None), None);
+    }
+
+    #[test]
+    fn code_snippet_table_round_trips() {
+        for &(typ, lang) in CODE_SNIPPET_LANGUAGES {
+            assert!(is_code_snippet(typ), "{typ} should be a code snippet");
+            assert_eq!(
+                infer_language(Some(typ)).as_deref(),
+                Some(lang),
+                "{typ} infers wrong language"
+            );
+            assert_eq!(
+                language_to_snippet_type(lang),
+                Some(typ),
+                "{lang} maps back to wrong type"
+            );
+        }
+        // unknown `*Snippet` types still infer via the strip-suffix fallback.
+        assert_eq!(infer_language(Some("fooSnippet")).as_deref(), Some("foo"));
+        assert_eq!(language_to_snippet_type("foo"), None);
+        // a non-code type is not a code snippet.
+        assert!(!is_code_snippet("textSnippet"));
     }
 
     #[test]

@@ -1206,3 +1206,89 @@ mod help {
         assert!(err.contains("unknown subcommand"));
     }
 }
+
+// ---------------------------------------------------------------------------
+// export -> import round-trip
+// ---------------------------------------------------------------------------
+
+mod import_export {
+    use super::*;
+
+    fn unique_temp(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "lepiter-cli-{tag}-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
+    // exporting a code snippet to markdown and importing it back must preserve
+    // its `__type`. the robocoderMetamodelSnippet arm used to be missing from
+    // the reverse map, so this round-trip silently downgraded it to a plain
+    // textSnippet.
+    #[test]
+    fn export_then_import_preserves_code_snippet_type() {
+        let root = unique_temp("roundtrip");
+        let src_kb = root.join("src");
+        let exported = root.join("exported");
+        let dst_kb = root.join("dst");
+        std::fs::create_dir_all(&src_kb).unwrap();
+
+        let page = serde_json::json!({
+            "uid": { "uuid": "robo-page" },
+            "pageType": { "title": "Robo Page" },
+            "children": { "items": [
+                { "__type": "robocoderMetamodelSnippet", "code": "Metamodel new build" }
+            ] }
+        });
+        std::fs::write(
+            src_kb.join("robo-page.lepiter"),
+            serde_json::to_vec(&page).unwrap(),
+        )
+        .unwrap();
+
+        let export_out = run(&[
+            "export",
+            exported.to_str().unwrap(),
+            src_kb.to_str().unwrap(),
+        ]);
+        assert!(
+            export_out.status.success(),
+            "export failed: {}",
+            stderr(&export_out)
+        );
+
+        let import_out = run(&[
+            "import",
+            exported.to_str().unwrap(),
+            dst_kb.to_str().unwrap(),
+        ]);
+        assert!(
+            import_out.status.success(),
+            "import failed: {}",
+            stderr(&import_out)
+        );
+
+        let pages: Vec<_> = std::fs::read_dir(&dst_kb)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|x| x == "lepiter"))
+            .collect();
+        assert_eq!(pages.len(), 1, "expected exactly one imported page");
+
+        let imported: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dst_kb.join("robo-page.lepiter")).unwrap(),
+        )
+        .unwrap();
+        let items = imported["children"]["items"].as_array().unwrap();
+        let snippet = items
+            .iter()
+            .find(|i| i["__type"] == "robocoderMetamodelSnippet")
+            .expect("robocoderMetamodelSnippet must survive the round-trip");
+        assert_eq!(snippet["code"], "Metamodel new build");
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+}

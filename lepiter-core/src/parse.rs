@@ -529,7 +529,7 @@ fn infer_language(typ: Option<&str>) -> Option<String> {
 }
 
 /// Maps a code-fence language back to its snippet `__type`, inverting
-/// [`infer_language`] over the canonical table. Returns `None` when no code
+/// `infer_language` over the canonical table. Returns `None` when no code
 /// snippet type produces that language.
 pub fn language_to_snippet_type(lang: &str) -> Option<&'static str> {
     CODE_SNIPPET_LANGUAGES

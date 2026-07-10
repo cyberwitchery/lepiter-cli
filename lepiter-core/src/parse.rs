@@ -231,7 +231,12 @@ fn parse_list_node(item: &Value) -> Node {
         .and_then(Value::as_array)
     {
         for child in children {
-            items.push(vec![parse_node(child)]);
+            // Promote each item's own children (sub-bullets / continuation
+            // blocks) the same way page-level parsing does, instead of keeping
+            // only the item's first line.
+            let mut item_nodes = Vec::new();
+            parse_item_recursive(child, &mut item_nodes);
+            items.push(item_nodes);
         }
     }
     Node::List { items }
@@ -711,6 +716,106 @@ mod tests {
         let mut out = Vec::new();
         parse_item_recursive(&root, &mut out);
         assert_eq!(out.len(), 2);
+    }
+
+    #[test]
+    fn parse_list_node_promotes_nested_item_children() {
+        // A list whose single item (a textSnippet) has its own sub-bullet child.
+        // The nested child must survive parsing instead of being dropped.
+        let list = json!({
+            "__type": "listSnippet",
+            "children": {"items": [
+                {
+                    "__type": "textSnippet",
+                    "string": "parent bullet",
+                    "children": {"items": [
+                        {"__type": "textSnippet", "string": "nested bullet"}
+                    ]}
+                }
+            ]}
+        });
+        match parse_node(&list) {
+            Node::List { items } => {
+                assert_eq!(items.len(), 1, "one top-level item expected");
+                let item = &items[0];
+                assert!(
+                    item.len() > 1,
+                    "nested child dropped: item holds {} node(s)",
+                    item.len()
+                );
+                assert!(matches!(&item[0], Node::Paragraph { text } if text == "parent bullet"));
+                assert!(
+                    item[1..]
+                        .iter()
+                        .any(|n| matches!(n, Node::Paragraph { text } if text == "nested bullet")),
+                    "nested bullet content missing from item"
+                );
+            }
+            other => panic!("expected list, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_list_node_flat_items_unchanged() {
+        // A flat list (childless text snippets) must still parse to exactly one
+        // node per item — the nested-children fix is strictly additive.
+        let list = json!({
+            "__type": "listSnippet",
+            "children": {"items": [
+                {"__type": "textSnippet", "string": "first"},
+                {"__type": "textSnippet", "string": "second"}
+            ]}
+        });
+        match parse_node(&list) {
+            Node::List { items } => {
+                assert_eq!(items.len(), 2);
+                assert_eq!(items[0].len(), 1, "flat item should hold a single node");
+                assert_eq!(items[1].len(), 1, "flat item should hold a single node");
+                assert!(matches!(&items[0][0], Node::Paragraph { text } if text == "first"));
+                assert!(matches!(&items[1][0], Node::Paragraph { text } if text == "second"));
+            }
+            other => panic!("expected list, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_list_node_composes_nested_list_child() {
+        // A bullet whose child is itself a listSnippet: the nested list must be
+        // promoted as its own Node::List with its items fully parsed, exercising
+        // the listSnippet early-return in parse_item_recursive.
+        let list = json!({
+            "__type": "listSnippet",
+            "children": {"items": [
+                {
+                    "__type": "textSnippet",
+                    "string": "outer",
+                    "children": {"items": [
+                        {
+                            "__type": "listSnippet",
+                            "children": {"items": [
+                                {"__type": "textSnippet", "string": "inner"}
+                            ]}
+                        }
+                    ]}
+                }
+            ]}
+        });
+        match parse_node(&list) {
+            Node::List { items } => {
+                assert_eq!(items.len(), 1);
+                let item = &items[0];
+                let nested = item
+                    .iter()
+                    .find_map(|n| match n {
+                        Node::List { items } => Some(items),
+                        _ => None,
+                    })
+                    .expect("nested list not promoted");
+                assert_eq!(nested.len(), 1);
+                assert!(matches!(&nested[0][0], Node::Paragraph { text } if text == "inner"));
+            }
+            other => panic!("expected list, got {other:?}"),
+        }
     }
 
     #[test]

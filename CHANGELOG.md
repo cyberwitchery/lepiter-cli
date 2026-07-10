@@ -7,6 +7,9 @@ all notable changes to this project are documented in this file.
 ### fixed
 - `export`→`import` round-trip no longer silently converts some code snippets to
   plain text; all recognized code snippet types now round-trip losslessly
+- list items with sub-bullets or multiple content blocks are no longer truncated
+  to their first line when a page is parsed; the nested content now appears in
+  rendered, searched, and exported output
 
 ## 0.9.0 - 2026-07-05
 

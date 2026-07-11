@@ -265,6 +265,29 @@ impl KnowledgeBaseIndex {
         }
     }
 
+    /// Resolves a page id from title using a case-insensitive *exact* match
+    /// only, never falling back to a substring like [`Self::resolve_page_id_by_title`].
+    /// Used for wikilink/`page:`/`title:` resolution, where a substring hit would
+    /// fabricate a graph edge and hide a genuinely broken link.
+    pub fn resolve_page_id_by_title_exact(&self, title: &str) -> TitleResolution {
+        let needle = title.trim().to_lowercase();
+        if needle.is_empty() {
+            return TitleResolution::NotFound;
+        }
+
+        let exact = self
+            .sorted_pages()
+            .iter()
+            .filter(|m| m.title_lower == needle)
+            .map(|m| m.id.clone())
+            .collect::<Vec<_>>();
+        match exact.len() {
+            1 => TitleResolution::Unique(exact[0].clone()),
+            0 => TitleResolution::NotFound,
+            _ => TitleResolution::Ambiguous(exact),
+        }
+    }
+
     /// Classifies a raw link target for navigation/open behavior.
     pub fn classify_link_target(&self, raw: &str) -> LinkTargetKind {
         let target = raw.trim();
@@ -281,12 +304,12 @@ impl KnowledgeBaseIndex {
             if self.pages.contains_key(id) {
                 return LinkTargetKind::InternalPage(id.to_string());
             }
-            if let TitleResolution::Unique(resolved) = self.resolve_page_id_by_title(id) {
+            if let TitleResolution::Unique(resolved) = self.resolve_page_id_by_title_exact(id) {
                 return LinkTargetKind::InternalPage(resolved);
             }
         }
         if let Some(rest) = target.strip_prefix("title:") {
-            return match self.resolve_page_id_by_title(rest.trim()) {
+            return match self.resolve_page_id_by_title_exact(rest.trim()) {
                 TitleResolution::Unique(id) => LinkTargetKind::InternalPage(id),
                 _ => LinkTargetKind::Unknown(target.to_string()),
             };
@@ -306,7 +329,7 @@ impl KnowledgeBaseIndex {
             return LinkTargetKind::AttachmentPath(path);
         }
 
-        match self.resolve_page_id_by_title(target) {
+        match self.resolve_page_id_by_title_exact(target) {
             TitleResolution::Unique(id) => LinkTargetKind::InternalPage(id),
             _ => LinkTargetKind::Unknown(target.to_string()),
         }
@@ -802,6 +825,36 @@ mod tests {
             index.resolve_page_id_by_title("zzz"),
             TitleResolution::NotFound
         );
+
+        // The exact resolver agrees on a genuine exact match (case-insensitive)...
+        assert_eq!(
+            index.resolve_page_id_by_title_exact("ALPHA"),
+            TitleResolution::Unique("id-1".to_string())
+        );
+        // ...but never falls back to a substring: "alp" and "alpha" (a prefix of
+        // "alphabet") both resolve to nothing rather than a fabricated match.
+        assert_eq!(
+            index.resolve_page_id_by_title_exact("alp"),
+            TitleResolution::NotFound
+        );
+        assert_eq!(
+            index.resolve_page_id_by_title_exact("alpha"),
+            TitleResolution::Unique("id-1".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_page_id_by_title_exact_reports_duplicate_titles_as_ambiguous() {
+        let (dir, index) = make_kb_on_disk(&[
+            ("p1", "Rust", &[], "one"),
+            ("p2", "Rust", &[], "two"),
+            ("p3", "Rust Programming", &[], "three"),
+        ]);
+        assert!(matches!(
+            index.resolve_page_id_by_title_exact("Rust"),
+            TitleResolution::Ambiguous(ids) if ids.len() == 2
+        ));
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -2058,6 +2111,26 @@ mod tests {
         assert_eq!(result.edges[0].target, "p2");
         assert_eq!(result.broken_links.len(), 1);
         assert_eq!(result.broken_links[0].target, "page:nonexistent");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn scan_all_pages_wikilink_requires_exact_title_not_substring() {
+        let (dir, index) = make_kb_on_disk(&[
+            ("p1", "Guide", &[], "see [[Rust]]"),
+            ("p2", "Rust Programming", &[], "nothing"),
+        ]);
+        let result = index.scan_all_pages();
+        // `[[Rust]]` has no exact-title match, so it must not silently bind to
+        // the substring page "Rust Programming": no edge, one broken link.
+        assert!(
+            result.edges.is_empty(),
+            "substring title match fabricated a graph edge: {:?}",
+            result.edges
+        );
+        assert_eq!(result.broken_links.len(), 1);
+        assert_eq!(result.broken_links[0].source_id, "p1");
+        assert_eq!(result.broken_links[0].target, "Rust");
         fs::remove_dir_all(&dir).unwrap();
     }
 

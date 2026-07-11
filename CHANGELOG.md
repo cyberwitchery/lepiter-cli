@@ -5,6 +5,13 @@ all notable changes to this project are documented in this file.
 ## Unreleased
 
 ### fixed
+- `[[Title]]` wikilinks and `page:`/`title:` links now require an exact title
+  match instead of silently binding to a substring, so `[[Rust]]` no longer
+  resolves to a page titled "Rust Programming". this stops `check` from hiding
+  a genuinely broken link behind a fabricated graph edge, prevents wrong
+  backlinks and TUI navigation, and keeps incorrect links out of exported
+  markdown. the interactive `show <title>` and `links --for <title>` lookups
+  keep their convenient substring matching
 - `export`→`import` round-trip no longer silently converts some code snippets to
   plain text; all recognized code snippet types now round-trip losslessly
 - list items with sub-bullets or multiple content blocks are no longer truncated

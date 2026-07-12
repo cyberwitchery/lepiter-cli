@@ -17,6 +17,11 @@ all notable changes to this project are documented in this file.
 - list items with sub-bullets or multiple content blocks are no longer truncated
   to their first line when a page is parsed; the nested content now appears in
   rendered, searched, and exported output
+- code snippets are now highlighted with language-aware comment and string
+  rules. pharo and gemstone `"…"` comments render as comments instead of green
+  string literals (and an apostrophe inside such a comment no longer mis-colours
+  the rest of the line), shell-command snippets recognise `#` comments, and
+  `/* … */` block comments are highlighted
 
 ## 0.9.0 - 2026-07-05
 

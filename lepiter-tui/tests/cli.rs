@@ -251,6 +251,25 @@ mod list {
 }
 
 // ---------------------------------------------------------------------------
+// ids subcommand
+// ---------------------------------------------------------------------------
+
+mod ids {
+    use super::*;
+
+    #[test]
+    fn unknown_flag_exits_nonzero() {
+        let out = run(&["ids", "--badarg", &fixtures_path_str()]);
+        assert!(!out.status.success());
+        let err = stderr(&out);
+        assert!(
+            err.contains("unknown flag"),
+            "expected unknown flag error, got: {err}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // search subcommand
 // ---------------------------------------------------------------------------
 
@@ -1204,6 +1223,44 @@ mod help {
         assert!(!out.status.success());
         let err = stderr(&out);
         assert!(err.contains("unknown subcommand"));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// export subcommand
+// ---------------------------------------------------------------------------
+
+mod export {
+    use super::*;
+
+    #[test]
+    fn unknown_flag_exits_nonzero() {
+        let out = run(&["export", "--badarg", &fixtures_path_str()]);
+        assert!(!out.status.success());
+        let err = stderr(&out);
+        assert!(
+            err.contains("unknown flag"),
+            "expected unknown flag error, got: {err}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// import subcommand
+// ---------------------------------------------------------------------------
+
+mod import {
+    use super::*;
+
+    #[test]
+    fn unknown_flag_exits_nonzero() {
+        let out = run(&["import", "--badarg", &fixtures_path_str()]);
+        assert!(!out.status.success());
+        let err = stderr(&out);
+        assert!(
+            err.contains("unknown flag"),
+            "expected unknown flag error, got: {err}"
+        );
     }
 }
 

@@ -22,6 +22,11 @@ all notable changes to this project are documented in this file.
   string literals (and an apostrophe inside such a comment no longer mis-colours
   the rest of the line), shell-command snippets recognise `#` comments, and
   `/* … */` block comments are highlighted
+- the `ids`, `export`, and `import` subcommands now reject unknown `-`/`--`
+  flags with an `unknown flag` error, matching the other subcommands. previously
+  `export --typo out/` silently treated `--typo` as the output directory (and
+  could create one named `--typo`), and `ids --bogus` tried to open a knowledge
+  base literally named `--bogus`
 
 ## 0.9.0 - 2026-07-05
 

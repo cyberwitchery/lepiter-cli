@@ -21,6 +21,10 @@ pub fn run_export(args: Vec<String>) -> Result<()> {
                 );
                 return Ok(());
             }
+            _ if arg.starts_with('-') => {
+                eprintln!("unknown flag: {arg}");
+                std::process::exit(2);
+            }
             _ => positional.push(arg),
         }
     }

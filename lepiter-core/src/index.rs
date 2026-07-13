@@ -27,6 +27,11 @@ pub struct KnowledgeBaseIndex {
     pub pages: HashMap<PageId, PageMeta>,
     /// Page ids in case-insensitive title sort order, computed once at open time.
     pub sorted_ids: Vec<PageId>,
+    /// Exact-title lookup index: lowercased title -> page ids sharing that title.
+    /// Lets exact-title resolution run in O(1) instead of scanning every page,
+    /// which keeps backlink/graph builds off the O(N^2 * L) full-scan path.
+    /// Kept in sync with `pages` by [`Self::register_page`].
+    title_index: HashMap<String, Vec<PageId>>,
     /// Non-fatal issues encountered while scanning metadata.
     pub index_issues: Vec<ParseIssue>,
     /// Reverse link index: target page id -> sorted list of source page ids that link to it.
@@ -86,11 +91,13 @@ impl KnowledgeBase {
         }
 
         let sorted_ids = compute_sorted_ids(&pages);
+        let title_index = compute_title_index(&pages, &sorted_ids);
 
         Ok(KnowledgeBaseIndex {
             root,
             pages,
             sorted_ids,
+            title_index,
             index_issues: issues,
             backlinks: HashMap::new(),
             forward_links: HashMap::new(),
@@ -104,15 +111,43 @@ impl KnowledgeBaseIndex {
     /// entire list.  If the page already exists, its old sort position
     /// is removed first so re-registration never creates duplicates
     /// (and handles title changes correctly).
+    ///
+    /// The exact-title index is kept in sync as well: on a title change the
+    /// page id is moved from its stale title bucket to the new one, and
+    /// now-empty buckets are dropped.
     pub fn register_page(&mut self, meta: PageMeta) {
         let id = meta.id.clone();
-        if self.pages.contains_key(&id)
+        let new_title_lower = meta.title_lower.clone();
+        let old_title_lower = self.pages.get(&id).map(|m| m.title_lower.clone());
+
+        if old_title_lower.is_some()
             && let Some(pos) = self.sorted_ids.iter().position(|i| i == &id)
         {
             self.sorted_ids.remove(pos);
         }
         self.pages.insert(id.clone(), meta);
-        insert_sorted_by_title(&mut self.sorted_ids, &self.pages, id);
+        insert_sorted_by_title(&mut self.sorted_ids, &self.pages, id.clone());
+
+        if old_title_lower.as_deref() != Some(new_title_lower.as_str()) {
+            if let Some(old) = &old_title_lower {
+                self.remove_from_title_index(old, &id);
+            }
+            self.title_index
+                .entry(new_title_lower)
+                .or_default()
+                .push(id);
+        }
+    }
+
+    /// Removes `id` from the `title_lower` bucket of the exact-title index,
+    /// dropping the bucket entirely once it is empty.
+    fn remove_from_title_index(&mut self, title_lower: &str, id: &str) {
+        if let Some(bucket) = self.title_index.get_mut(title_lower) {
+            bucket.retain(|i| i != id);
+            if bucket.is_empty() {
+                self.title_index.remove(title_lower);
+            }
+        }
     }
 
     /// Loads and parses a single page by canonical id.
@@ -240,20 +275,12 @@ impl KnowledgeBaseIndex {
             return TitleResolution::NotFound;
         }
 
-        let sorted = self.sorted_pages();
-
-        let exact = sorted
-            .iter()
-            .filter(|m| m.title_lower == needle)
-            .map(|m| m.id.clone())
-            .collect::<Vec<_>>();
-        match exact.len() {
-            1 => return TitleResolution::Unique(exact[0].clone()),
-            n if n > 1 => return TitleResolution::Ambiguous(exact),
-            _ => {}
+        if let Some(exact) = self.resolve_exact_from_index(&needle) {
+            return exact;
         }
 
-        let partial = sorted
+        let partial = self
+            .sorted_pages()
             .iter()
             .filter(|m| m.title_lower.contains(&needle))
             .map(|m| m.id.clone())
@@ -262,6 +289,18 @@ impl KnowledgeBaseIndex {
             1 => TitleResolution::Unique(partial[0].clone()),
             0 => TitleResolution::NotFound,
             _ => TitleResolution::Ambiguous(partial),
+        }
+    }
+
+    /// Looks up exact (case-insensitive) title matches via the precomputed
+    /// index.  `needle` must already be trimmed and lowercased.  Returns
+    /// `None` when no page has that exact title, so callers can decide whether
+    /// to report `NotFound` or fall back to a substring search.
+    fn resolve_exact_from_index(&self, needle: &str) -> Option<TitleResolution> {
+        match self.title_index.get(needle).map(Vec::as_slice) {
+            Some([id]) => Some(TitleResolution::Unique(id.clone())),
+            Some(ids) if ids.len() > 1 => Some(TitleResolution::Ambiguous(ids.to_vec())),
+            _ => None,
         }
     }
 
@@ -275,17 +314,8 @@ impl KnowledgeBaseIndex {
             return TitleResolution::NotFound;
         }
 
-        let exact = self
-            .sorted_pages()
-            .iter()
-            .filter(|m| m.title_lower == needle)
-            .map(|m| m.id.clone())
-            .collect::<Vec<_>>();
-        match exact.len() {
-            1 => TitleResolution::Unique(exact[0].clone()),
-            0 => TitleResolution::NotFound,
-            _ => TitleResolution::Ambiguous(exact),
-        }
+        self.resolve_exact_from_index(&needle)
+            .unwrap_or(TitleResolution::NotFound)
     }
 
     /// Classifies a raw link target for navigation/open behavior.
@@ -681,6 +711,25 @@ fn compute_sorted_ids(pages: &HashMap<PageId, PageMeta>) -> Vec<PageId> {
     entries.into_iter().map(|m| m.id.clone()).collect()
 }
 
+/// Builds the exact-title lookup index keyed by lowercased title.  Ids are
+/// collected in `sorted_ids` order so a bucket matches what a title-sorted
+/// full scan would have produced.
+fn compute_title_index(
+    pages: &HashMap<PageId, PageMeta>,
+    sorted_ids: &[PageId],
+) -> HashMap<String, Vec<PageId>> {
+    let mut index: HashMap<String, Vec<PageId>> = HashMap::new();
+    for id in sorted_ids {
+        if let Some(meta) = pages.get(id) {
+            index
+                .entry(meta.title_lower.clone())
+                .or_default()
+                .push(id.clone());
+        }
+    }
+    index
+}
+
 fn page_meta_match_kind(meta: &PageMeta, needle: &str) -> Option<SearchMatchKind> {
     if meta.title_lower.contains(needle) || meta.id_lower.contains(needle) {
         Some(SearchMatchKind::Title)
@@ -756,10 +805,12 @@ mod tests {
             },
         );
         let sorted_ids = compute_sorted_ids(&pages);
+        let title_index = compute_title_index(&pages, &sorted_ids);
         let index = KnowledgeBaseIndex {
             root: PathBuf::from("/tmp"),
             pages,
             sorted_ids,
+            title_index,
             index_issues: Vec::new(),
             backlinks: HashMap::new(),
             forward_links: HashMap::new(),
@@ -804,10 +855,12 @@ mod tests {
             },
         );
         let sorted_ids = compute_sorted_ids(&pages);
+        let title_index = compute_title_index(&pages, &sorted_ids);
         let index = KnowledgeBaseIndex {
             root: PathBuf::from("/tmp"),
             pages,
             sorted_ids,
+            title_index,
             index_issues: Vec::new(),
             backlinks: HashMap::new(),
             forward_links: HashMap::new(),
@@ -874,10 +927,12 @@ mod tests {
             },
         );
         let sorted_ids = compute_sorted_ids(&pages);
+        let title_index = compute_title_index(&pages, &sorted_ids);
         let index = KnowledgeBaseIndex {
             root: PathBuf::from("/kb"),
             pages,
             sorted_ids,
+            title_index,
             index_issues: Vec::new(),
             backlinks: HashMap::new(),
             forward_links: HashMap::new(),
@@ -1647,6 +1702,90 @@ mod tests {
         assert_eq!(index.sorted_ids[0], "dup");
         // The page data should reflect the updated title.
         assert_eq!(index.pages["dup"].title, "Renamed");
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn meta_with_title(id: &str, title: &str) -> PageMeta {
+        PageMeta {
+            id: id.to_string(),
+            id_lower: id.to_lowercase(),
+            title: title.to_string(),
+            title_lower: title.to_lowercase(),
+            path: PathBuf::from(format!("/tmp/{id}.lepiter")),
+            updated_at: None,
+            tags: Vec::new(),
+            tags_lower: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn register_page_title_change_updates_exact_title_index() {
+        let dir = temp_dir_path("title-index-rename");
+        fs::create_dir_all(&dir).unwrap();
+        let mut index = KnowledgeBase::open(&dir).unwrap();
+
+        index.register_page(meta_with_title("pg", "Old Title"));
+        assert_eq!(
+            index.resolve_page_id_by_title_exact("Old Title"),
+            TitleResolution::Unique("pg".to_string())
+        );
+
+        // Rename the page; the exact index must follow the new title only.
+        index.register_page(meta_with_title("pg", "New Title"));
+        assert_eq!(
+            index.resolve_page_id_by_title_exact("new title"),
+            TitleResolution::Unique("pg".to_string())
+        );
+        assert_eq!(
+            index.resolve_page_id_by_title_exact("Old Title"),
+            TitleResolution::NotFound
+        );
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn register_page_duplicate_titles_resolve_ambiguous_via_index() {
+        let dir = temp_dir_path("title-index-dup");
+        fs::create_dir_all(&dir).unwrap();
+        let mut index = KnowledgeBase::open(&dir).unwrap();
+
+        index.register_page(meta_with_title("p1", "Shared"));
+        index.register_page(meta_with_title("p2", "Shared"));
+
+        match index.resolve_page_id_by_title_exact("shared") {
+            TitleResolution::Ambiguous(ids) => {
+                assert_eq!(ids.len(), 2);
+                assert!(ids.contains(&"p1".to_string()));
+                assert!(ids.contains(&"p2".to_string()));
+            }
+            other => panic!("expected Ambiguous, got {other:?}"),
+        }
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn register_page_rename_out_of_shared_bucket_leaves_other_unique() {
+        let dir = temp_dir_path("title-index-shrink");
+        fs::create_dir_all(&dir).unwrap();
+        let mut index = KnowledgeBase::open(&dir).unwrap();
+
+        index.register_page(meta_with_title("p1", "Shared"));
+        index.register_page(meta_with_title("p2", "Shared"));
+
+        // Rename p1 away from the shared title: the bucket shrinks to one, so
+        // "Shared" now resolves uniquely to p2 and "Renamed" to p1.
+        index.register_page(meta_with_title("p1", "Renamed"));
+        assert_eq!(
+            index.resolve_page_id_by_title_exact("Shared"),
+            TitleResolution::Unique("p2".to_string())
+        );
+        assert_eq!(
+            index.resolve_page_id_by_title_exact("Renamed"),
+            TitleResolution::Unique("p1".to_string())
+        );
 
         fs::remove_dir_all(&dir).unwrap();
     }

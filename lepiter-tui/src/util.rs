@@ -55,6 +55,37 @@ pub fn truncate_chars(input: &str, max_chars: usize) -> String {
     out
 }
 
+/// Build a short context snippet around the first case-insensitive occurrence
+/// of `needle_lower` within `raw`.
+///
+/// `needle_lower` must already be lowercased. The window spans roughly 40 bytes
+/// before the match and 80 after, snapped to `char` boundaries, with newlines
+/// flattened to spaces and the result trimmed and capped at 120 characters.
+/// Returns `None` when `needle_lower` is empty, does not appear in `raw`, or the
+/// surrounding window is blank after trimming.
+pub fn matching_snippet(raw: &str, needle_lower: &str) -> Option<String> {
+    if needle_lower.is_empty() {
+        return None;
+    }
+    let lower = raw.to_lowercase();
+    let lower_idx = lower.find(needle_lower)?;
+
+    // Map byte offsets from the lowered text back to the raw text — lowercasing
+    // can change byte lengths for non-ASCII characters.
+    let raw_match = lower_byte_to_raw_byte(raw, lower_idx);
+    let raw_end = lower_byte_to_raw_byte(raw, lower_idx + needle_lower.len());
+
+    let start = raw.floor_char_boundary(raw_match.saturating_sub(40));
+    let end = raw.ceil_char_boundary((raw_end + 80).min(raw.len()));
+    let fragment = raw[start..end].replace('\n', " ");
+    let fragment = fragment.trim();
+    if fragment.is_empty() {
+        None
+    } else {
+        Some(truncate_chars(fragment, 120))
+    }
+}
+
 pub struct LruCache<K, V> {
     map: IndexMap<K, V>,
     max_entries: usize,
@@ -499,5 +530,66 @@ mod tests {
         cache.insert(4, "four");
         assert_eq!(cache.peek(&1), Some(&"one")); // 1 was touched by get
         assert_eq!(cache.peek(&2), None); // 2 was evicted
+    }
+
+    // ── matching_snippet ───────────────────────────────────────────
+
+    #[test]
+    fn matching_snippet_returns_context_around_match() {
+        let raw = "the quick brown fox jumps over the lazy dog";
+        let snippet = matching_snippet(raw, "fox").unwrap();
+        assert!(snippet.contains("fox"));
+        assert!(snippet.contains("quick"));
+    }
+
+    #[test]
+    fn matching_snippet_is_case_insensitive() {
+        let raw = "The Quick Brown FOX";
+        let snippet = matching_snippet(raw, "fox").unwrap();
+        assert!(snippet.contains("FOX"));
+    }
+
+    #[test]
+    fn matching_snippet_absent_needle_returns_none() {
+        assert!(matching_snippet("the quick brown fox", "zzz").is_none());
+    }
+
+    #[test]
+    fn matching_snippet_empty_needle_returns_none() {
+        assert!(matching_snippet("some text", "").is_none());
+    }
+
+    #[test]
+    fn matching_snippet_flattens_newlines() {
+        let snippet = matching_snippet("alpha\nbeta needle gamma", "needle").unwrap();
+        assert!(!snippet.contains('\n'));
+        assert!(snippet.contains("beta needle gamma"));
+    }
+
+    #[test]
+    fn matching_snippet_truncates_to_120_chars() {
+        // A long run after the match should be capped (window is +80 bytes and
+        // the final cap is 120 chars, so a long tail is truncated).
+        let raw = format!("needle {}", "x".repeat(500));
+        let snippet = matching_snippet(&raw, "needle").unwrap();
+        assert!(snippet.chars().count() <= 120);
+    }
+
+    #[test]
+    fn matching_snippet_preserves_accented_content() {
+        let raw = "café münchen straße — needle here";
+        let snippet = matching_snippet(raw, "needle").unwrap();
+        assert!(snippet.contains("needle"));
+        assert!(snippet.contains("straße"));
+    }
+
+    #[test]
+    fn matching_snippet_multibyte_before_match_stays_on_boundary() {
+        // '\u{212A}' (Kelvin sign, 3 bytes) lowercases to ASCII 'k' (1 byte),
+        // so lowered byte offsets diverge from raw ones; the mapping must land
+        // on a char boundary or slicing the raw text would panic.
+        let raw = "\u{212A}elvin scale, needle tail";
+        let snippet = matching_snippet(raw, "needle").unwrap();
+        assert!(snippet.contains("needle"));
     }
 }

@@ -368,17 +368,86 @@ mod search {
     }
 
     #[test]
-    fn tsv_output_has_three_columns() {
+    fn tsv_output_has_four_columns() {
         let out = run(&["search", "--tsv", "alpha", &fixtures_path_str()]);
         assert!(out.status.success());
         let text = stdout(&out);
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines.len(), 1);
         let parts: Vec<&str> = lines[0].split('\t').collect();
-        assert_eq!(parts.len(), 3, "expected title\\tid\\tkind");
+        assert_eq!(parts.len(), 4, "expected title\\tid\\tkind\\tsnippet");
         assert_eq!(parts[0], "alpha page");
         assert_eq!(parts[1], "fixture-page-alpha");
         assert_eq!(parts[2], "title");
+        // Title match — the snippet column is present but empty.
+        assert_eq!(parts[3], "");
+    }
+
+    #[test]
+    fn full_text_json_includes_matching_snippet() {
+        // "paragraph" only appears in rendered content, so the content hit
+        // should carry a snippet quoting the surrounding text.
+        let out = run(&[
+            "search",
+            "--full-text",
+            "--json",
+            "paragraph",
+            &fixtures_path_str(),
+        ]);
+        assert!(out.status.success());
+        let json: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+        let hit = &json.as_array().unwrap()[0];
+        assert_eq!(hit["kind"], "content");
+        let snippet = hit["snippet"].as_str().expect("snippet should be a string");
+        assert!(
+            snippet.contains("paragraph"),
+            "snippet should quote the match, got: {snippet}"
+        );
+    }
+
+    #[test]
+    fn title_match_json_has_empty_snippet() {
+        let out = run(&["search", "--json", "alpha", &fixtures_path_str()]);
+        assert!(out.status.success());
+        let json: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+        let hit = &json.as_array().unwrap()[0];
+        assert_eq!(hit["kind"], "title");
+        assert_eq!(hit["snippet"], "", "title hit should have an empty snippet");
+    }
+
+    #[test]
+    fn full_text_tsv_snippet_is_fourth_column() {
+        let out = run(&[
+            "search",
+            "--full-text",
+            "--tsv",
+            "paragraph",
+            &fixtures_path_str(),
+        ]);
+        assert!(out.status.success());
+        let text = stdout(&out);
+        let line = text.lines().next().expect("expected a result row");
+        let parts: Vec<&str> = line.split('\t').collect();
+        assert_eq!(parts.len(), 4, "expected four columns, got: {line}");
+        assert_eq!(parts[2], "content");
+        assert!(
+            parts[3].contains("paragraph"),
+            "fourth column should hold the snippet, got: {}",
+            parts[3]
+        );
+    }
+
+    #[test]
+    fn full_text_plain_shows_indented_snippet() {
+        let out = run(&["search", "--full-text", "paragraph", &fixtures_path_str()]);
+        assert!(out.status.success());
+        let text = stdout(&out);
+        // The snippet appears on its own line, indented, beneath the match row.
+        assert!(
+            text.lines()
+                .any(|l| l.starts_with("    ") && l.contains("paragraph")),
+            "expected an indented snippet line, got: {text}"
+        );
     }
 
     #[test]

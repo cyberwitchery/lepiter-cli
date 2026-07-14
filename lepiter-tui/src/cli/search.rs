@@ -1,10 +1,12 @@
+use std::collections::HashMap;
 use std::io::Write;
 
 use anyhow::{Result, bail};
-use lepiter_core::{KnowledgeBaseIndex, SearchHit, SearchMatchKind};
+use lepiter_core::{KnowledgeBaseIndex, PageId, SearchHit, SearchMatchKind, render_page_to_text};
 
 use super::format::truncate_chars;
 use super::{ArgSpec, open_kb, parse_args};
+use crate::util::matching_snippet;
 
 const SPEC: ArgSpec<'static> = ArgSpec {
     usage: "usage: lepiter-cli search [--full-text] [--tsv] [--json] <query> [kb-path]\n\n\
@@ -34,20 +36,54 @@ pub fn run_search(args: Vec<String>) -> Result<()> {
 
     let index = open_kb(&args.kb_path(1))?;
     let hits = index.search_hits(&query, args.has("--full-text"));
+    let snippets = content_snippets(&index, &hits, &query.to_lowercase());
 
     let mut out = std::io::stdout().lock();
     if json {
-        write_search_json(&mut out, &index, &hits);
+        write_search_json(&mut out, &index, &hits, &snippets);
     } else if tsv {
-        write_search_tsv(&mut out, &index, &hits);
+        write_search_tsv(&mut out, &index, &hits, &snippets);
     } else {
-        write_search_plain(&mut out, &index, &hits);
+        write_search_plain(&mut out, &index, &hits, &snippets);
     }
 
     Ok(())
 }
 
-fn write_search_json(out: &mut impl Write, index: &KnowledgeBaseIndex, hits: &[SearchHit]) {
+/// Renders each content-match hit to text and extracts a matching-context
+/// snippet, keyed by page id.
+///
+/// Title and tag hits carry no snippet and are skipped. A content hit whose
+/// rendered text does not contain the needle — the content match is decided on
+/// un-rendered node text, so rendering can move the match out of reach — is
+/// simply absent from the map, and callers render an empty snippet for it.
+fn content_snippets(
+    index: &KnowledgeBaseIndex,
+    hits: &[SearchHit],
+    needle_lower: &str,
+) -> HashMap<PageId, String> {
+    let mut snippets = HashMap::new();
+    for hit in hits {
+        if hit.kind != SearchMatchKind::Content {
+            continue;
+        }
+        let Ok(page) = index.load_page(&hit.id) else {
+            continue;
+        };
+        let raw = render_page_to_text(&page);
+        if let Some(snippet) = matching_snippet(&raw, needle_lower) {
+            snippets.insert(hit.id.clone(), snippet);
+        }
+    }
+    snippets
+}
+
+fn write_search_json(
+    out: &mut impl Write,
+    index: &KnowledgeBaseIndex,
+    hits: &[SearchHit],
+    snippets: &HashMap<PageId, String>,
+) {
     let enriched: Vec<serde_json::Value> = hits
         .iter()
         .filter_map(|hit| {
@@ -57,6 +93,7 @@ fn write_search_json(out: &mut impl Write, index: &KnowledgeBaseIndex, hits: &[S
                     "title": meta.title,
                     "kind": hit.kind,
                     "tags": meta.tags,
+                    "snippet": snippets.get(&hit.id).map(String::as_str).unwrap_or(""),
                 })
             })
         })
@@ -64,7 +101,12 @@ fn write_search_json(out: &mut impl Write, index: &KnowledgeBaseIndex, hits: &[S
     let _ = writeln!(out, "{}", serde_json::to_string_pretty(&enriched).unwrap());
 }
 
-fn write_search_tsv(out: &mut impl Write, index: &KnowledgeBaseIndex, hits: &[SearchHit]) {
+fn write_search_tsv(
+    out: &mut impl Write,
+    index: &KnowledgeBaseIndex,
+    hits: &[SearchHit],
+    snippets: &HashMap<PageId, String>,
+) {
     let hit_by_id = hits
         .iter()
         .map(|hit| {
@@ -75,16 +117,27 @@ fn write_search_tsv(out: &mut impl Write, index: &KnowledgeBaseIndex, hits: &[Se
             };
             (&hit.id, kind)
         })
-        .collect::<std::collections::HashMap<_, _>>();
+        .collect::<HashMap<_, _>>();
 
     for meta in index.sorted_pages() {
         if let Some(kind) = hit_by_id.get(&meta.id) {
-            let _ = writeln!(out, "{}\t{}\t{}", meta.title, meta.id, kind);
+            // Tabs would split the snippet across columns; flatten them so the
+            // row keeps exactly four fields.
+            let snippet = snippets
+                .get(&meta.id)
+                .map(|s| s.replace('\t', " "))
+                .unwrap_or_default();
+            let _ = writeln!(out, "{}\t{}\t{}\t{}", meta.title, meta.id, kind, snippet);
         }
     }
 }
 
-fn write_search_plain(out: &mut impl Write, index: &KnowledgeBaseIndex, hits: &[SearchHit]) {
+fn write_search_plain(
+    out: &mut impl Write,
+    index: &KnowledgeBaseIndex,
+    hits: &[SearchHit],
+    snippets: &HashMap<PageId, String>,
+) {
     let hit_by_id = hits
         .iter()
         .map(|hit| {
@@ -95,7 +148,7 @@ fn write_search_plain(out: &mut impl Write, index: &KnowledgeBaseIndex, hits: &[
             };
             (&hit.id, kind)
         })
-        .collect::<std::collections::HashMap<_, _>>();
+        .collect::<HashMap<_, _>>();
 
     let title_width = index
         .sorted_pages()
@@ -130,6 +183,11 @@ fn write_search_plain(out: &mut impl Write, index: &KnowledgeBaseIndex, hits: &[
                 kind,
                 width = title_width
             );
+            // The ~120-char snippet would blow out the fixed-width columns, so
+            // it goes on its own indented line beneath the content-match row.
+            if let Some(snippet) = snippets.get(&meta.id) {
+                let _ = writeln!(out, "    {snippet}");
+            }
         }
     }
 }
@@ -173,6 +231,15 @@ mod tests {
         String::from_utf8(buf).unwrap()
     }
 
+    /// Build the snippet map the writers expect, mirroring `run_search`.
+    fn snips(
+        index: &KnowledgeBaseIndex,
+        hits: &[SearchHit],
+        query: &str,
+    ) -> HashMap<PageId, String> {
+        content_snippets(index, hits, &query.to_lowercase())
+    }
+
     // --- JSON output ---
 
     #[test]
@@ -182,12 +249,15 @@ mod tests {
             ("p2", "Go Notes", &[], "body"),
         ]);
         let hits = index.search_hits("rust", false);
-        let out = output_string(|buf| write_search_json(buf, &index, &hits));
+        let snippets = snips(&index, &hits, "rust");
+        let out = output_string(|buf| write_search_json(buf, &index, &hits, &snippets));
         let parsed: Vec<serde_json::Value> = serde_json::from_str(&out).unwrap();
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0]["id"], "p1");
         assert_eq!(parsed[0]["title"], "Rust Guide");
         assert_eq!(parsed[0]["kind"], "title");
+        // A title hit carries no snippet.
+        assert_eq!(parsed[0]["snippet"], "");
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -195,10 +265,12 @@ mod tests {
     fn search_json_tag_match_includes_tags() {
         let (dir, index) = make_test_kb(&[("p1", "Page One", &["rust", "cli"], "body")]);
         let hits = index.search_hits("cli", false);
-        let out = output_string(|buf| write_search_json(buf, &index, &hits));
+        let snippets = snips(&index, &hits, "cli");
+        let out = output_string(|buf| write_search_json(buf, &index, &hits, &snippets));
         let parsed: Vec<serde_json::Value> = serde_json::from_str(&out).unwrap();
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0]["kind"], "tag");
+        assert_eq!(parsed[0]["snippet"], "");
         let tags = parsed[0]["tags"].as_array().unwrap();
         assert!(tags.contains(&serde_json::json!("rust")));
         assert!(tags.contains(&serde_json::json!("cli")));
@@ -209,10 +281,28 @@ mod tests {
     fn search_json_content_match() {
         let (dir, index) = make_test_kb(&[("p1", "Alpha", &[], "the quick brown fox")]);
         let hits = index.search_hits("fox", true);
-        let out = output_string(|buf| write_search_json(buf, &index, &hits));
+        let snippets = snips(&index, &hits, "fox");
+        let out = output_string(|buf| write_search_json(buf, &index, &hits, &snippets));
         let parsed: Vec<serde_json::Value> = serde_json::from_str(&out).unwrap();
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0]["kind"], "content");
+        // A content hit carries a matching-context snippet.
+        assert_eq!(parsed[0]["snippet"], "the quick brown fox");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn search_json_content_hit_without_snippet_is_empty() {
+        // Content matching happens on un-rendered node text, so a hit can
+        // legitimately yield no rendered snippet. The writer must tolerate that
+        // and emit an empty string, never omit the key.
+        let (dir, index) = make_test_kb(&[("p1", "Alpha", &[], "the quick brown fox")]);
+        let hits = index.search_hits("fox", true);
+        let snippets = HashMap::new();
+        let out = output_string(|buf| write_search_json(buf, &index, &hits, &snippets));
+        let parsed: Vec<serde_json::Value> = serde_json::from_str(&out).unwrap();
+        assert_eq!(parsed[0]["kind"], "content");
+        assert_eq!(parsed[0]["snippet"], "");
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -220,7 +310,8 @@ mod tests {
     fn search_json_no_results() {
         let (dir, index) = make_test_kb(&[("p1", "Alpha", &[], "body")]);
         let hits = index.search_hits("zzzzz", false);
-        let out = output_string(|buf| write_search_json(buf, &index, &hits));
+        let snippets = snips(&index, &hits, "zzzzz");
+        let out = output_string(|buf| write_search_json(buf, &index, &hits, &snippets));
         let parsed: Vec<serde_json::Value> = serde_json::from_str(&out).unwrap();
         assert!(parsed.is_empty());
         std::fs::remove_dir_all(&dir).ok();
@@ -234,13 +325,18 @@ mod tests {
             ("p3", "Page Three", &[], "mentions rust here"),
         ]);
         let hits = index.search_hits("rust", true);
-        let out = output_string(|buf| write_search_json(buf, &index, &hits));
+        let snippets = snips(&index, &hits, "rust");
+        let out = output_string(|buf| write_search_json(buf, &index, &hits, &snippets));
         let parsed: Vec<serde_json::Value> = serde_json::from_str(&out).unwrap();
         assert_eq!(parsed.len(), 3);
         // Ranked: title > tag > content.
         assert_eq!(parsed[0]["kind"], "title");
         assert_eq!(parsed[1]["kind"], "tag");
         assert_eq!(parsed[2]["kind"], "content");
+        // Only the content hit gets a snippet.
+        assert_eq!(parsed[0]["snippet"], "");
+        assert_eq!(parsed[1]["snippet"], "");
+        assert_eq!(parsed[2]["snippet"], "mentions rust here");
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -253,13 +349,46 @@ mod tests {
             ("p2", "Go Notes", &[], "body"),
         ]);
         let hits = index.search_hits("rust", false);
-        let out = output_string(|buf| write_search_tsv(buf, &index, &hits));
-        let lines: Vec<&str> = out.trim().lines().collect();
+        let snippets = snips(&index, &hits, "rust");
+        let out = output_string(|buf| write_search_tsv(buf, &index, &hits, &snippets));
+        // Use `lines()` rather than `trim()` here: an empty snippet leaves a
+        // trailing tab, and `trim()` would strip it, hiding the 4th column.
+        let lines: Vec<&str> = out.lines().collect();
         assert_eq!(lines.len(), 1);
         let fields: Vec<&str> = lines[0].split('\t').collect();
+        assert_eq!(fields.len(), 4, "expected title\\tid\\tkind\\tsnippet");
         assert_eq!(fields[0], "Rust Guide");
         assert_eq!(fields[1], "p1");
         assert_eq!(fields[2], "title");
+        // Title hit — empty snippet column.
+        assert_eq!(fields[3], "");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn search_tsv_content_match_has_snippet_column() {
+        let (dir, index) = make_test_kb(&[("p1", "Alpha", &[], "the quick brown fox")]);
+        let hits = index.search_hits("fox", true);
+        let snippets = snips(&index, &hits, "fox");
+        let out = output_string(|buf| write_search_tsv(buf, &index, &hits, &snippets));
+        let fields: Vec<&str> = out.trim().split('\t').collect();
+        assert_eq!(fields.len(), 4);
+        assert_eq!(fields[2], "content");
+        assert_eq!(fields[3], "the quick brown fox");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn search_tsv_snippet_strips_tab_chars() {
+        // A tab inside the rendered snippet would spill into a fifth column;
+        // the writer flattens it so the row stays exactly four fields.
+        let (dir, index) = make_test_kb(&[("p1", "Alpha", &[], "fox\tbar baz")]);
+        let hits = index.search_hits("fox", true);
+        let snippets = snips(&index, &hits, "fox");
+        let out = output_string(|buf| write_search_tsv(buf, &index, &hits, &snippets));
+        let fields: Vec<&str> = out.trim().split('\t').collect();
+        assert_eq!(fields.len(), 4, "tab in snippet must not add a column");
+        assert_eq!(fields[3], "fox bar baz");
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -270,7 +399,8 @@ mod tests {
             ("p2", "Alpha", &["common"], "body"),
         ]);
         let hits = index.search_hits("common", false);
-        let out = output_string(|buf| write_search_tsv(buf, &index, &hits));
+        let snippets = snips(&index, &hits, "common");
+        let out = output_string(|buf| write_search_tsv(buf, &index, &hits, &snippets));
         let lines: Vec<&str> = out.trim().lines().collect();
         assert_eq!(lines.len(), 2);
         // sorted_pages iterates in title order.
@@ -283,7 +413,8 @@ mod tests {
     fn search_tsv_no_results_empty() {
         let (dir, index) = make_test_kb(&[("p1", "Alpha", &[], "body")]);
         let hits = index.search_hits("zzzzz", false);
-        let out = output_string(|buf| write_search_tsv(buf, &index, &hits));
+        let snippets = snips(&index, &hits, "zzzzz");
+        let out = output_string(|buf| write_search_tsv(buf, &index, &hits, &snippets));
         assert!(out.is_empty());
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -292,8 +423,9 @@ mod tests {
     fn search_tsv_content_match_label() {
         let (dir, index) = make_test_kb(&[("p1", "Alpha", &[], "the quick brown fox")]);
         let hits = index.search_hits("fox", true);
-        let out = output_string(|buf| write_search_tsv(buf, &index, &hits));
-        assert!(out.contains("\tcontent\n"));
+        let snippets = snips(&index, &hits, "fox");
+        let out = output_string(|buf| write_search_tsv(buf, &index, &hits, &snippets));
+        assert!(out.contains("\tcontent\t"));
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -303,7 +435,8 @@ mod tests {
     fn search_plain_has_header_and_separator() {
         let (dir, index) = make_test_kb(&[("p1", "Alpha", &[], "body")]);
         let hits = index.search_hits("alpha", false);
-        let out = output_string(|buf| write_search_plain(buf, &index, &hits));
+        let snippets = snips(&index, &hits, "alpha");
+        let out = output_string(|buf| write_search_plain(buf, &index, &hits, &snippets));
         let lines: Vec<&str> = out.lines().collect();
         assert!(lines[0].contains("title"));
         assert!(lines[0].contains("id"));
@@ -317,7 +450,8 @@ mod tests {
     fn search_plain_shows_match_kind() {
         let (dir, index) = make_test_kb(&[("p1", "Rust Guide", &[], "body")]);
         let hits = index.search_hits("rust", false);
-        let out = output_string(|buf| write_search_plain(buf, &index, &hits));
+        let snippets = snips(&index, &hits, "rust");
+        let out = output_string(|buf| write_search_plain(buf, &index, &hits, &snippets));
         // Data row should contain the title, id, and match kind.
         assert!(out.contains("Rust Guide"));
         assert!(out.contains("p1"));
@@ -326,10 +460,37 @@ mod tests {
     }
 
     #[test]
+    fn search_plain_content_shows_indented_snippet() {
+        let (dir, index) = make_test_kb(&[("p1", "Alpha", &[], "the quick brown fox")]);
+        let hits = index.search_hits("fox", true);
+        let snippets = snips(&index, &hits, "fox");
+        let out = output_string(|buf| write_search_plain(buf, &index, &hits, &snippets));
+        // The snippet appears on its own indented line under the content row.
+        assert!(
+            out.contains("\n    the quick brown fox"),
+            "expected indented snippet line, got: {out}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn search_plain_title_match_has_no_snippet_line() {
+        let (dir, index) = make_test_kb(&[("p1", "Alpha", &[], "body")]);
+        let hits = index.search_hits("alpha", false);
+        let snippets = snips(&index, &hits, "alpha");
+        let out = output_string(|buf| write_search_plain(buf, &index, &hits, &snippets));
+        let lines: Vec<&str> = out.trim().lines().collect();
+        // Header + separator + one data row, no indented snippet line.
+        assert_eq!(lines.len(), 3);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn search_plain_no_results_only_header() {
         let (dir, index) = make_test_kb(&[("p1", "Alpha", &[], "body")]);
         let hits = index.search_hits("zzzzz", false);
-        let out = output_string(|buf| write_search_plain(buf, &index, &hits));
+        let snippets = snips(&index, &hits, "zzzzz");
+        let out = output_string(|buf| write_search_plain(buf, &index, &hits, &snippets));
         let lines: Vec<&str> = out.trim().lines().collect();
         // Header + separator only, no data rows.
         assert_eq!(lines.len(), 2);
@@ -341,7 +502,8 @@ mod tests {
         // Single-char title — width should be clamped to at least 5.
         let (dir, index) = make_test_kb(&[("p1", "A", &[], "body")]);
         let hits = index.search_hits("a", false);
-        let out = output_string(|buf| write_search_plain(buf, &index, &hits));
+        let snippets = snips(&index, &hits, "a");
+        let out = output_string(|buf| write_search_plain(buf, &index, &hits, &snippets));
         let header = out.lines().next().unwrap();
         // "title" is 5 chars and should be left-padded to at least 5.
         assert!(header.starts_with("title"));

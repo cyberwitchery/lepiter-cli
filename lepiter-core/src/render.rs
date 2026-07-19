@@ -127,12 +127,14 @@ fn render_nodes_into(
 /// avoiding the concatenation and allocation overhead of
 /// [`render_page_to_text`] followed by a string search.
 pub fn page_content_contains(page: &Page, needle: &str) -> bool {
+    let needle: String = needle.chars().flat_map(char::to_lowercase).collect();
     let mut buf = String::new();
-    nodes_contain(&page.content, needle, &mut buf)
+    nodes_contain(&page.content, &needle, &mut buf)
 }
 
-/// case-insensitive substring check that reuses `buf` to avoid
-/// allocating a new lowercased string on every call.
+/// Substring check against the lowercased `text`, reusing `buf` to avoid
+/// allocating a new lowercased string on every call. `needle` must already
+/// be lowercased the same way by the caller.
 fn node_text_contains(text: &str, needle: &str, buf: &mut String) -> bool {
     buf.clear();
     buf.extend(text.chars().flat_map(char::to_lowercase));
@@ -360,6 +362,32 @@ mod tests {
         }]);
         assert!(page_content_contains(&page, "hello world"));
         assert!(page_content_contains(&page, "hello"));
+        assert!(page_content_contains(&page, "Hello"));
+        assert!(page_content_contains(&page, "WORLD"));
+        assert!(page_content_contains(&page, "HeLLo WoRLd"));
+        assert!(!page_content_contains(&page, "GOODBYE"));
+    }
+
+    #[test]
+    fn page_content_contains_case_insensitive_non_ascii() {
+        let page = make_page(vec![Node::Paragraph {
+            text: "Über Café".to_string(),
+        }]);
+        assert!(page_content_contains(&page, "über"));
+        assert!(page_content_contains(&page, "ÜBER"));
+        assert!(page_content_contains(&page, "CAFÉ"));
+    }
+
+    /// Haystack and needle must be lowercased identically. `str::to_lowercase`
+    /// maps a word-final sigma to `ς` where `char::to_lowercase` yields `σ`, so
+    /// using it for the needle here would break the match.
+    #[test]
+    fn page_content_contains_lowercases_needle_per_char() {
+        let page = make_page(vec![Node::Paragraph {
+            text: "ΟΔΟΣ".to_string(),
+        }]);
+        assert!(page_content_contains(&page, "ΟΔΟΣ"));
+        assert!(page_content_contains(&page, "οδοσ"));
     }
 
     #[test]

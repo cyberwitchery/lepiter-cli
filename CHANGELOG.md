@@ -27,6 +27,11 @@ all notable changes to this project are documented in this file.
   `export --typo out/` silently treated `--typo` as the output directory (and
   could create one named `--typo`), and `ids --bogus` tried to open a knowledge
   base literally named `--bogus`
+- `lepiter-core`: `page_content_contains()` is now genuinely case-insensitive as
+  documented. it only ever lowercased the page text, so a needle containing any
+  capital letter — `"Hello"` against a page reading "Hello World" — could never
+  match. cli and tui search already lowercased queries before calling it, so
+  their behaviour is unchanged; this fixes the function for library callers
 
 ## 0.9.0 - 2026-07-05
 

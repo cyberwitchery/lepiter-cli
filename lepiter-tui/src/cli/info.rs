@@ -3,30 +3,30 @@ use std::fs;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use lepiter_core::{BrokenLink, KnowledgeBase, KnowledgeBaseIndex, PageId, ParseIssue};
+use lepiter_core::{BrokenLink, KnowledgeBaseIndex, PageId, ParseIssue};
+
+use super::{ArgSpec, open_kb, parse_args};
+
+const SPEC: ArgSpec<'static> = ArgSpec {
+    usage: "usage: lepiter-cli info [--detail] [--json] [kb-path]\n\n\
+            prints a knowledge base metadata summary.\n\n\
+            flags:\n  \
+              --detail  show broken links, orphan pages, tag distribution, snippet type breakdown\n  \
+              --json    output as json (combinable with --detail)",
+    toggles: &["--detail", "--json"],
+    valued: &[],
+};
 
 pub fn run_info(args: Vec<String>) -> Result<()> {
-    let mut detail = false;
-    let mut json = false;
-    let mut kb_path = None;
-    for arg in &args {
-        match arg.as_str() {
-            "--detail" => detail = true,
-            "--json" => json = true,
-            _ if arg.starts_with('-') => {
-                eprintln!("unknown flag: {arg}");
-                std::process::exit(2);
-            }
-            _ => kb_path = Some(PathBuf::from(arg)),
-        }
-    }
-    let kb_path = kb_path.unwrap_or_else(|| PathBuf::from("./lepiter"));
-    print_kb_info(kb_path, detail, json)
+    let Some(args) = parse_args(args, &SPEC)? else {
+        return Ok(());
+    };
+
+    print_kb_info(args.kb_path(0), args.has("--detail"), args.has("--json"))
 }
 
 pub fn print_kb_info(kb_path: PathBuf, detail: bool, json: bool) -> Result<()> {
-    let index = KnowledgeBase::open(&kb_path)
-        .with_context(|| format!("failed to open knowledge base at {}", kb_path.display()))?;
+    let index = open_kb(&kb_path)?;
 
     let props_path = kb_path.join("lepiter.properties");
     let props = if props_path.is_file() {

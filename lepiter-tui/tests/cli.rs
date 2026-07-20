@@ -110,6 +110,36 @@ mod info {
             "expected unknown flag error, got: {err}"
         );
     }
+
+    /// `info` used to let the *last* positional win, disagreeing with every
+    /// other subcommand. All of them now take the first.
+    #[test]
+    fn first_positional_is_the_knowledge_base_path() {
+        let out = run(&["info", &fixtures_path_str(), "/nonexistent/kb"]);
+        assert!(
+            out.status.success(),
+            "expected the first path to win, got: {}",
+            stderr(&out)
+        );
+        let text = stdout(&out);
+        assert!(text.contains("pages: 6"), "expected 6 pages, got: {text}");
+        assert!(
+            text.contains(&format!("path: {}", fixtures_path_str())),
+            "expected the first path to be reported, got: {text}"
+        );
+    }
+
+    #[test]
+    fn first_positional_wins_consistently_across_subcommands() {
+        for cmd in ["info", "list", "ids", "links", "tags", "check"] {
+            let out = run(&[cmd, &fixtures_path_str(), "/nonexistent/kb"]);
+            let err = stderr(&out);
+            assert!(
+                !err.contains("failed to open knowledge base"),
+                "`{cmd}` should read the first path, got: {err}"
+            );
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1223,6 +1253,42 @@ mod help {
         assert!(!out.status.success());
         let err = stderr(&out);
         assert!(err.contains("unknown subcommand"));
+    }
+
+    #[test]
+    fn every_subcommand_accepts_help() {
+        for cmd in [
+            "info", "list", "ids", "search", "show", "links", "tags", "check", "export", "import",
+        ] {
+            for flag in ["--help", "-h"] {
+                let out = run(&[cmd, flag]);
+                assert!(
+                    out.status.success(),
+                    "`{cmd} {flag}` should exit 0, got {:?}",
+                    out.status
+                );
+                let err = stderr(&out);
+                assert!(
+                    err.contains(&format!("usage: lepiter-cli {cmd}")),
+                    "`{cmd} {flag}` should print its usage, got: {err}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn help_takes_precedence_over_a_knowledge_base_path() {
+        let out = run(&["list", &fixtures_path_str(), "--help"]);
+        assert!(out.status.success());
+        assert!(stderr(&out).contains("usage: lepiter-cli list"));
+        assert!(stdout(&out).is_empty(), "help should not list pages");
+    }
+
+    #[test]
+    fn unknown_flag_exits_with_status_2() {
+        let out = run(&["list", "--badarg"]);
+        assert_eq!(out.status.code(), Some(2));
+        assert!(stderr(&out).contains("unknown flag: --badarg"));
     }
 }
 

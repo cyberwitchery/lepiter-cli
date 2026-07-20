@@ -1,10 +1,20 @@
 use std::fs;
 use std::io::Write;
-use std::path::PathBuf;
 
-use anyhow::{Context, Result};
-use lepiter_core::{
-    BrokenLink, DuplicateTitle, KnowledgeBase, KnowledgeBaseIndex, MissingAttachment, ParseIssue,
+use anyhow::Result;
+use lepiter_core::{BrokenLink, DuplicateTitle, KnowledgeBaseIndex, MissingAttachment, ParseIssue};
+
+use super::{ArgSpec, open_kb, parse_args};
+
+const SPEC: ArgSpec<'static> = ArgSpec {
+    usage: "usage: lepiter-cli check [--json] [kb-path]\n\n\
+            validates knowledge base integrity. exits with status 1 if any issues\n\
+            are found (broken links, orphan pages, duplicate titles, missing\n\
+            attachments).\n\n\
+            flags:\n  \
+              --json  output as json",
+    toggles: &["--json"],
+    valued: &[],
 };
 
 struct CheckReport<'a> {
@@ -29,26 +39,13 @@ impl CheckReport<'_> {
 }
 
 pub fn run_check(args: Vec<String>) -> Result<()> {
-    let mut json = false;
-    let mut positional = Vec::new();
+    let Some(args) = parse_args(args, &SPEC)? else {
+        return Ok(());
+    };
+    let json = args.has("--json");
 
-    for arg in &args {
-        match arg.as_str() {
-            "--json" => json = true,
-            _ if arg.starts_with('-') => {
-                eprintln!("unknown flag: {arg}");
-                std::process::exit(2);
-            }
-            _ => positional.push(arg.clone()),
-        }
-    }
-
-    let kb_path = positional
-        .first()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("./lepiter"));
-    let index = KnowledgeBase::open(&kb_path)
-        .with_context(|| format!("failed to open knowledge base at {}", kb_path.display()))?;
+    let kb_path = args.kb_path(0);
+    let index = open_kb(&kb_path)?;
 
     // Read table-of-contents page id from lepiter.properties (excluded from orphans).
     let props_path = kb_path.join("lepiter.properties");
@@ -285,7 +282,8 @@ fn write_check_json(out: &mut impl Write, report: &CheckReport) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lepiter_core::PageLoadError;
+    use lepiter_core::{KnowledgeBase, PageLoadError};
+    use std::path::PathBuf;
 
     fn make_test_kb(pages: &[(&str, &str, &str)]) -> (std::path::PathBuf, KnowledgeBaseIndex) {
         use std::time::{SystemTime, UNIX_EPOCH};

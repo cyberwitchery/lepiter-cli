@@ -1,45 +1,39 @@
 use std::io::Write;
-use std::path::PathBuf;
 
-use anyhow::{Context, Result, bail};
-use lepiter_core::{KnowledgeBase, KnowledgeBaseIndex, SearchHit, SearchMatchKind};
+use anyhow::{Result, bail};
+use lepiter_core::{KnowledgeBaseIndex, SearchHit, SearchMatchKind};
 
 use super::format::truncate_chars;
+use super::{ArgSpec, open_kb, parse_args};
+
+const SPEC: ArgSpec<'static> = ArgSpec {
+    usage: "usage: lepiter-cli search [--full-text] [--tsv] [--json] <query> [kb-path]\n\n\
+            searches by title, id, and tags, optionally page content too.\n\n\
+            flags:\n  \
+              --full-text  also search page content\n  \
+              --tsv        output as tab-separated values\n  \
+              --json       include match kind alongside page metadata",
+    toggles: &["--full-text", "--tsv", "--json"],
+    valued: &[],
+};
 
 pub fn run_search(args: Vec<String>) -> Result<()> {
-    let mut full_text = false;
-    let mut tsv = false;
-    let mut json = false;
-    let mut positional = Vec::new();
-    for arg in args {
-        match arg.as_str() {
-            "--full-text" => full_text = true,
-            "--tsv" => tsv = true,
-            "--json" => json = true,
-            _ if arg.starts_with('-') => {
-                eprintln!("unknown flag: {arg}");
-                std::process::exit(2);
-            }
-            _ => positional.push(arg),
-        }
-    }
+    let Some(args) = parse_args(args, &SPEC)? else {
+        return Ok(());
+    };
+    let tsv = args.has("--tsv");
+    let json = args.has("--json");
 
-    if positional.is_empty() {
+    let Some(query) = args.positional(0) else {
         bail!("missing required argument: <query>");
-    }
-
-    let query = positional[0].trim().to_string();
+    };
+    let query = query.trim().to_string();
     if query.is_empty() {
         bail!("query must not be empty");
     }
 
-    let kb_path = positional
-        .get(1)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("./lepiter"));
-    let index = KnowledgeBase::open(&kb_path)
-        .with_context(|| format!("failed to open knowledge base at {}", kb_path.display()))?;
-    let hits = index.search_hits(&query, full_text);
+    let index = open_kb(&args.kb_path(1))?;
+    let hits = index.search_hits(&query, args.has("--full-text"));
 
     let mut out = std::io::stdout().lock();
     if json {
@@ -143,6 +137,7 @@ fn write_search_plain(out: &mut impl Write, index: &KnowledgeBaseIndex, hits: &[
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lepiter_core::KnowledgeBase;
 
     fn make_test_kb(
         pages: &[(&str, &str, &[&str], &str)],

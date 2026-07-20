@@ -701,7 +701,7 @@ fn main() -> Result<()> {
         return Ok(());
     };
 
-    match cmd.as_str() {
+    let result = match cmd.as_str() {
         "tui" => {
             let kb_path = args
                 .next()
@@ -733,6 +733,14 @@ fn main() -> Result<()> {
                 std::process::exit(2);
             }
         }
+    };
+
+    match result {
+        Err(err) if err.downcast_ref::<cli::UsageError>().is_some() => {
+            eprintln!("{err}");
+            std::process::exit(2);
+        }
+        other => other,
     }
 }
 

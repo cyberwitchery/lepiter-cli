@@ -4,43 +4,29 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use lepiter_core::{
-    KnowledgeBase, KnowledgeBaseIndex, LinkKind, LinkTargetKind, Node, Page,
-    render_nodes_to_text_with,
+    KnowledgeBaseIndex, LinkKind, LinkTargetKind, Node, Page, render_nodes_to_text_with,
+};
+
+use super::{ArgSpec, open_kb, parse_args};
+
+const SPEC: ArgSpec<'static> = ArgSpec {
+    usage: "usage: lepiter-cli export <output-dir> [kb-path]\n\n\
+            bulk-exports all pages to a directory of markdown files with\n\
+            yaml frontmatter and rewritten internal links.",
+    toggles: &[],
+    valued: &[],
 };
 
 pub fn run_export(args: Vec<String>) -> Result<()> {
-    let mut positional = Vec::new();
+    let Some(args) = parse_args(args, &SPEC)? else {
+        return Ok(());
+    };
 
-    for arg in args {
-        match arg.as_str() {
-            "-h" | "--help" => {
-                eprintln!(
-                    "usage: lepiter-cli export <output-dir> [kb-path]\n\n\
-                     bulk-exports all pages to a directory of markdown files with\n\
-                     yaml frontmatter and rewritten internal links."
-                );
-                return Ok(());
-            }
-            _ if arg.starts_with('-') => {
-                eprintln!("unknown flag: {arg}");
-                std::process::exit(2);
-            }
-            _ => positional.push(arg),
-        }
-    }
-
-    if positional.is_empty() {
+    let Some(out_dir) = args.positional(0) else {
         bail!("missing required argument: <output-dir>");
-    }
-
-    let out_dir = PathBuf::from(&positional[0]);
-    let kb_path = positional
-        .get(1)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("./lepiter"));
-
-    let index = KnowledgeBase::open(&kb_path)
-        .with_context(|| format!("failed to open knowledge base at {}", kb_path.display()))?;
+    };
+    let out_dir = PathBuf::from(out_dir);
+    let index = open_kb(&args.kb_path(1))?;
 
     let slug_map = build_slug_map(&index);
 
@@ -180,7 +166,7 @@ fn export_link_rewriter(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lepiter_core::rewrite_inline_links;
+    use lepiter_core::{KnowledgeBase, rewrite_inline_links};
 
     #[test]
     fn slugify_basic_title() {

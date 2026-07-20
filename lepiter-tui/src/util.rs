@@ -59,8 +59,10 @@ pub fn truncate_chars(input: &str, max_chars: usize) -> String {
 /// of `needle_lower` within `raw`.
 ///
 /// `needle_lower` must already be lowercased. The window spans roughly 40 bytes
-/// before the match and 80 after, snapped to `char` boundaries, with newlines
-/// flattened to spaces and the result trimmed and capped at 120 characters.
+/// before the match and 80 after, snapped to `char` boundaries, with line breaks
+/// (both `\n` and `\r`) flattened to spaces and the result trimmed and capped at
+/// 120 characters. The returned snippet is always a single line, so callers can
+/// write it to a terminal or a line-delimited stream unescaped.
 /// Returns `None` when `needle_lower` is empty, does not appear in `raw`, or the
 /// surrounding window is blank after trimming.
 pub fn matching_snippet(raw: &str, needle_lower: &str) -> Option<String> {
@@ -77,7 +79,7 @@ pub fn matching_snippet(raw: &str, needle_lower: &str) -> Option<String> {
 
     let start = raw.floor_char_boundary(raw_match.saturating_sub(40));
     let end = raw.ceil_char_boundary((raw_end + 80).min(raw.len()));
-    let fragment = raw[start..end].replace('\n', " ");
+    let fragment = raw[start..end].replace(['\n', '\r'], " ");
     let fragment = fragment.trim();
     if fragment.is_empty() {
         None
@@ -563,6 +565,15 @@ mod tests {
     fn matching_snippet_flattens_newlines() {
         let snippet = matching_snippet("alpha\nbeta needle gamma", "needle").unwrap();
         assert!(!snippet.contains('\n'));
+        assert!(snippet.contains("beta needle gamma"));
+    }
+
+    #[test]
+    fn matching_snippet_flattens_carriage_returns() {
+        // CRLF-authored content leaves a bare CR behind once the '\n' is
+        // flattened, and a terminal reads that as a cursor return.
+        let snippet = matching_snippet("alpha\r\nbeta needle gamma", "needle").unwrap();
+        assert!(!snippet.contains('\r'));
         assert!(snippet.contains("beta needle gamma"));
     }
 

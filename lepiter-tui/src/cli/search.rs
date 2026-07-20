@@ -393,6 +393,29 @@ mod tests {
     }
 
     #[test]
+    fn search_tsv_snippet_strips_carriage_returns() {
+        // A parser that treats a bare CR as a record separator would read one
+        // row as three. Neither `lines()` nor `split('\t')` sees a mid-line CR,
+        // so assert on the emitted bytes.
+        let (dir, index) = make_test_kb(&[(
+            "p1",
+            "Alpha",
+            &[],
+            "first line\r\nfox is here\r\nthird line",
+        )]);
+        let hits = index.search_hits("fox", true);
+        let snippets = snips(&index, &hits, "fox");
+        let out = output_string(|buf| write_search_tsv(buf, &index, &hits, &snippets));
+        assert!(!out.contains('\r'), "CR reached the TSV stream: {out:?}");
+        let records: Vec<&str> = out.trim_end().split(['\r', '\n']).collect();
+        assert_eq!(records.len(), 1, "row must stay one record: {out:?}");
+        let fields: Vec<&str> = records[0].split('\t').collect();
+        assert_eq!(fields.len(), 4, "CR in snippet must not add a record");
+        assert!(fields[3].contains("fox is here"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn search_tsv_sorted_by_title() {
         let (dir, index) = make_test_kb(&[
             ("p1", "Zebra", &["common"], "body"),
@@ -469,6 +492,27 @@ mod tests {
         assert!(
             out.contains("\n    the quick brown fox"),
             "expected indented snippet line, got: {out}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn search_plain_snippet_strips_carriage_returns() {
+        // A CR returns the terminal cursor to column 0, overwriting the
+        // indented snippet line and erasing the match it exists to show.
+        let (dir, index) = make_test_kb(&[(
+            "p1",
+            "Alpha",
+            &[],
+            "first line\r\nfox is here\r\nthird line",
+        )]);
+        let hits = index.search_hits("fox", true);
+        let snippets = snips(&index, &hits, "fox");
+        let out = output_string(|buf| write_search_plain(buf, &index, &hits, &snippets));
+        assert!(!out.contains('\r'), "CR reached the terminal: {out:?}");
+        assert!(
+            out.contains("\n    first line  fox is here  third line"),
+            "expected a flattened snippet line, got: {out}"
         );
         std::fs::remove_dir_all(&dir).ok();
     }

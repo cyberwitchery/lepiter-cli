@@ -4,6 +4,16 @@ all notable changes to this project are documented in this file.
 
 ## Unreleased
 
+### added
+- `search --full-text` now shows a matching-context snippet for each content
+  hit, so you can see why a page matched without opening it. the snippet appears
+  as a `snippet` field in `--json`, a fourth column in `--tsv`, and an indented
+  line beneath the match in the default table. a snippet is always a single line
+  — line breaks and tabs in the page content are flattened to spaces — so a
+  `--tsv` row stays one record and the default table stays readable even for
+  pages authored with windows line endings. title and tag hits show an empty
+  snippet, matching the tui
+
 ### fixed
 - `[[Title]]` wikilinks and `page:`/`title:` links now require an exact title
   match instead of silently binding to a substring, so `[[Rust]]` no longer

@@ -56,7 +56,7 @@ use crate::render::{
     RenderedPage, highlight_page_search, highlight_selected_link_markers, render_page,
     sanitize_for_terminal,
 };
-use crate::util::{LruCache, cache_limit_from_env, lower_byte_to_raw_byte, truncate_chars};
+use crate::util::{LruCache, cache_limit_from_env, lower_byte_to_raw_byte, matching_snippet};
 use anyhow::{Context, Result};
 use crossterm::event::{self, Event, KeyEventKind};
 use lepiter_core::{
@@ -583,27 +583,7 @@ impl App {
 
     fn snippet_for(&self, id: &str) -> Option<String> {
         let text = self.text_index.peek(id)?;
-        if self.search_needle.is_empty() {
-            return None;
-        }
-        let lower_idx = text.lower.find(&self.search_needle)?;
-
-        // Map byte offsets from lowered text to raw text — lowercasing can
-        // change byte lengths for non-ASCII characters.
-        let raw_match = lower_byte_to_raw_byte(&text.raw, lower_idx);
-        let raw_end = lower_byte_to_raw_byte(&text.raw, lower_idx + self.search_needle.len());
-
-        let start = text.raw.floor_char_boundary(raw_match.saturating_sub(40));
-        let end = text
-            .raw
-            .ceil_char_boundary((raw_end + 80).min(text.raw.len()));
-        let fragment = text.raw[start..end].replace('\n', " ");
-        let fragment = fragment.trim();
-        if fragment.is_empty() {
-            None
-        } else {
-            Some(truncate_chars(fragment, 120))
-        }
+        matching_snippet(&text.raw, &self.search_needle)
     }
 
     fn jump_to_search_match(&mut self, id: &str) {

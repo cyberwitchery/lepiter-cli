@@ -7,39 +7,29 @@ use chrono::DateTime;
 use lepiter_core::{LinkKind, language_to_snippet_type, rewrite_inline_links};
 use serde_json::json;
 
+use super::{ArgSpec, parse_args};
+
+const SPEC: ArgSpec<'static> = ArgSpec {
+    usage: "usage: lepiter-cli import <input-dir> [kb-path]\n\n\
+            converts exported markdown files (with yaml frontmatter) back\n\
+            into lepiter page json files. reverses the `export` subcommand.\n\n\
+            note: binary attachments (images, etc.) are not copied. picture\n\
+            snippet references are preserved but the files must be restored\n\
+            separately.",
+    toggles: &[],
+    valued: &[],
+};
+
 pub fn run_import(args: Vec<String>) -> Result<()> {
-    let mut positional = Vec::new();
+    let Some(args) = parse_args(args, &SPEC)? else {
+        return Ok(());
+    };
 
-    for arg in args {
-        match arg.as_str() {
-            "-h" | "--help" => {
-                eprintln!(
-                    "usage: lepiter-cli import <input-dir> [kb-path]\n\n\
-                     converts exported markdown files (with yaml frontmatter) back\n\
-                     into lepiter page json files. reverses the `export` subcommand.\n\n\
-                     note: binary attachments (images, etc.) are not copied. picture\n\
-                     snippet references are preserved but the files must be restored\n\
-                     separately."
-                );
-                return Ok(());
-            }
-            _ if arg.starts_with('-') => {
-                eprintln!("unknown flag: {arg}");
-                std::process::exit(2);
-            }
-            _ => positional.push(arg),
-        }
-    }
-
-    if positional.is_empty() {
+    let Some(input_dir) = args.positional(0) else {
         bail!("missing required argument: <input-dir>");
-    }
-
-    let input_dir = PathBuf::from(&positional[0]);
-    let kb_path = positional
-        .get(1)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("./lepiter"));
+    };
+    let input_dir = PathBuf::from(input_dir);
+    let kb_path = args.kb_path(1);
 
     if !input_dir.is_dir() {
         bail!("input directory does not exist: {}", input_dir.display());

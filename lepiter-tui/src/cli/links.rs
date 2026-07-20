@@ -1,49 +1,35 @@
-use std::path::PathBuf;
+use anyhow::{Result, bail};
+use lepiter_core::{KnowledgeBaseIndex, LinkEdge};
 
-use anyhow::{Context, Result, bail};
-use lepiter_core::{KnowledgeBase, KnowledgeBaseIndex, LinkEdge};
+use super::{ArgSpec, open_kb, parse_args, resolve_page_id_by_title};
 
-use super::resolve_page_id_by_title;
+const SPEC: ArgSpec<'static> = ArgSpec {
+    usage: "usage: lepiter-cli links [--dot] [--json] [--for <page>] [kb-path]\n\n\
+            shows the page link graph.\n\n\
+            flags:\n  \
+              --dot       output as graphviz dot\n  \
+              --json      output as json with nodes and edges arrays\n  \
+              --for PAGE  show only links involving PAGE (ego graph, resolved by title)",
+    toggles: &["--dot", "--json"],
+    valued: &[("--for", "page")],
+};
 
 pub fn run_links(args: Vec<String>) -> Result<()> {
-    let mut dot = false;
-    let mut json = false;
-    let mut for_page: Option<String> = None;
-    let mut positional = Vec::new();
-
-    let mut iter = args.iter();
-    while let Some(arg) = iter.next() {
-        match arg.as_str() {
-            "--dot" => dot = true,
-            "--json" => json = true,
-            "--for" => {
-                let val = iter
-                    .next()
-                    .ok_or_else(|| anyhow::anyhow!("--for requires a page argument"))?;
-                for_page = Some(val.clone());
-            }
-            _ if arg.starts_with('-') => {
-                eprintln!("unknown flag: {arg}");
-                std::process::exit(2);
-            }
-            _ => positional.push(arg.clone()),
-        }
-    }
+    let Some(args) = parse_args(args, &SPEC)? else {
+        return Ok(());
+    };
+    let dot = args.has("--dot");
+    let json = args.has("--json");
 
     if dot && json {
         bail!("--dot and --json are mutually exclusive");
     }
 
-    let kb_path = positional
-        .first()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("./lepiter"));
-    let index = KnowledgeBase::open(&kb_path)
-        .with_context(|| format!("failed to open knowledge base at {}", kb_path.display()))?;
+    let index = open_kb(&args.kb_path(0))?;
 
     let graph = index.build_link_graph();
 
-    let ego_page_id = match &for_page {
+    let ego_page_id = match args.value("--for") {
         Some(title) => Some(resolve_page_id_by_title(&index, title)?),
         None => None,
     };

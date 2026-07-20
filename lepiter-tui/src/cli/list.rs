@@ -1,32 +1,29 @@
 use std::io::Write;
-use std::path::PathBuf;
 
-use anyhow::{Context, Result};
-use lepiter_core::{KnowledgeBase, KnowledgeBaseIndex};
+use anyhow::Result;
+use lepiter_core::KnowledgeBaseIndex;
 
 use super::format::truncate_chars;
+use super::{ArgSpec, open_kb, parse_args};
+
+const SPEC: ArgSpec<'static> = ArgSpec {
+    usage: "usage: lepiter-cli list [--tsv] [--json] [kb-path]\n\n\
+            lists pages, as pretty columns by default.\n\n\
+            flags:\n  \
+              --tsv   output as tab-separated values\n  \
+              --json  output page metadata as a json array",
+    toggles: &["--tsv", "--json"],
+    valued: &[],
+};
 
 pub fn run_list(args: Vec<String>) -> Result<()> {
-    let mut tsv = false;
-    let mut json = false;
-    let mut positional = Vec::new();
-    for arg in args {
-        match arg.as_str() {
-            "--tsv" => tsv = true,
-            "--json" => json = true,
-            _ if arg.starts_with('-') => {
-                eprintln!("unknown flag: {arg}");
-                std::process::exit(2);
-            }
-            _ => positional.push(arg),
-        }
-    }
-    let kb_path = positional
-        .first()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("./lepiter"));
-    let index = KnowledgeBase::open(&kb_path)
-        .with_context(|| format!("failed to open knowledge base at {}", kb_path.display()))?;
+    let Some(args) = parse_args(args, &SPEC)? else {
+        return Ok(());
+    };
+    let tsv = args.has("--tsv");
+    let json = args.has("--json");
+
+    let index = open_kb(&args.kb_path(0))?;
 
     let mut out = std::io::stdout().lock();
     if json {
@@ -75,6 +72,7 @@ fn write_list_plain(out: &mut impl Write, index: &KnowledgeBaseIndex) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lepiter_core::KnowledgeBase;
 
     fn make_test_kb(pages: &[(&str, &str, &str)]) -> (std::path::PathBuf, KnowledgeBaseIndex) {
         use std::time::{SystemTime, UNIX_EPOCH};

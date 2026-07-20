@@ -32,6 +32,12 @@ all notable changes to this project are documented in this file.
   capital letter — `"Hello"` against a page reading "Hello World" — could never
   match. cli and tui search already lowercased queries before calling it, so
   their behaviour is unchanged; this fixes the function for library callers
+- `-h`/`--help` now prints usage for every subcommand. previously only `export`
+  and `import` understood it; `check`, `ids`, `info`, `links`, `list`, `search`,
+  `show`, and `tags` reported it as an unknown flag and exited 2
+- `info` now takes the *first* path argument as the knowledge base, like every
+  other subcommand. `info a b` previously read `b` and silently ignored `a`,
+  while `list a b` read `a`
 
 ## 0.9.0 - 2026-07-05
 

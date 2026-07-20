@@ -1,50 +1,41 @@
 use std::io::IsTerminal;
-use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
-use lepiter_core::{KnowledgeBase, KnowledgeBaseIndex, LinkTargetKind, Node};
+use lepiter_core::{KnowledgeBaseIndex, LinkTargetKind, Node};
 
 use super::format::render_page_pretty;
-use super::resolve_page_id_by_title;
+use super::{ArgSpec, open_kb, parse_args, resolve_page_id_by_title};
+
+const SPEC: ArgSpec<'static> = ArgSpec {
+    usage: "usage: lepiter-cli show [--id|--by-title] [--open-links] [--json] <value> [kb-path]\n\n\
+            renders one page, looked up by title unless told otherwise.\n\n\
+            flags:\n  \
+              --id, -i      look the page up by id instead of title\n  \
+              --by-title    look the page up by title (the default)\n  \
+              --open-links  list the page's resolved links after the page body\n  \
+              --json        serialize the full parsed page structure",
+    toggles: &["--id", "-i", "--by-title", "--open-links", "--json"],
+    valued: &[],
+};
 
 pub fn run_show(args: Vec<String>) -> Result<()> {
-    let mut by_id = false;
-    let mut by_title = false;
-    let mut open_links = false;
-    let mut json = false;
-    let mut positional = Vec::new();
+    let Some(args) = parse_args(args, &SPEC)? else {
+        return Ok(());
+    };
+    let by_id = args.has("--id") || args.has("-i");
+    let json = args.has("--json");
 
-    for arg in args {
-        match arg.as_str() {
-            "--id" | "-i" => by_id = true,
-            "--by-title" => by_title = true,
-            "--open-links" => open_links = true,
-            "--json" => json = true,
-            _ if arg.starts_with('-') => {
-                eprintln!("unknown flag: {arg}");
-                std::process::exit(2);
-            }
-            _ => positional.push(arg),
-        }
-    }
-
-    if by_id && by_title {
+    if by_id && args.has("--by-title") {
         bail!("--id and --by-title are mutually exclusive");
     }
-    if positional.is_empty() {
+    let Some(value) = args.positional(0) else {
         bail!("missing required argument: <value>");
-    }
-
-    let value = positional[0].trim();
+    };
+    let value = value.trim();
     if value.is_empty() {
         bail!("value must not be empty");
     }
-    let kb_path = positional
-        .get(1)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("./lepiter"));
-    let index = KnowledgeBase::open(&kb_path)
-        .with_context(|| format!("failed to open knowledge base at {}", kb_path.display()))?;
+    let index = open_kb(&args.kb_path(1))?;
 
     let page_id = if by_id {
         value.to_string()
@@ -60,7 +51,7 @@ pub fn run_show(args: Vec<String>) -> Result<()> {
         return Ok(());
     }
 
-    print_page(&index, &page_id, open_links)
+    print_page(&index, &page_id, args.has("--open-links"))
 }
 
 fn print_page(index: &KnowledgeBaseIndex, page_id: &str, show_links: bool) -> Result<()> {

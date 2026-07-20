@@ -1,45 +1,33 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
 
-use anyhow::{Context, Result};
-use lepiter_core::{KnowledgeBase, KnowledgeBaseIndex, PageMeta};
+use anyhow::Result;
+use lepiter_core::{KnowledgeBaseIndex, PageMeta};
 
 use super::format::truncate_chars;
+use super::{ArgSpec, open_kb, parse_args};
+
+const SPEC: ArgSpec<'static> = ArgSpec {
+    usage: "usage: lepiter-cli tags [--tsv] [--json] [--for <tag>] [kb-path]\n\n\
+            lists tags with page counts, or the pages carrying one tag.\n\n\
+            flags:\n  \
+              --for TAG   list pages tagged with TAG (case-insensitive)\n  \
+              --tsv       output as tab-separated values\n  \
+              --json      output as json",
+    toggles: &["--json", "--tsv"],
+    valued: &[("--for", "tag")],
+};
 
 pub fn run_tags(args: Vec<String>) -> Result<()> {
-    let mut json = false;
-    let mut tsv = false;
-    let mut for_tag: Option<String> = None;
-    let mut positional = Vec::new();
+    let Some(args) = parse_args(args, &SPEC)? else {
+        return Ok(());
+    };
+    let json = args.has("--json");
+    let tsv = args.has("--tsv");
 
-    let mut iter = args.iter();
-    while let Some(arg) = iter.next() {
-        match arg.as_str() {
-            "--json" => json = true,
-            "--tsv" => tsv = true,
-            "--for" => {
-                let val = iter
-                    .next()
-                    .ok_or_else(|| anyhow::anyhow!("--for requires a tag argument"))?;
-                for_tag = Some(val.clone());
-            }
-            _ if arg.starts_with('-') => {
-                eprintln!("unknown flag: {arg}");
-                std::process::exit(2);
-            }
-            _ => positional.push(arg.clone()),
-        }
-    }
+    let index = open_kb(&args.kb_path(0))?;
 
-    let kb_path = positional
-        .first()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("./lepiter"));
-    let index = KnowledgeBase::open(&kb_path)
-        .with_context(|| format!("failed to open knowledge base at {}", kb_path.display()))?;
-
-    match for_tag {
-        Some(tag) => print_tag_pages(&index, &tag, json, tsv),
+    match args.value("--for") {
+        Some(tag) => print_tag_pages(&index, tag, json, tsv),
         None => print_tag_summary(&index, json, tsv),
     }
 

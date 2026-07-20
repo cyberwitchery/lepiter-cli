@@ -1,27 +1,20 @@
-use std::path::PathBuf;
+use anyhow::Result;
 
-use anyhow::{Context, Result};
-use lepiter_core::KnowledgeBase;
+use super::{ArgSpec, open_kb, parse_args};
+
+const SPEC: ArgSpec<'static> = ArgSpec {
+    usage: "usage: lepiter-cli ids [kb-path]\n\n\
+            prints page ids only, sorted by title.",
+    toggles: &[],
+    valued: &[],
+};
 
 pub fn run_ids(args: Vec<String>) -> Result<()> {
-    let mut positional = Vec::new();
+    let Some(args) = parse_args(args, &SPEC)? else {
+        return Ok(());
+    };
 
-    for arg in &args {
-        match arg.as_str() {
-            _ if arg.starts_with('-') => {
-                eprintln!("unknown flag: {arg}");
-                std::process::exit(2);
-            }
-            _ => positional.push(arg.clone()),
-        }
-    }
-
-    let kb_path = positional
-        .first()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("./lepiter"));
-    let index = KnowledgeBase::open(&kb_path)
-        .with_context(|| format!("failed to open knowledge base at {}", kb_path.display()))?;
+    let index = open_kb(&args.kb_path(0))?;
     for meta in index.sorted_pages() {
         println!("{}", meta.id);
     }

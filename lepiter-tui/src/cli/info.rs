@@ -1,11 +1,10 @@
 use std::collections::HashMap;
-use std::fs;
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use lepiter_core::{BrokenLink, KnowledgeBaseIndex, PageId, ParseIssue};
 
-use super::{ArgSpec, open_kb, parse_args};
+use super::{ArgSpec, open_kb, parse_args, read_kb_properties};
 
 const SPEC: ArgSpec<'static> = ArgSpec {
     usage: "usage: lepiter-cli info [--detail] [--json] [kb-path]\n\n\
@@ -28,14 +27,7 @@ pub fn run_info(args: Vec<String>) -> Result<()> {
 pub fn print_kb_info(kb_path: PathBuf, detail: bool, json: bool) -> Result<()> {
     let index = open_kb(&kb_path)?;
 
-    let props_path = kb_path.join("lepiter.properties");
-    let props = if props_path.is_file() {
-        let bytes = fs::read(&props_path)
-            .with_context(|| format!("failed to read {}", props_path.display()))?;
-        serde_json::from_slice::<serde_json::Value>(&bytes).ok()
-    } else {
-        None
-    };
+    let props = read_kb_properties(&kb_path)?;
 
     let db_name = props
         .as_ref()
@@ -52,11 +44,10 @@ pub fn print_kb_info(kb_path: PathBuf, detail: bool, json: bool) -> Result<()> {
         .and_then(|v| v.get("schema"))
         .and_then(|v| v.as_str())
         .unwrap_or("<unknown>");
-    let table_of_contents = props
+    let toc_page_id = props
         .as_ref()
         .and_then(|v| v.get("tableOfContents"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("<none>");
+        .and_then(|v| v.as_str());
 
     let mut min_updated = None;
     let mut max_updated = None;
@@ -72,7 +63,7 @@ pub fn print_kb_info(kb_path: PathBuf, detail: bool, json: bool) -> Result<()> {
     }
 
     let detailed = if detail {
-        Some(compute_detailed_info(&index, table_of_contents))
+        Some(compute_detailed_info(&index, toc_page_id))
     } else {
         None
     };
@@ -82,7 +73,7 @@ pub fn print_kb_info(kb_path: PathBuf, detail: bool, json: bool) -> Result<()> {
         name: db_name.to_string(),
         uuid: db_uuid.to_string(),
         schema: schema.to_string(),
-        table_of_contents: table_of_contents.to_string(),
+        table_of_contents: toc_page_id.unwrap_or("<none>").to_string(),
         page_count: index.pages.len(),
         index_issues: &index.index_issues,
         min_updated,
@@ -122,7 +113,7 @@ struct KbInfo<'a> {
     index: &'a KnowledgeBaseIndex,
 }
 
-fn compute_detailed_info(index: &KnowledgeBaseIndex, toc_page_id: &str) -> DetailedInfo {
+fn compute_detailed_info(index: &KnowledgeBaseIndex, toc_page_id: Option<&str>) -> DetailedInfo {
     use lepiter_core::collect_node_types_in_file;
 
     // Link analysis via unified core function.
@@ -389,7 +380,7 @@ mod tests {
     #[test]
     fn compute_detailed_info_counts_snippet_types() {
         let (dir, index) = make_test_kb(&[("p1", "Page One", "hello world")]);
-        let info = compute_detailed_info(&index, "");
+        let info = compute_detailed_info(&index, None);
         // The textSnippet from the JSON should appear in snippet_types.
         assert!(info.snippet_types.iter().any(|(t, _)| t == "textSnippet"));
         std::fs::remove_dir_all(&dir).ok();
@@ -400,7 +391,7 @@ mod tests {
         // Two pages, neither links to the other — both should be orphans.
         let (dir, index) =
             make_test_kb(&[("p1", "Page One", "hello"), ("p2", "Page Two", "world")]);
-        let info = compute_detailed_info(&index, "");
+        let info = compute_detailed_info(&index, None);
         assert_eq!(info.orphan_ids.len(), 2);
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -412,7 +403,7 @@ mod tests {
             ("p1", "Table of Contents", "hello"),
             ("p2", "Page Two", "world"),
         ]);
-        let info = compute_detailed_info(&index, "p1");
+        let info = compute_detailed_info(&index, Some("p1"));
         // p1 excluded as TOC, only p2 should be orphan.
         assert_eq!(info.orphan_ids.len(), 1);
         assert_eq!(info.orphan_ids[0], "p2");
@@ -426,7 +417,7 @@ mod tests {
             ("p1", "Page One", "see [link](page:p2) for more"),
             ("p2", "Page Two", "target page"),
         ]);
-        let info = compute_detailed_info(&index, "");
+        let info = compute_detailed_info(&index, None);
         // p2 is linked to by p1, so only p1 should be orphan.
         assert_eq!(info.orphan_ids.len(), 1);
         assert_eq!(info.orphan_ids[0], "p1");
@@ -437,7 +428,7 @@ mod tests {
     fn compute_detailed_info_detects_broken_links() {
         // p1 links to a nonexistent page.
         let (dir, index) = make_test_kb(&[("p1", "Page One", "see [link](page:nonexistent) here")]);
-        let info = compute_detailed_info(&index, "");
+        let info = compute_detailed_info(&index, None);
         assert_eq!(info.broken_links.len(), 1);
         assert_eq!(info.broken_links[0].target, "page:nonexistent");
         std::fs::remove_dir_all(&dir).ok();
@@ -446,7 +437,7 @@ mod tests {
     #[test]
     fn compute_detailed_info_empty_kb() {
         let (dir, index) = make_test_kb(&[]);
-        let info = compute_detailed_info(&index, "");
+        let info = compute_detailed_info(&index, None);
         assert!(info.broken_links.is_empty());
         assert!(info.orphan_ids.is_empty());
         assert!(info.snippet_types.is_empty());

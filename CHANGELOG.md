@@ -15,6 +15,12 @@ all notable changes to this project are documented in this file.
   snippet, matching the tui
 
 ### fixed
+- `check` no longer silently swallows a corrupt or unreadable
+  `lepiter.properties`. a malformed file could previously cause `check` to report
+  the table-of-contents page as a false orphan and exit 1 with no mention of the
+  real problem; it now prints a warning naming the file, and an unreadable
+  (but present) file surfaces an error instead of being ignored. `info` reports
+  the same warning on a malformed file
 - `[[Title]]` wikilinks and `page:`/`title:` links now require an exact title
   match instead of silently binding to a substring, so `[[Rust]]` no longer
   resolves to a page titled "Rust Programming". this stops `check` from hiding

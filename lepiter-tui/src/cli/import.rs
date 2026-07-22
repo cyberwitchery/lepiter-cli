@@ -587,12 +587,20 @@ fn build_page_json(fm: &Frontmatter, snippets: &[Snippet]) -> serde_json::Value 
         page["tags"] = json!(fm.tags);
     }
 
-    if let Some(updated) = &fm.updated_at
-        && DateTime::parse_from_rfc3339(updated).is_ok()
-    {
-        page["editTime"] = json!({
-            "time": { "dateAndTimeString": updated }
-        });
+    if let Some(updated) = &fm.updated_at {
+        match DateTime::parse_from_rfc3339(updated) {
+            Ok(_) => {
+                page["editTime"] = json!({
+                    "time": { "dateAndTimeString": updated }
+                });
+            }
+            Err(_) => {
+                eprintln!(
+                    "warning: ignoring unparseable updated_at {updated:?} for page {} (expected RFC 3339)",
+                    fm.id
+                );
+            }
+        }
     }
 
     page
@@ -1005,6 +1013,30 @@ mod tests {
         assert_eq!(items[0]["string"], "Hello");
         assert_eq!(items[1]["__type"], "pythonSnippet");
         assert_eq!(items[1]["code"], "print(1)");
+    }
+
+    #[test]
+    fn build_page_json_updated_at_parse() {
+        let valid = Frontmatter {
+            title: "Valid".to_string(),
+            id: "valid-1".to_string(),
+            tags: Vec::new(),
+            updated_at: Some("2024-01-01T00:00:00+00:00".to_string()),
+        };
+        let json = build_page_json(&valid, &[]);
+        assert_eq!(
+            json["editTime"]["time"]["dateAndTimeString"],
+            "2024-01-01T00:00:00+00:00"
+        );
+
+        let invalid = Frontmatter {
+            title: "Invalid".to_string(),
+            id: "invalid-1".to_string(),
+            tags: Vec::new(),
+            updated_at: Some("not-a-date".to_string()),
+        };
+        let json = build_page_json(&invalid, &[]);
+        assert!(json.get("editTime").is_none());
     }
 
     #[test]

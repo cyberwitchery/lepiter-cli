@@ -48,6 +48,8 @@ all notable changes to this project are documented in this file.
 - `info` now takes the *first* path argument as the knowledge base, like every
   other subcommand. `info a b` previously read `b` and silently ignored `a`,
   while `list a b` read `a`
+- `import` now warns on stderr when a page's `updated_at` frontmatter date can't
+  be parsed, instead of silently discarding the timestamp
 
 ## 0.9.0 - 2026-07-05
 

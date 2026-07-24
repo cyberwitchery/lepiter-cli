@@ -2,15 +2,17 @@ use std::fs;
 use std::io::Write;
 
 use anyhow::Result;
-use lepiter_core::{BrokenLink, DuplicateTitle, KnowledgeBaseIndex, MissingAttachment, ParseIssue};
+use lepiter_core::{
+    BrokenLink, DuplicateId, DuplicateTitle, KnowledgeBaseIndex, MissingAttachment, ParseIssue,
+};
 
 use super::{ArgSpec, open_kb, parse_args};
 
 const SPEC: ArgSpec<'static> = ArgSpec {
     usage: "usage: lepiter-cli check [--json] [kb-path]\n\n\
             validates knowledge base integrity. exits with status 1 if any issues\n\
-            are found (broken links, orphan pages, duplicate titles, missing\n\
-            attachments).\n\n\
+            are found (broken links, orphan pages, duplicate titles, duplicate\n\
+            ids, missing attachments).\n\n\
             flags:\n  \
               --json  output as json",
     toggles: &["--json"],
@@ -24,6 +26,7 @@ struct CheckReport<'a> {
     load_errors: &'a [lepiter_core::PageLoadError],
     index_issues: &'a [ParseIssue],
     duplicate_titles: &'a [DuplicateTitle],
+    duplicate_ids: &'a [DuplicateId],
     missing_attachments: &'a [MissingAttachment],
 }
 
@@ -34,6 +37,7 @@ impl CheckReport<'_> {
             && self.load_errors.is_empty()
             && self.index_issues.is_empty()
             && self.duplicate_titles.is_empty()
+            && self.duplicate_ids.is_empty()
             && self.missing_attachments.is_empty()
     }
 }
@@ -83,6 +87,7 @@ pub fn run_check(args: Vec<String>) -> Result<()> {
         );
     }
 
+    let duplicate_ids = index.find_duplicate_ids();
     let report = CheckReport {
         index: &index,
         broken_links: &analysis.broken_links,
@@ -90,6 +95,7 @@ pub fn run_check(args: Vec<String>) -> Result<()> {
         load_errors: &analysis.load_errors,
         index_issues: &index.index_issues,
         duplicate_titles: &duplicate_titles,
+        duplicate_ids: &duplicate_ids,
         missing_attachments: &analysis.missing_attachments,
     };
 
@@ -112,6 +118,7 @@ fn write_check_text(out: &mut impl Write, report: &CheckReport) {
     let _ = writeln!(out, "  broken_links: {}", report.broken_links.len());
     let _ = writeln!(out, "  orphan_pages: {}", report.orphan_ids.len());
     let _ = writeln!(out, "  duplicate_titles: {}", report.duplicate_titles.len());
+    let _ = writeln!(out, "  duplicate_ids: {}", report.duplicate_ids.len());
     let _ = writeln!(
         out,
         "  missing_attachments: {}",
@@ -156,6 +163,18 @@ fn write_check_text(out: &mut impl Write, report: &CheckReport) {
             let _ = writeln!(out, "  \"{}\" ({} pages)", dup.title, dup.page_ids.len());
             for id in &dup.page_ids {
                 let _ = writeln!(out, "    - {id}");
+            }
+        }
+    }
+
+    let _ = writeln!(out, "\nDuplicate Ids ({}):", report.duplicate_ids.len());
+    if report.duplicate_ids.is_empty() {
+        let _ = writeln!(out, "  (none)");
+    } else {
+        for dup in report.duplicate_ids {
+            let _ = writeln!(out, "  \"{}\" ({} files)", dup.id, dup.paths.len());
+            for path in &dup.paths {
+                let _ = writeln!(out, "    - {}", path.display());
             }
         }
     }
@@ -243,6 +262,18 @@ fn write_check_json(out: &mut impl Write, report: &CheckReport) {
         })
         .collect();
 
+    let dup_ids: Vec<serde_json::Value> = report
+        .duplicate_ids
+        .iter()
+        .map(|dup| {
+            let paths: Vec<String> = dup.paths.iter().map(|p| p.display().to_string()).collect();
+            serde_json::json!({
+                "id": dup.id,
+                "paths": paths,
+            })
+        })
+        .collect();
+
     let attachments: Vec<serde_json::Value> = report
         .missing_attachments
         .iter()
@@ -272,6 +303,7 @@ fn write_check_json(out: &mut impl Write, report: &CheckReport) {
         "broken_links": broken,
         "orphan_pages": orphans,
         "duplicate_titles": dupes,
+        "duplicate_ids": dup_ids,
         "missing_attachments": attachments,
         "load_errors": errors,
         "index_issues": idx_issues,
@@ -323,6 +355,7 @@ mod tests {
             load_errors: &[],
             index_issues: &[],
             duplicate_titles: &[],
+            duplicate_ids: &[],
             missing_attachments: &[],
         }
     }
@@ -359,6 +392,7 @@ mod tests {
         assert!(out.contains("broken_links: 0"));
         assert!(out.contains("orphan_pages: 0"));
         assert!(out.contains("duplicate_titles: 0"));
+        assert!(out.contains("duplicate_ids: 0"));
         assert!(out.contains("missing_attachments: 0"));
         assert!(out.contains("load_errors: 0"));
         assert!(out.contains("index_issues: 0"));
@@ -375,6 +409,7 @@ mod tests {
         assert!(out.contains("Broken Links (0):"));
         assert!(out.contains("Orphan Pages (0):"));
         assert!(out.contains("Duplicate Titles (0):"));
+        assert!(out.contains("Duplicate Ids (0):"));
         assert!(out.contains("Missing Attachments (0):"));
         // Load errors and index issues sections are omitted when empty.
         assert!(!out.contains("Load Errors"));
@@ -437,6 +472,32 @@ mod tests {
         assert!(out.contains("\"Alpha\" (2 pages)"));
         assert!(out.contains("    - p1"));
         assert!(out.contains("    - p2"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // --- write_check_text: duplicate ids ---
+
+    #[test]
+    fn check_text_duplicate_ids_listed() {
+        let (dir, index) = make_test_kb(&[]);
+        let dupes = vec![DuplicateId {
+            id: "shared".into(),
+            paths: vec![
+                PathBuf::from("/kb/a.lepiter"),
+                PathBuf::from("/kb/b.lepiter"),
+            ],
+        }];
+        let report = CheckReport {
+            duplicate_ids: &dupes,
+            ..empty_report(&index)
+        };
+        let out = output_string(|buf| {
+            write_check_text(buf, &report);
+        });
+        assert!(out.contains("duplicate_ids: 1"));
+        assert!(out.contains("\"shared\" (2 files)"));
+        assert!(out.contains("    - /kb/a.lepiter"));
+        assert!(out.contains("    - /kb/b.lepiter"));
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -516,6 +577,7 @@ mod tests {
         assert_eq!(parsed["broken_links"].as_array().unwrap().len(), 0);
         assert_eq!(parsed["orphan_pages"].as_array().unwrap().len(), 0);
         assert_eq!(parsed["duplicate_titles"].as_array().unwrap().len(), 0);
+        assert_eq!(parsed["duplicate_ids"].as_array().unwrap().len(), 0);
         assert_eq!(parsed["missing_attachments"].as_array().unwrap().len(), 0);
         assert_eq!(parsed["load_errors"].as_array().unwrap().len(), 0);
         assert_eq!(parsed["index_issues"].as_array().unwrap().len(), 0);
@@ -586,6 +648,36 @@ mod tests {
         assert_eq!(dt[0]["title"], "Alpha");
         let ids = dt[0]["page_ids"].as_array().unwrap();
         assert_eq!(ids.len(), 2);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // --- write_check_json: duplicate ids ---
+
+    #[test]
+    fn check_json_duplicate_ids_populated() {
+        let (dir, index) = make_test_kb(&[]);
+        let dupes = vec![DuplicateId {
+            id: "shared".into(),
+            paths: vec![
+                PathBuf::from("/kb/a.lepiter"),
+                PathBuf::from("/kb/b.lepiter"),
+            ],
+        }];
+        let report = CheckReport {
+            duplicate_ids: &dupes,
+            ..empty_report(&index)
+        };
+        let out = output_string(|buf| {
+            write_check_json(buf, &report);
+        });
+        let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(parsed["ok"], false);
+        let di = parsed["duplicate_ids"].as_array().unwrap();
+        assert_eq!(di.len(), 1);
+        assert_eq!(di[0]["id"], "shared");
+        let paths = di[0]["paths"].as_array().unwrap();
+        assert_eq!(paths.len(), 2);
+        assert_eq!(paths[0], "/kb/a.lepiter");
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -695,11 +787,12 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert!(parsed.is_object());
         assert_eq!(parsed["ok"], false);
-        // All seven top-level keys present.
+        // All eight top-level keys present.
         assert!(parsed.get("ok").is_some());
         assert!(parsed.get("broken_links").is_some());
         assert!(parsed.get("orphan_pages").is_some());
         assert!(parsed.get("duplicate_titles").is_some());
+        assert!(parsed.get("duplicate_ids").is_some());
         assert!(parsed.get("missing_attachments").is_some());
         assert!(parsed.get("load_errors").is_some());
         assert!(parsed.get("index_issues").is_some());

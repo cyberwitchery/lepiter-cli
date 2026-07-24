@@ -5,6 +5,11 @@ all notable changes to this project are documented in this file.
 ## Unreleased
 
 ### added
+- `check` now reports duplicate page ids. when two `.lepiter` files resolve to
+  the same page id, one page was silently dropped from the index, search, links,
+  and export with no diagnostic; `check` now lists the shared id and the files
+  claiming it (a `duplicate_ids` section in the text report, a `duplicate_ids`
+  array in `--json`) and exits non-zero
 - `search --full-text` now shows a matching-context snippet for each content
   hit, so you can see why a page matched without opening it. the snippet appears
   as a `snippet` field in `--json`, a fourth column in `--tsv`, and an indented

@@ -45,8 +45,8 @@ mod util;
 pub mod plugin;
 
 pub use index::{
-    BrokenLink, DuplicateTitle, KnowledgeBase, KnowledgeBaseIndex, LinkAnalysisResult, LinkEdge,
-    LinkGraph, MissingAttachment, PageLoadError,
+    BrokenLink, DuplicateId, DuplicateTitle, KnowledgeBase, KnowledgeBaseIndex, LinkAnalysisResult,
+    LinkEdge, LinkGraph, MissingAttachment, PageLoadError,
 };
 pub use inline_link::{InlineLink, InlineLinks, LinkKind, rewrite_inline_links, scan_inline_links};
 pub use model::{

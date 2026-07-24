@@ -40,6 +40,9 @@ pub struct KnowledgeBaseIndex {
     /// Kept in sync with `backlinks` so that incremental updates can remove
     /// stale entries in O(outgoing_links) instead of scanning every backlink.
     forward_links: HashMap<PageId, HashSet<PageId>>,
+    /// Ids claimed by more than one `.lepiter` file, captured during [`KnowledgeBase::open`]
+    /// before the collision is lost to `pages`.
+    pub duplicate_ids: Vec<DuplicateId>,
 }
 
 /// Entry point for opening a Lepiter knowledge base directory.
@@ -54,6 +57,7 @@ impl KnowledgeBase {
         let root = path.as_ref().to_path_buf();
         let mut pages = HashMap::new();
         let mut issues = Vec::new();
+        let mut id_paths: HashMap<PageId, Vec<PathBuf>> = HashMap::new();
 
         for entry in WalkDir::new(&root)
             .min_depth(1)
@@ -81,6 +85,10 @@ impl KnowledgeBase {
                         meta.title = meta.id.clone();
                         meta.title_lower = meta.title.to_lowercase();
                     }
+                    id_paths
+                        .entry(meta.id.clone())
+                        .or_default()
+                        .push(file_path.to_path_buf());
                     pages.insert(meta.id.clone(), meta);
                 }
                 Err(err) => issues.push(ParseIssue {
@@ -92,6 +100,7 @@ impl KnowledgeBase {
 
         let sorted_ids = compute_sorted_ids(&pages);
         let title_index = compute_title_index(&pages, &sorted_ids);
+        let duplicate_ids = collect_duplicate_ids(id_paths);
 
         Ok(KnowledgeBaseIndex {
             root,
@@ -101,6 +110,7 @@ impl KnowledgeBase {
             index_issues: issues,
             backlinks: HashMap::new(),
             forward_links: HashMap::new(),
+            duplicate_ids,
         })
     }
 }
@@ -592,6 +602,11 @@ impl KnowledgeBaseIndex {
         dupes
     }
 
+    /// Returns page ids claimed by more than one file, captured at open time.
+    pub fn find_duplicate_ids(&self) -> Vec<DuplicateId> {
+        self.duplicate_ids.clone()
+    }
+
     /// Finds attachment references whose files are missing from disk.
     pub fn find_missing_attachments(&self) -> Vec<MissingAttachment> {
         self.scan_all_pages().missing_attachments
@@ -660,6 +675,15 @@ pub struct DuplicateTitle {
     pub page_ids: Vec<PageId>,
 }
 
+/// A set of `.lepiter` files that resolve to the same page id.
+#[derive(Debug, Clone)]
+pub struct DuplicateId {
+    /// The shared page id.
+    pub id: PageId,
+    /// Paths of the files claiming this id, sorted.
+    pub paths: Vec<PathBuf>,
+}
+
 /// An attachment reference that points to a file not found on disk.
 #[derive(Debug, Clone)]
 pub struct MissingAttachment {
@@ -709,6 +733,21 @@ fn compute_sorted_ids(pages: &HashMap<PageId, PageMeta>) -> Vec<PageId> {
     let mut entries: Vec<_> = pages.values().collect();
     entries.sort_by(|a, b| a.title_lower.cmp(&b.title_lower));
     entries.into_iter().map(|m| m.id.clone()).collect()
+}
+
+/// Collapses the scan-time id -> paths map into sorted `DuplicateId`s for every
+/// id claimed by more than one file.
+fn collect_duplicate_ids(id_paths: HashMap<PageId, Vec<PathBuf>>) -> Vec<DuplicateId> {
+    let mut dupes: Vec<DuplicateId> = id_paths
+        .into_iter()
+        .filter(|(_, paths)| paths.len() > 1)
+        .map(|(id, mut paths)| {
+            paths.sort();
+            DuplicateId { id, paths }
+        })
+        .collect();
+    dupes.sort_by(|a, b| a.id.cmp(&b.id));
+    dupes
 }
 
 /// Builds the exact-title lookup index keyed by lowercased title.  Ids are
@@ -814,6 +853,7 @@ mod tests {
             index_issues: Vec::new(),
             backlinks: HashMap::new(),
             forward_links: HashMap::new(),
+            duplicate_ids: Vec::new(),
         };
 
         assert_eq!(index.filter_page_ids("alpha"), vec!["id-1".to_string()]);
@@ -864,6 +904,7 @@ mod tests {
             index_issues: Vec::new(),
             backlinks: HashMap::new(),
             forward_links: HashMap::new(),
+            duplicate_ids: Vec::new(),
         };
 
         assert_eq!(
@@ -936,6 +977,7 @@ mod tests {
             index_issues: Vec::new(),
             backlinks: HashMap::new(),
             forward_links: HashMap::new(),
+            duplicate_ids: Vec::new(),
         };
 
         assert!(matches!(
@@ -1348,6 +1390,42 @@ mod tests {
         let meta = index.pages.values().next().unwrap();
         assert_eq!(meta.id, "mypage");
         assert_eq!(meta.title, "mypage");
+        Ok(())
+    }
+
+    #[test]
+    fn open_reports_duplicate_ids_across_files() -> anyhow::Result<()> {
+        let dir = temp_dir_path("dup-ids");
+        fs::create_dir_all(&dir)?;
+        let page = |body: &str| {
+            json!({
+                "uid": {"uuid": "shared"},
+                "pageType": {"title": "Whatever"},
+                "tags": [],
+                "children": {"items": [{"__type": "textSnippet", "string": body}]}
+            })
+        };
+        let a = dir.join("a.lepiter");
+        let b = dir.join("b.lepiter");
+        fs::write(&a, serde_json::to_vec(&page("first"))?)?;
+        fs::write(&b, serde_json::to_vec(&page("second"))?)?;
+
+        let index = KnowledgeBase::open(&dir)?;
+        fs::remove_dir_all(&dir)?;
+
+        assert_eq!(index.pages.len(), 1);
+        let dupes = index.find_duplicate_ids();
+        assert_eq!(dupes.len(), 1);
+        assert_eq!(dupes[0].id, "shared");
+        assert_eq!(dupes[0].paths, vec![a, b]);
+        Ok(())
+    }
+
+    #[test]
+    fn open_reports_no_duplicate_ids_for_unique_kb() -> anyhow::Result<()> {
+        let (dir, index) = make_kb_on_disk(&[("p1", "Alpha", &[], "a"), ("p2", "Beta", &[], "b")]);
+        assert!(index.find_duplicate_ids().is_empty());
+        fs::remove_dir_all(&dir).unwrap();
         Ok(())
     }
 

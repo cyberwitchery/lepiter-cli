@@ -36,18 +36,24 @@ fn render_nodes_into(
     for node in nodes {
         match node {
             Node::Heading { level, text } => {
+                let text = rewrite_inline_links(text, &mut *rewrite);
+                let mut lines = block_lines(&text).into_iter();
                 out.push_str(&"#".repeat((*level).max(1) as usize));
                 out.push(' ');
-                out.push_str(&rewrite_inline_links(text, &mut *rewrite));
-                out.push_str("\n\n");
+                out.push_str(lines.next().unwrap_or(""));
+                out.push('\n');
+                for line in lines {
+                    out.push_str(&escape_block_start(line));
+                    out.push('\n');
+                }
+                out.push('\n');
             }
             Node::Paragraph { text } => {
-                out.push_str(&rewrite_inline_links(text, &mut *rewrite));
-                out.push_str("\n\n");
+                push_escaped_lines(&rewrite_inline_links(text, &mut *rewrite), out);
+                out.push('\n');
             }
             Node::Text { text } => {
-                out.push_str(&rewrite_inline_links(text, &mut *rewrite));
-                out.push('\n');
+                push_escaped_lines(&rewrite_inline_links(text, &mut *rewrite), out);
             }
             Node::List { items } => {
                 for item in items {
@@ -68,23 +74,33 @@ fn render_nodes_into(
                 out.push('\n');
             }
             Node::Code { language, code } => {
-                out.push_str("```");
+                let fence = fence_for(code);
+                out.push_str(&fence);
                 if let Some(lang) = language {
                     out.push_str(lang);
                 }
                 out.push('\n');
                 out.push_str(code);
-                out.push_str("\n```\n\n");
+                out.push('\n');
+                out.push_str(&fence);
+                out.push_str("\n\n");
             }
             Node::Link { text, url } => {
                 let rewritten = rewrite(LinkKind::Markdown, url).unwrap_or_else(|| url.clone());
                 out.push_str(&format!("[{text}]({rewritten})\n\n"));
             }
             Node::Quote { text } => {
-                out.push_str(&format!(
-                    "> {}\n\n",
-                    rewrite_inline_links(text, &mut *rewrite)
-                ));
+                let text = rewrite_inline_links(text, &mut *rewrite);
+                for line in block_lines(&text) {
+                    if line.is_empty() {
+                        out.push_str(">\n");
+                    } else {
+                        out.push_str("> ");
+                        out.push_str(line);
+                        out.push('\n');
+                    }
+                }
+                out.push('\n');
             }
             Node::Rewrite {
                 language,
@@ -94,30 +110,89 @@ fn render_nodes_into(
                 is_method_pattern,
             } => {
                 let lang = language.clone().unwrap_or_else(|| "rewrite".to_string());
-                out.push_str(&format!("```diff {lang}\n"));
+                let mut body = String::new();
                 if let Some(scope) = scope {
-                    out.push_str(&format!("# scope: {scope}\n"));
+                    body.push_str(&format!("# scope: {scope}\n"));
                 }
                 if let Some(is_method_pattern) = is_method_pattern {
-                    out.push_str(&format!("# method_pattern: {is_method_pattern}\n"));
+                    body.push_str(&format!("# method_pattern: {is_method_pattern}\n"));
                 }
                 for line in normalize_text(search).lines() {
-                    out.push('-');
-                    out.push_str(line);
-                    out.push('\n');
+                    body.push('-');
+                    body.push_str(line);
+                    body.push('\n');
                 }
                 for line in normalize_text(replace).lines() {
-                    out.push('+');
-                    out.push_str(line);
-                    out.push('\n');
+                    body.push('+');
+                    body.push_str(line);
+                    body.push('\n');
                 }
-                out.push_str("```\n\n");
+                let fence = fence_for(&body);
+                out.push_str(&format!("{fence}diff {lang}\n{body}{fence}\n\n"));
             }
             Node::Unknown { typ, .. } => {
                 out.push_str(&format!("[[unknown: {typ}]]\n\n"));
             }
         }
     }
+}
+
+/// The lines of `text` split on `\n` alone, so empty and `\r`-terminated lines
+/// survive.
+fn block_lines(text: &str) -> Vec<&str> {
+    text.split('\n').collect()
+}
+
+fn push_escaped_lines(text: &str, out: &mut String) {
+    for line in block_lines(text) {
+        out.push_str(&escape_block_start(line));
+        out.push('\n');
+    }
+}
+
+/// A backtick fence long enough that no line of `content` can close it.
+fn fence_for(content: &str) -> String {
+    let mut longest = 0usize;
+    let mut run = 0usize;
+    for c in content.chars() {
+        if c == '`' {
+            run += 1;
+            longest = longest.max(run);
+        } else {
+            run = 0;
+        }
+    }
+    "`".repeat((longest + 1).max(3))
+}
+
+/// Escapes a rendered text line that a line-oriented markdown reader would
+/// otherwise take for the start of a list, blockquote, fenced code block, or
+/// `[[unknown: ...]]` marker.
+///
+/// The escape is a leading backslash, which CommonMark renders as the bare
+/// line. A line that already starts with a backslash is escaped too, so
+/// [`unescape_block_start`] is an exact inverse.
+pub fn escape_block_start(line: &str) -> String {
+    if starts_block(line) {
+        format!("\\{line}")
+    } else {
+        line.to_string()
+    }
+}
+
+/// Inverse of [`escape_block_start`].
+pub fn unescape_block_start(line: &str) -> String {
+    line.strip_prefix('\\').unwrap_or(line).to_string()
+}
+
+fn starts_block(line: &str) -> bool {
+    let trimmed = line.trim();
+    line.starts_with('\\')
+        || line.starts_with("- ")
+        || line.starts_with("> ")
+        || line == ">"
+        || line.starts_with("```")
+        || (trimmed.starts_with("[[unknown: ") && trimmed.ends_with("]]"))
 }
 
 /// Checks whether the rendered text of a page contains `needle`
@@ -284,6 +359,94 @@ mod tests {
         assert!(plain.contains("see [[Topic]]"));
         assert!(plain.contains("a [x](page:abc) b"));
         assert!(plain.contains("[go](page:abc)"));
+    }
+
+    #[test]
+    fn fence_widens_past_the_longest_backtick_run() {
+        assert_eq!(fence_for("plain code"), "```");
+        assert_eq!(fence_for("a ` b"), "```");
+        assert_eq!(fence_for("```"), "````");
+        assert_eq!(fence_for("outer\n`````\ninner"), "``````");
+    }
+
+    #[test]
+    fn code_block_fence_outgrows_a_nested_fence() {
+        let text = render_nodes_to_text(&[Node::Code {
+            language: Some("python".to_string()),
+            code: "doc = '''\n```\nnested\n```\n'''".to_string(),
+        }]);
+        assert_eq!(
+            text,
+            "````python\ndoc = '''\n```\nnested\n```\n'''\n````\n\n"
+        );
+    }
+
+    #[test]
+    fn escape_block_start_covers_every_block_opener() {
+        assert_eq!(escape_block_start("- item"), "\\- item");
+        assert_eq!(escape_block_start("> quote"), "\\> quote");
+        assert_eq!(escape_block_start(">"), "\\>");
+        assert_eq!(escape_block_start("```rust"), "\\```rust");
+        assert_eq!(escape_block_start("[[unknown: x]]"), "\\[[unknown: x]]");
+        assert_eq!(escape_block_start("\\already"), "\\\\already");
+    }
+
+    #[test]
+    fn escape_block_start_leaves_ordinary_prose_alone() {
+        for line in ["plain", "", "-dash", "a - b", ">>chevron", "``inline``"] {
+            assert_eq!(escape_block_start(line), line);
+        }
+    }
+
+    #[test]
+    fn unescape_block_start_inverts_escape_block_start() {
+        for line in [
+            "plain",
+            "",
+            "- item",
+            "> quote",
+            ">",
+            "```rust",
+            "[[unknown: x]]",
+            "\\already",
+            "\\\\twice",
+            "\\- hand-escaped",
+        ] {
+            assert_eq!(unescape_block_start(&escape_block_start(line)), line);
+        }
+    }
+
+    #[test]
+    fn multi_line_nodes_escape_every_line() {
+        let text = render_nodes_to_text(&[Node::Paragraph {
+            text: "intro\n- not a list\n> not a quote".to_string(),
+        }]);
+        assert_eq!(text, "intro\n\\- not a list\n\\> not a quote\n\n");
+    }
+
+    #[test]
+    fn heading_escapes_continuation_lines_only() {
+        let text = render_nodes_to_text(&[Node::Heading {
+            level: 2,
+            text: "title\n- not a list".to_string(),
+        }]);
+        assert_eq!(text, "## title\n\\- not a list\n\n");
+    }
+
+    #[test]
+    fn quote_marks_every_line() {
+        let text = render_nodes_to_text(&[Node::Quote {
+            text: "first\n\nthird".to_string(),
+        }]);
+        assert_eq!(text, "> first\n>\n> third\n\n");
+    }
+
+    #[test]
+    fn render_preserves_carriage_returns_in_text() {
+        let text = render_nodes_to_text(&[Node::Paragraph {
+            text: "one\r\ntwo".to_string(),
+        }]);
+        assert_eq!(text, "one\r\ntwo\n\n");
     }
 
     #[test]

@@ -29,6 +29,22 @@ all notable changes to this project are documented in this file.
   keep their convenient substring matching
 - `export`→`import` round-trip no longer silently converts some code snippets to
   plain text; all recognized code snippet types now round-trip losslessly
+- a code snippet whose body contains a ```` ``` ```` line is no longer shredded
+  on `import`. `export` now opens and closes such a snippet with a longer
+  backtick fence, so a page quoting a markdown fence — ordinary content in
+  programming notes — comes back as the one code snippet it started as instead
+  of a truncated snippet plus stray text snippets
+- a text snippet containing a line break is no longer split into one snippet per
+  line by `import`; consecutive lines are read back as the single paragraph
+  `export` wrote. the same applies to multi-line headings and block quotes
+- prose no longer changes type on the round trip. a text snippet reading
+  `- like a list`, opening with a ```` ``` ```` fence, or reading
+  `[[unknown: …]]` used to come back as a list, code, or unknown snippet, losing
+  the marker text; `export` now escapes those line starts and `import` unescapes
+  them. content that legitimately starts with a backslash is preserved
+- `import` no longer swallows a ```` ```diff ```` block that has no `-`/`+`
+  lines; it is kept as a text snippet instead of vanishing
+- `import --help` now states which parts of a page do not survive the round trip
 - list items with sub-bullets or multiple content blocks are no longer truncated
   to their first line when a page is parsed; the nested content now appears in
   rendered, searched, and exported output

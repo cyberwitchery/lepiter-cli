@@ -512,6 +512,7 @@ impl KnowledgeBaseIndex {
                 }
             };
             seen_edges.clear();
+            seen_attachments.clear();
             for target in extract_link_targets(&page.content) {
                 match self.classify_link_target(&target) {
                     LinkTargetKind::InternalPage(target_id) if target_id != *id => {
@@ -607,7 +608,8 @@ impl KnowledgeBaseIndex {
         self.duplicate_ids.clone()
     }
 
-    /// Finds attachment references whose files are missing from disk.
+    /// Finds attachment references whose files are missing from disk, at most
+    /// one per (referencing page, resolved path).
     pub fn find_missing_attachments(&self) -> Vec<MissingAttachment> {
         self.scan_all_pages().missing_attachments
     }
@@ -644,7 +646,8 @@ pub struct LinkAnalysisResult {
     pub linked_pages: HashSet<PageId>,
     /// Pages that could not be loaded (e.g. corrupted JSON).
     pub load_errors: Vec<PageLoadError>,
-    /// Attachment references whose files are missing from disk.
+    /// Attachment references whose files are missing from disk, at most one
+    /// per (referencing page, resolved path).
     pub missing_attachments: Vec<MissingAttachment>,
     /// Deduplicated directed link graph edges (self-links excluded).
     pub edges: Vec<LinkEdge>,
@@ -2133,14 +2136,29 @@ mod tests {
     }
 
     #[test]
-    fn find_missing_attachments_deduplicates_across_pages() {
+    fn find_missing_attachments_reports_every_referencing_page() {
         let (dir, index) = make_kb_on_disk(&[
             ("p1", "Alpha", &[], "see [img](attachments/missing.png)"),
             ("p2", "Beta", &[], "see [img](attachments/missing.png)"),
         ]);
         let missing = index.find_missing_attachments();
-        // Same missing file referenced from two pages — reported once.
+        assert_eq!(missing.len(), 2);
+        let sources: Vec<&str> = missing.iter().map(|m| m.source_id.as_str()).collect();
+        assert_eq!(sources, vec!["p1", "p2"]);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn find_missing_attachments_deduplicates_within_a_page() {
+        let (dir, index) = make_kb_on_disk(&[(
+            "p1",
+            "Alpha",
+            &[],
+            "see [a](attachments/missing.png) and [b](attachments/missing.png)",
+        )]);
+        let missing = index.find_missing_attachments();
         assert_eq!(missing.len(), 1);
+        assert_eq!(missing[0].source_id, "p1");
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -2224,13 +2242,27 @@ mod tests {
     }
 
     #[test]
-    fn analyze_all_deduplicates_missing_attachments() {
+    fn analyze_all_reports_missing_attachment_once_per_page() {
         let (dir, index) = make_kb_on_disk(&[
             ("p1", "Alpha", &[], "see [img](attachments/missing.png)"),
-            ("p2", "Beta", &[], "see [img](attachments/missing.png)"),
+            (
+                "p2",
+                "Beta",
+                &[],
+                "see [a](attachments/missing.png) and [b](attachments/missing.png)",
+            ),
+            ("p3", "Gamma", &[], "see [img](attachments/missing.png)"),
         ]);
         let result = index.analyze_all();
-        assert_eq!(result.missing_attachments.len(), 1);
+        let reported: Vec<(&str, &str)> = result
+            .missing_attachments
+            .iter()
+            .map(|m| (m.source_id.as_str(), m.source_title.as_str()))
+            .collect();
+        assert_eq!(
+            reported,
+            vec![("p1", "Alpha"), ("p2", "Beta"), ("p3", "Gamma")]
+        );
         fs::remove_dir_all(&dir).unwrap();
     }
 

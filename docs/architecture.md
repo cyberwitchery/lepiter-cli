@@ -16,9 +16,10 @@ the project separates parsing/modeling concerns from terminal rendering.
 `lepiter-cli` (package in `lepiter-tui/`):
 
 - consumes `lepiter-core` api
+- implements the cli subcommands (`info`, `list`, `search`, `show`, `links`, `tags`, `check`, `export`, `import`)
 - keeps a filtered list of page ids
 - caches rendered pages after first open
-- supports link-driven navigation and list search
+- supports link-driven navigation, search, backlinks, and snippet editing
 
 ## data flow
 

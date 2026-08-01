@@ -723,8 +723,6 @@ mod tests {
         app.mode = Mode::Search;
         app.handle_key(key(KeyCode::Enter));
         // With pages present, Enter opens the selected page (Page mode).
-        // The code sets mode=List then calls open_selected_page which
-        // transitions to Page if a page is available.
         if app.visible_ids.is_empty() {
             assert_eq!(app.mode, Mode::List);
         } else {

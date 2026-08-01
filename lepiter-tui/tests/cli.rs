@@ -111,8 +111,7 @@ mod info {
         );
     }
 
-    /// `info` used to let the *last* positional win, disagreeing with every
-    /// other subcommand. All of them now take the first.
+    /// all subcommands take the first positional as the kb path
     #[test]
     fn first_positional_is_the_knowledge_base_path() {
         let out = run(&["info", &fixtures_path_str(), "/nonexistent/kb"]);
@@ -319,11 +318,6 @@ mod search {
 
     #[test]
     fn tag_match() {
-        // "alpha" is also a tag on page-alpha, but title match wins over tag.
-        // Search for something that only matches as a tag.
-        // The tag "fixture" appears on alpha page — but "fixture" also appears
-        // in every page id, so all pages match by title. This is fine — we
-        // just verify the alpha page has kind=title (id match counts as title).
         let out = run(&["search", "--json", "alpha", &fixtures_path_str()]);
         let json: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
         let alpha = json
@@ -1416,10 +1410,7 @@ mod import_export {
         ))
     }
 
-    // exporting a code snippet to markdown and importing it back must preserve
-    // its `__type`. the robocoderMetamodelSnippet arm used to be missing from
-    // the reverse map, so this round-trip silently downgraded it to a plain
-    // textSnippet.
+    // the round-trip must preserve the snippet `__type`
     #[test]
     fn export_then_import_preserves_code_snippet_type() {
         let root = unique_temp("roundtrip");

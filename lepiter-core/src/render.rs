@@ -123,9 +123,7 @@ fn render_nodes_into(
 /// Checks whether the rendered text of a page contains `needle`
 /// (case-insensitive) without allocating the full rendered string.
 ///
-/// Walks nodes one at a time and returns `true` on the first match,
-/// avoiding the concatenation and allocation overhead of
-/// [`render_page_to_text`] followed by a string search.
+/// Walks nodes one at a time and returns `true` on the first match.
 pub fn page_content_contains(page: &Page, needle: &str) -> bool {
     let needle: String = needle.chars().flat_map(char::to_lowercase).collect();
     let mut buf = String::new();
@@ -469,7 +467,6 @@ mod tests {
 
     #[test]
     fn page_content_contains_early_termination() {
-        // First node matches — should not need to check further.
         let page = make_page(vec![
             Node::Paragraph {
                 text: "match here".to_string(),

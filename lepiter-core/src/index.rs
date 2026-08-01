@@ -25,11 +25,10 @@ pub struct KnowledgeBaseIndex {
     root: PathBuf,
     /// Metadata map keyed by canonical page id.
     pub pages: HashMap<PageId, PageMeta>,
-    /// Page ids in case-insensitive title sort order, computed once at open time.
+    /// Page ids in case-insensitive title sort order, computed at open time,
+    /// maintained by [`Self::register_page`].
     pub sorted_ids: Vec<PageId>,
     /// Exact-title lookup index: lowercased title -> page ids sharing that title.
-    /// Lets exact-title resolution run in O(1) instead of scanning every page,
-    /// which keeps backlink/graph builds off the O(N^2 * L) full-scan path.
     /// Kept in sync with `pages` by [`Self::register_page`].
     title_index: HashMap<String, Vec<PageId>>,
     /// Non-fatal issues encountered while scanning metadata.
@@ -37,8 +36,7 @@ pub struct KnowledgeBaseIndex {
     /// Reverse link index: target page id -> sorted list of source page ids that link to it.
     backlinks: HashMap<PageId, Vec<PageId>>,
     /// Forward link index: source page id -> set of target page ids it links to.
-    /// Kept in sync with `backlinks` so that incremental updates can remove
-    /// stale entries in O(outgoing_links) instead of scanning every backlink.
+    /// Kept in sync with `backlinks`.
     forward_links: HashMap<PageId, HashSet<PageId>>,
     /// Ids claimed by more than one `.lepiter` file, captured during [`KnowledgeBase::open`]
     /// before the collision is lost to `pages`.
@@ -117,8 +115,7 @@ impl KnowledgeBase {
 
 impl KnowledgeBaseIndex {
     /// Registers a page in the index, inserting it at the correct
-    /// sorted position via binary search instead of re-sorting the
-    /// entire list.  If the page already exists, its old sort position
+    /// sorted position via binary search.  If the page already exists, its old sort position
     /// is removed first so re-registration never creates duplicates
     /// (and handles title changes correctly).
     ///
@@ -558,15 +555,12 @@ impl KnowledgeBaseIndex {
         }
     }
 
-    /// Analyzes all pages, collecting broken links, linked pages, missing
-    /// attachments, and load errors.
+    /// alias for [`Self::scan_all_pages`].
     pub fn analyze_all(&self) -> LinkAnalysisResult {
         self.scan_all_pages()
     }
 
-    /// Analyzes all links in the knowledge base, collecting broken links,
-    /// the set of pages linked to by at least one other page, and any pages
-    /// that could not be loaded.
+    /// alias for [`Self::scan_all_pages`].
     pub fn analyze_links(&self) -> LinkAnalysisResult {
         self.scan_all_pages()
     }
@@ -608,8 +602,8 @@ impl KnowledgeBaseIndex {
         self.duplicate_ids.clone()
     }
 
-    /// Finds attachment references whose files are missing from disk, at most
-    /// one per (referencing page, resolved path).
+    /// Finds attachment references whose files are missing from disk; see
+    /// [`LinkAnalysisResult::missing_attachments`].
     pub fn find_missing_attachments(&self) -> Vec<MissingAttachment> {
         self.scan_all_pages().missing_attachments
     }
@@ -719,9 +713,7 @@ fn title_sort_key<'a>(pages: &'a HashMap<PageId, PageMeta>, id: &str) -> &'a str
 }
 
 /// Inserts `source_id` into `sources` at the position that keeps the vec
-/// sorted by title.  Uses `partition_point` (binary search) for O(log n)
-/// lookup with zero key clones, vs the old push-then-sort which was
-/// O(n log n) with n clones per call.
+/// sorted by title.  Uses `partition_point` (binary search).
 fn insert_sorted_by_title(
     sources: &mut Vec<PageId>,
     pages: &HashMap<PageId, PageMeta>,
@@ -928,8 +920,8 @@ mod tests {
             index.resolve_page_id_by_title_exact("ALPHA"),
             TitleResolution::Unique("id-1".to_string())
         );
-        // ...but never falls back to a substring: "alp" and "alpha" (a prefix of
-        // "alphabet") both resolve to nothing rather than a fabricated match.
+        // ...but never falls back to a substring: "alp" resolves to nothing,
+        // "alpha" only to its exact match.
         assert_eq!(
             index.resolve_page_id_by_title_exact("alp"),
             TitleResolution::NotFound
@@ -2370,8 +2362,7 @@ mod tests {
             ("p2", "Rust Programming", &[], "nothing"),
         ]);
         let result = index.scan_all_pages();
-        // `[[Rust]]` has no exact-title match, so it must not silently bind to
-        // the substring page "Rust Programming": no edge, one broken link.
+        // `[[Rust]]` has no exact-title match: no edge, one broken link.
         assert!(
             result.edges.is_empty(),
             "substring title match fabricated a graph edge: {:?}",

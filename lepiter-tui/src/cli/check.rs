@@ -67,12 +67,10 @@ pub fn run_check(args: Vec<String>) -> Result<()> {
         String::new()
     };
 
-    // Compute broken links, orphan pages, and missing attachments in a single pass.
     let analysis = index.analyze_all();
     let orphan_ids = index.orphan_ids(&analysis.linked_pages, &toc_page_id);
     let duplicate_titles = index.find_duplicate_titles();
 
-    // Surface index issues and page-load errors on stderr.
     for issue in &index.index_issues {
         eprintln!(
             "warning: index issue at {}: {}",

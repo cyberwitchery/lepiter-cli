@@ -37,9 +37,9 @@ pub struct InlineLink<'a> {
 /// in source order.
 ///
 /// Links whose target is empty (or whitespace-only) are skipped, and `[[wiki]]`
-/// is matched before `[label](target)` at each position — matching the
-/// behaviour every caller historically hand-rolled. All delimiters are ASCII,
-/// so multi-byte UTF-8 content in labels and targets is handled correctly.
+/// is matched before `[label](target)` at each position. All delimiters are
+/// ASCII, so multi-byte UTF-8 content in labels and targets is handled
+/// correctly.
 pub fn scan_inline_links(text: &str) -> InlineLinks<'_> {
     InlineLinks { text, i: 0 }
 }
@@ -57,8 +57,7 @@ impl<'a> Iterator for InlineLinks<'a> {
         let bytes = self.text.as_bytes();
         while self.i < bytes.len() {
             let i = self.i;
-            // [[wikilink]] — tried first so a `[[…]]` is never mistaken for a
-            // markdown link opened by its first bracket.
+            // [[wikilink]]
             if i + 1 < bytes.len()
                 && bytes[i] == b'['
                 && bytes[i + 1] == b'['
@@ -210,7 +209,7 @@ mod tests {
 
     #[test]
     fn wiki_takes_precedence_over_markdown() {
-        // A complete [[…]] is reported as Wiki even when it also contains `](`.
+        // the `[[…]]` body itself contains `](`
         let links = scan("[[x](y)]]");
         assert_eq!(links.len(), 1);
         assert_eq!(links[0].kind, LinkKind::Wiki);

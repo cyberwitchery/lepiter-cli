@@ -10,11 +10,11 @@ use serde_json::Value;
 
 use crate::model::{Node, PageMeta};
 
-/// Maximum number of lines kept in a word-snippet paragraph after deduplication.
+/// maximum number of lines kept in a word-snippet paragraph
 const MAX_WORD_SNIPPET_LINES: usize = 8;
 
 /// Maximum number of characters in a word-snippet paragraph before it is
-/// truncated with an ellipsis.  (The text is cut *after* this many characters.)
+/// truncated with an ellipsis.
 const MAX_WORD_SNIPPET_CHARS: usize = 1200;
 
 #[derive(Debug, Deserialize)]
@@ -232,8 +232,7 @@ fn parse_list_node(item: &Value) -> Node {
     {
         for child in children {
             // Promote each item's own children (sub-bullets / continuation
-            // blocks) the same way page-level parsing does, instead of keeping
-            // only the item's first line.
+            // blocks) the same way page-level parsing does.
             let mut item_nodes = Vec::new();
             parse_item_recursive(child, &mut item_nodes);
             items.push(item_nodes);
@@ -525,7 +524,6 @@ fn infer_language(typ: Option<&str>) -> Option<String> {
     if let Some((_, lang)) = CODE_SNIPPET_LANGUAGES.iter().find(|(t, _)| *t == typ) {
         return Some((*lang).to_string());
     }
-    // unknown `*Snippet` types fall back to a lowercased, de-suffixed name.
     if typ.ends_with("Snippet") {
         Some(typ.trim_end_matches("Snippet").to_lowercase())
     } else {
@@ -700,7 +698,6 @@ mod tests {
         // unknown `*Snippet` types still infer via the strip-suffix fallback.
         assert_eq!(infer_language(Some("fooSnippet")).as_deref(), Some("foo"));
         assert_eq!(language_to_snippet_type("foo"), None);
-        // a non-code type is not a code snippet.
         assert!(!is_code_snippet("textSnippet"));
     }
 
@@ -721,7 +718,6 @@ mod tests {
     #[test]
     fn parse_list_node_promotes_nested_item_children() {
         // A list whose single item (a textSnippet) has its own sub-bullet child.
-        // The nested child must survive parsing instead of being dropped.
         let list = json!({
             "__type": "listSnippet",
             "children": {"items": [
@@ -757,8 +753,7 @@ mod tests {
 
     #[test]
     fn parse_list_node_flat_items_unchanged() {
-        // A flat list (childless text snippets) must still parse to exactly one
-        // node per item — the nested-children fix is strictly additive.
+        // a flat list (childless text snippets) parses to exactly one node per item
         let list = json!({
             "__type": "listSnippet",
             "children": {"items": [
@@ -918,14 +913,8 @@ mod tests {
 
     #[test]
     fn collect_text_fragments_stops_at_char_budget() {
-        // Each fragment is 100 chars; with a 250-char budget we should collect
-        // at most 3 fragments (100 + 100 + 100 = 300 > 250, so the third
-        // fragment pushes us past the limit and collection stops before the
-        // fourth).
         let frag = "x".repeat(100);
         let value = json!(["ignore", frag, frag, frag, frag, frag]);
-        // "ignore" is 6 chars, so after it + first 100-char frag we have 106.
-        // After second 100-char frag: 206. Third: 306 > 250 → stops.
         let mut out = Vec::new();
         let mut chars_left: usize = 250;
         collect_text_fragments(&value, &mut out, 0, MAX_WORD_SNIPPET_LINES, &mut chars_left);

@@ -36,7 +36,13 @@ all notable changes to this project are documented in this file.
   of a truncated snippet plus stray text snippets
 - a text snippet containing a line break is no longer split into one snippet per
   line by `import`; consecutive lines are read back as the single paragraph
-  `export` wrote. the same applies to multi-line headings and block quotes
+  `export` wrote. a blank line inside a snippet no longer splits it in two
+  either — a snippet holding two paragraphs stays one snippet. the same applies
+  to multi-line headings and block quotes
+- a text snippet that is empty, is only whitespace, or begins or ends with a
+  blank line now survives the round trip. `export` used to write it as the same
+  blank line it puts between snippets, so `import` read it as separator and
+  dropped it
 - prose no longer changes type on the round trip. a text snippet reading
   `- like a list`, opening with a ```` ``` ```` fence, or reading
   `[[unknown: …]]` used to come back as a list, code, or unknown snippet, losing

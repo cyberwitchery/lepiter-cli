@@ -54,6 +54,7 @@ fn render_nodes_into(
             }
             Node::Text { text } => {
                 push_escaped_lines(&rewrite_inline_links(text, &mut *rewrite), out);
+                out.push('\n');
             }
             Node::List { items } => {
                 for item in items {
@@ -167,7 +168,8 @@ fn fence_for(content: &str) -> String {
 
 /// Escapes a rendered text line that a line-oriented markdown reader would
 /// otherwise take for the start of a list, blockquote, fenced code block, or
-/// `[[unknown: ...]]` marker.
+/// `[[unknown: ...]]` marker — or, if it is blank, for the separator between
+/// two snippets.
 ///
 /// The escape is a leading backslash, which CommonMark renders as the bare
 /// line. A line that already starts with a backslash is escaped too, so
@@ -187,7 +189,8 @@ pub fn unescape_block_start(line: &str) -> String {
 
 fn starts_block(line: &str) -> bool {
     let trimmed = line.trim();
-    line.starts_with('\\')
+    trimmed.is_empty()
+        || line.starts_with('\\')
         || line.starts_with("- ")
         || line.starts_with("> ")
         || line == ">"
@@ -389,11 +392,13 @@ mod tests {
         assert_eq!(escape_block_start("```rust"), "\\```rust");
         assert_eq!(escape_block_start("[[unknown: x]]"), "\\[[unknown: x]]");
         assert_eq!(escape_block_start("\\already"), "\\\\already");
+        assert_eq!(escape_block_start(""), "\\");
+        assert_eq!(escape_block_start("  "), "\\  ");
     }
 
     #[test]
     fn escape_block_start_leaves_ordinary_prose_alone() {
-        for line in ["plain", "", "-dash", "a - b", ">>chevron", "``inline``"] {
+        for line in ["plain", "-dash", "a - b", ">>chevron", "``inline``"] {
             assert_eq!(escape_block_start(line), line);
         }
     }
@@ -411,6 +416,8 @@ mod tests {
             "\\already",
             "\\\\twice",
             "\\- hand-escaped",
+            "  ",
+            "\\ ",
         ] {
             assert_eq!(unescape_block_start(&escape_block_start(line)), line);
         }
@@ -442,7 +449,36 @@ mod tests {
     }
 
     #[test]
-    fn render_preserves_carriage_returns_in_text() {
+    fn blank_lines_inside_a_block_are_escaped() {
+        let text = render_nodes_to_text(&[Node::Paragraph {
+            text: "para one\n\npara two".to_string(),
+        }]);
+        assert_eq!(text, "para one\n\\\npara two\n\n");
+    }
+
+    #[test]
+    fn trailing_and_leading_blank_lines_are_escaped() {
+        let text = render_nodes_to_text(&[Node::Paragraph {
+            text: "\nbody\n".to_string(),
+        }]);
+        assert_eq!(text, "\\\nbody\n\\\n\n");
+    }
+
+    #[test]
+    fn whitespace_only_text_node_is_escaped_and_separated() {
+        let text = render_nodes_to_text(&[
+            Node::Text {
+                text: "  ".to_string(),
+            },
+            Node::Paragraph {
+                text: "after".to_string(),
+            },
+        ]);
+        assert_eq!(text, "\\  \n\nafter\n\n");
+    }
+
+    #[test]
+    fn render_emits_carriage_returns_verbatim_though_import_drops_them() {
         let text = render_nodes_to_text(&[Node::Paragraph {
             text: "one\r\ntwo".to_string(),
         }]);

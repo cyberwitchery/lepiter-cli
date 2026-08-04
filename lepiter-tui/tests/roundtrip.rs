@@ -158,6 +158,33 @@ fn prose_that_looks_like_an_unknown_marker_stays_prose() {
 }
 
 #[test]
+fn text_snippet_with_a_blank_line_stays_one_snippet() {
+    let kb = kb_with_snippets(json!([
+        { "__type": "textSnippet", "string": "para one\n\npara two" },
+    ]));
+    assert_roundtrips(kb.path());
+}
+
+#[test]
+fn text_snippet_keeps_its_leading_and_trailing_blank_lines() {
+    let kb = kb_with_snippets(json!([
+        { "__type": "textSnippet", "string": "\nbody\n" },
+    ]));
+    assert_roundtrips(kb.path());
+}
+
+#[test]
+fn blank_text_snippets_survive_next_to_their_neighbours() {
+    let kb = kb_with_snippets(json!([
+        { "__type": "textSnippet", "string": "before" },
+        { "__type": "textSnippet", "string": "" },
+        { "__type": "textSnippet", "string": "   " },
+        { "__type": "textSnippet", "string": "after" },
+    ]));
+    assert_roundtrips(kb.path());
+}
+
+#[test]
 fn prose_lines_after_the_first_that_look_like_blocks_stay_prose() {
     let kb = kb_with_snippets(json!([
         { "__type": "textSnippet", "string": "intro\n- not a list\n> not a quote\n```\nnot code\n```" },

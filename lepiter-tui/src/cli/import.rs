@@ -24,7 +24,8 @@ const SPEC: ArgSpec<'static> = ArgSpec {
             \x20   text snippet their markdown form implies\n\
             \x20 - a text snippet that is exactly [label](url) comes back as a\n\
             \x20   link snippet\n\
-            \x20 - an empty text snippet is dropped\n\
+            \x20 - a carriage return in a text snippet is dropped; a crlf line\n\
+            \x20   break comes back as a plain newline\n\
             \x20 - a snippet nested inside a list item is flattened to text",
     toggles: &[],
     valued: &[],
@@ -999,6 +1000,31 @@ mod tests {
             texts,
             ["- not a list", "[[unknown: x]]", "```rust", "\\already"]
         );
+    }
+
+    #[test]
+    fn an_escaped_blank_line_stays_inside_the_paragraph() {
+        let slug_map = HashMap::new();
+        let input = "para one\n\\\npara two\n\nsecond snippet\n";
+        let snippets = parse_markdown_body(input, &slug_map);
+        assert_eq!(snippets.len(), 2);
+        assert!(matches!(&snippets[0], Snippet::Text(t) if t == "para one\n\npara two"));
+        assert!(matches!(&snippets[1], Snippet::Text(t) if t == "second snippet"));
+    }
+
+    #[test]
+    fn escaped_blank_snippets_stay_separate_snippets() {
+        let slug_map = HashMap::new();
+        let input = "before\n\n\\\n\n\\  \n\nafter\n";
+        let snippets = parse_markdown_body(input, &slug_map);
+        let texts: Vec<&str> = snippets
+            .iter()
+            .map(|s| match s {
+                Snippet::Text(t) => t.as_str(),
+                other => panic!("expected Text, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(texts, ["before", "", "  ", "after"]);
     }
 
     #[test]

@@ -1,14 +1,24 @@
 use crate::inline_link::{LinkKind, rewrite_inline_links};
 use crate::model::{Node, Page};
 
-/// Renders a parsed page to plain text.
+/// Whether a render escapes lines that a line-oriented markdown reader would
+/// otherwise take for the start of a block.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlockEscaping {
+    /// For markdown that `import` reads back: see [`escape_block_start`].
+    Escape,
+    /// For display: every line reaches the reader as the content has it.
+    Verbatim,
+}
+
+/// Renders a parsed page to plain text for display.
 pub fn render_page_to_text(page: &Page) -> String {
     render_nodes_to_text(&page.content)
 }
 
-/// Renders normalized nodes to plain text.
+/// Renders normalized nodes to plain text for display.
 pub fn render_nodes_to_text(nodes: &[Node]) -> String {
-    render_nodes_to_text_with(nodes, &mut |_, _| None)
+    render_nodes_to_text_with(nodes, &mut |_, _| None, BlockEscaping::Verbatim)
 }
 
 /// Renders normalized nodes to plain text, rewriting inline and explicit links
@@ -18,19 +28,22 @@ pub fn render_nodes_to_text(nodes: &[Node]) -> String {
 /// `[label](target)` found in text-bearing nodes, and for every
 /// [`Node::Link`] url (as [`LinkKind::Markdown`]). Returning `Some(new_target)`
 /// substitutes the target; returning `None` leaves the link verbatim. A no-op
-/// rewriter reproduces [`render_nodes_to_text`] exactly.
+/// rewriter with [`BlockEscaping::Verbatim`] reproduces
+/// [`render_nodes_to_text`] exactly.
 pub fn render_nodes_to_text_with(
     nodes: &[Node],
     rewrite: &mut impl FnMut(LinkKind, &str) -> Option<String>,
+    escaping: BlockEscaping,
 ) -> String {
     let mut out = String::new();
-    render_nodes_into(nodes, rewrite, &mut out);
+    render_nodes_into(nodes, rewrite, escaping, &mut out);
     out
 }
 
 fn render_nodes_into(
     nodes: &[Node],
     rewrite: &mut impl FnMut(LinkKind, &str) -> Option<String>,
+    escaping: BlockEscaping,
     out: &mut String,
 ) {
     for node in nodes {
@@ -43,23 +56,22 @@ fn render_nodes_into(
                 out.push_str(lines.next().unwrap_or(""));
                 out.push('\n');
                 for line in lines {
-                    out.push_str(&escape_block_start(line));
-                    out.push('\n');
+                    push_block_line(line, escaping, out);
                 }
                 out.push('\n');
             }
             Node::Paragraph { text } => {
-                push_escaped_lines(&rewrite_inline_links(text, &mut *rewrite), out);
+                push_block_lines(&rewrite_inline_links(text, &mut *rewrite), escaping, out);
                 out.push('\n');
             }
             Node::Text { text } => {
-                push_escaped_lines(&rewrite_inline_links(text, &mut *rewrite), out);
+                push_block_lines(&rewrite_inline_links(text, &mut *rewrite), escaping, out);
                 out.push('\n');
             }
             Node::List { items } => {
                 for item in items {
                     let mut item_out = String::new();
-                    render_nodes_into(item, rewrite, &mut item_out);
+                    render_nodes_into(item, rewrite, escaping, &mut item_out);
                     let mut lines = item_out.trim().lines();
                     if let Some(first) = lines.next() {
                         out.push_str("- ");
@@ -144,11 +156,18 @@ fn block_lines(text: &str) -> Vec<&str> {
     text.split('\n').collect()
 }
 
-fn push_escaped_lines(text: &str, out: &mut String) {
+fn push_block_lines(text: &str, escaping: BlockEscaping, out: &mut String) {
     for line in block_lines(text) {
-        out.push_str(&escape_block_start(line));
-        out.push('\n');
+        push_block_line(line, escaping, out);
     }
+}
+
+fn push_block_line(line: &str, escaping: BlockEscaping, out: &mut String) {
+    match escaping {
+        BlockEscaping::Escape => out.push_str(&escape_block_start(line)),
+        BlockEscaping::Verbatim => out.push_str(line),
+    }
+    out.push('\n');
 }
 
 /// A backtick fence long enough that no line of `content` can close it.
@@ -294,6 +313,10 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    fn render_escaped(nodes: &[Node]) -> String {
+        render_nodes_to_text_with(nodes, &mut |_, _| None, BlockEscaping::Escape)
+    }
+
     #[test]
     fn render_nodes_outputs_unknown_placeholder() {
         let text = render_nodes_to_text(&[
@@ -337,6 +360,7 @@ mod tests {
                 },
             ],
             &mut rewrite,
+            BlockEscaping::Escape,
         );
         assert!(text.contains("see [Topic](topic.md) and [x](alpha.md)"));
         assert!(text.contains("[go](alpha.md)"));
@@ -425,7 +449,7 @@ mod tests {
 
     #[test]
     fn multi_line_nodes_escape_every_line() {
-        let text = render_nodes_to_text(&[Node::Paragraph {
+        let text = render_escaped(&[Node::Paragraph {
             text: "intro\n- not a list\n> not a quote".to_string(),
         }]);
         assert_eq!(text, "intro\n\\- not a list\n\\> not a quote\n\n");
@@ -433,7 +457,7 @@ mod tests {
 
     #[test]
     fn heading_escapes_continuation_lines_only() {
-        let text = render_nodes_to_text(&[Node::Heading {
+        let text = render_escaped(&[Node::Heading {
             level: 2,
             text: "title\n- not a list".to_string(),
         }]);
@@ -450,7 +474,7 @@ mod tests {
 
     #[test]
     fn blank_lines_inside_a_block_are_escaped() {
-        let text = render_nodes_to_text(&[Node::Paragraph {
+        let text = render_escaped(&[Node::Paragraph {
             text: "para one\n\npara two".to_string(),
         }]);
         assert_eq!(text, "para one\n\\\npara two\n\n");
@@ -458,7 +482,7 @@ mod tests {
 
     #[test]
     fn trailing_and_leading_blank_lines_are_escaped() {
-        let text = render_nodes_to_text(&[Node::Paragraph {
+        let text = render_escaped(&[Node::Paragraph {
             text: "\nbody\n".to_string(),
         }]);
         assert_eq!(text, "\\\nbody\n\\\n\n");
@@ -466,7 +490,7 @@ mod tests {
 
     #[test]
     fn whitespace_only_text_node_is_escaped_and_separated() {
-        let text = render_nodes_to_text(&[
+        let text = render_escaped(&[
             Node::Text {
                 text: "  ".to_string(),
             },
@@ -479,10 +503,46 @@ mod tests {
 
     #[test]
     fn render_emits_carriage_returns_verbatim_though_import_drops_them() {
-        let text = render_nodes_to_text(&[Node::Paragraph {
+        let text = render_escaped(&[Node::Paragraph {
             text: "one\r\ntwo".to_string(),
         }]);
         assert_eq!(text, "one\r\ntwo\n\n");
+    }
+
+    #[test]
+    fn display_render_leaves_block_looking_prose_alone() {
+        let text = render_nodes_to_text(&[Node::Paragraph {
+            text: "intro\n- not a list\n> not a quote\n```not a fence".to_string(),
+        }]);
+        assert_eq!(
+            text,
+            "intro\n- not a list\n> not a quote\n```not a fence\n\n"
+        );
+    }
+
+    #[test]
+    fn display_render_keeps_a_blank_line_blank() {
+        let text = render_nodes_to_text(&[Node::Paragraph {
+            text: "para one\n\npara two".to_string(),
+        }]);
+        assert_eq!(text, "para one\n\npara two\n\n");
+    }
+
+    #[test]
+    fn display_render_does_not_double_a_leading_backslash() {
+        let text = render_nodes_to_text(&[Node::Paragraph {
+            text: "\\newcommand{\\foo}{bar}".to_string(),
+        }]);
+        assert_eq!(text, "\\newcommand{\\foo}{bar}\n\n");
+    }
+
+    #[test]
+    fn display_render_leaves_heading_continuation_lines_alone() {
+        let text = render_nodes_to_text(&[Node::Heading {
+            level: 2,
+            text: "title\n- not a list".to_string(),
+        }]);
+        assert_eq!(text, "## title\n- not a list\n\n");
     }
 
     #[test]

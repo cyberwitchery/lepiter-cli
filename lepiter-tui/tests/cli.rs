@@ -38,6 +38,36 @@ fn fixtures_path_str() -> String {
     fixtures_dir().display().to_string()
 }
 
+fn unique_temp(tag: &str) -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "lepiter-cli-{tag}-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ))
+}
+
+/// A fresh temp directory holding one page, one text snippet per entry.
+fn write_text_snippet_kb(tag: &str, id: &str, title: &str, snippets: &[&str]) -> PathBuf {
+    let root = unique_temp(tag);
+    std::fs::create_dir_all(&root).unwrap();
+    let page = serde_json::json!({
+        "uid": { "uuid": id },
+        "pageType": { "title": title },
+        "children": { "items": snippets
+            .iter()
+            .map(|s| serde_json::json!({ "__type": "textSnippet", "string": s }))
+            .collect::<Vec<_>>() }
+    });
+    std::fs::write(
+        root.join(format!("{id}.lepiter")),
+        serde_json::to_vec(&page).unwrap(),
+    )
+    .unwrap();
+    root
+}
+
 // ---------------------------------------------------------------------------
 // info subcommand
 // ---------------------------------------------------------------------------
@@ -438,6 +468,34 @@ mod search {
     }
 
     #[test]
+    fn full_text_snippet_holds_block_looking_prose_verbatim() {
+        let root = write_text_snippet_kb(
+            "search-verbatim",
+            "verbatim-page",
+            "Verbatim Page",
+            &["- looks like a list but is prose", "para one\n\npara two"],
+        );
+
+        let out = run(&[
+            "search",
+            "--full-text",
+            "--tsv",
+            "prose",
+            root.to_str().unwrap(),
+        ]);
+        assert!(out.status.success(), "search failed: {}", stderr(&out));
+        let text = stdout(&out);
+        let line = text.lines().next().expect("expected a result row");
+        let snippet = line.split('\t').nth(3).expect("expected a snippet column");
+        assert!(
+            snippet.contains("- looks like a list but is prose") && !snippet.contains('\\'),
+            "snippet should hold the prose verbatim, got: {snippet}"
+        );
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn full_text_plain_shows_indented_snippet() {
         let out = run(&["search", "--full-text", "paragraph", &fixtures_path_str()]);
         assert!(out.status.success());
@@ -649,6 +707,34 @@ mod show {
         assert!(text.contains("alpha paragraph"));
         assert!(text.contains("first item"));
         assert!(text.contains("second item"));
+    }
+
+    #[test]
+    fn plain_output_prints_block_looking_prose_verbatim() {
+        let root = write_text_snippet_kb(
+            "show-verbatim",
+            "verbatim-page",
+            "Verbatim Page",
+            &[
+                "- looks like a list but is prose",
+                "para one\n\npara two",
+                "\\newcommand{\\foo}{bar}",
+            ],
+        );
+
+        let out = run(&["show", "--id", "verbatim-page", root.to_str().unwrap()]);
+        assert!(out.status.success(), "show failed: {}", stderr(&out));
+        let text = stdout(&out);
+        let body = text
+            .split_once("---\n\n")
+            .expect("show prints a header separator")
+            .1;
+        assert_eq!(
+            body,
+            "- looks like a list but is prose\n\npara one\n\npara two\n\n\\newcommand{\\foo}{bar}\n"
+        );
+
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
@@ -1405,16 +1491,6 @@ mod import {
 
 mod import_export {
     use super::*;
-
-    fn unique_temp(tag: &str) -> PathBuf {
-        std::env::temp_dir().join(format!(
-            "lepiter-cli-{tag}-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ))
-    }
 
     // exporting a code snippet to markdown and importing it back must preserve
     // its `__type`. the robocoderMetamodelSnippet arm used to be missing from

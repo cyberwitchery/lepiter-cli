@@ -47,7 +47,10 @@ all notable changes to this project are documented in this file.
   `- like a list`, opening with a ```` ``` ```` fence, or reading
   `[[unknown: …]]` used to come back as a list, code, or unknown snippet, losing
   the marker text; `export` now escapes those line starts and `import` unescapes
-  them. content that legitimately starts with a backslash is preserved
+  them. content that legitimately starts with a backslash is preserved. those
+  escapes belong to the exported file only: `show`, `search --full-text` and the
+  tui print every line the way the page has it, so prose reading `- like a list`
+  keeps its dash and prose starting with a backslash keeps its single backslash
 - `import` no longer swallows a ```` ```diff ```` block that has no `-`/`+`
   lines; it is kept as a text snippet instead of vanishing
 - `import --help` now states which parts of a page do not survive the round trip

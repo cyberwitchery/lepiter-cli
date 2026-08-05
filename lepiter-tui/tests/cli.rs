@@ -48,7 +48,7 @@ fn unique_temp(tag: &str) -> PathBuf {
     ))
 }
 
-/// A fresh temp directory holding one page, one text snippet per entry.
+/// a temp kb holding one page, one text snippet per entry.
 fn write_text_snippet_kb(tag: &str, id: &str, title: &str, snippets: &[&str]) -> PathBuf {
     let root = unique_temp(tag);
     std::fs::create_dir_all(&root).unwrap();

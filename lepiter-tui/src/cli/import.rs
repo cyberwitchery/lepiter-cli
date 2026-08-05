@@ -302,7 +302,7 @@ fn parse_markdown_body(body: &str, slug_to_id: &HashMap<String, String>) -> Vec<
             continue;
         }
 
-        // blockquote, one snippet for the whole run of `>` lines
+        // blockquote
         if is_quote_line(line) {
             let mut quoted = vec![quote_body(line)];
             while let Some(&next) = lines.peek() {
@@ -343,7 +343,7 @@ fn parse_markdown_body(body: &str, slug_to_id: &HashMap<String, String>) -> Vec<
             continue;
         }
 
-        // paragraph: consecutive lines up to a blank line or another block
+        // paragraph
         let mut run = vec![line];
         while let Some(&next) = lines.peek() {
             if next.trim().is_empty()
@@ -357,7 +357,7 @@ fn parse_markdown_body(body: &str, slug_to_id: &HashMap<String, String>) -> Vec<
             lines.next();
         }
 
-        // a lone line may instead be a whole-snippet form export writes by itself
+        // a lone line may be a whole-snippet form instead
         if let [only] = run[..] {
             // unknown snippet type marker from export: [[unknown: TYPE]]
             if let Some(typ) = only
@@ -402,8 +402,7 @@ fn quote_body(line: &str) -> &str {
     line.strip_prefix("> ").unwrap_or("")
 }
 
-/// Reads an opening code fence — at least three backticks and an info string
-/// with no backtick in it — into its backtick count and info string.
+/// backtick count and info string of an opening code fence.
 fn open_fence(line: &str) -> Option<(usize, &str)> {
     let ticks = line.chars().take_while(|c| *c == '`').count();
     if ticks < 3 {
@@ -416,8 +415,7 @@ fn open_fence(line: &str) -> Option<(usize, &str)> {
     Some((ticks, info))
 }
 
-/// Whether `line` closes a fence opened with `open_len` backticks: a run of at
-/// least that many, indented by at most three spaces, and nothing else.
+/// whether `line` closes a fence opened with `open_len` backticks.
 fn closes_fence(line: &str, open_len: usize) -> bool {
     let rest = line.trim_start_matches(' ');
     if line.len() - rest.len() > 3 {

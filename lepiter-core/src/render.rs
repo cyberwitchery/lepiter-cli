@@ -1,13 +1,12 @@
 use crate::inline_link::{LinkKind, rewrite_inline_links};
 use crate::model::{Node, Page};
 
-/// Whether a render escapes lines that a line-oriented markdown reader would
-/// otherwise take for the start of a block.
+/// whether a render escapes block-looking line starts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BlockEscaping {
-    /// For markdown that `import` reads back: see [`escape_block_start`].
+    /// for markdown `import` reads back; see [`escape_block_start`].
     Escape,
-    /// For display: every line reaches the reader as the content has it.
+    /// for display; every line reaches the reader as the content has it.
     Verbatim,
 }
 
@@ -150,8 +149,6 @@ fn render_nodes_into(
     }
 }
 
-/// The lines of `text` split on `\n` alone, so empty and `\r`-terminated lines
-/// survive.
 fn block_lines(text: &str) -> Vec<&str> {
     text.split('\n').collect()
 }
@@ -170,7 +167,7 @@ fn push_block_line(line: &str, escaping: BlockEscaping, out: &mut String) {
     out.push('\n');
 }
 
-/// A backtick fence long enough that no line of `content` can close it.
+/// a backtick fence long enough that no line of `content` can close it.
 fn fence_for(content: &str) -> String {
     let mut longest = 0usize;
     let mut run = 0usize;
@@ -185,14 +182,8 @@ fn fence_for(content: &str) -> String {
     "`".repeat((longest + 1).max(3))
 }
 
-/// Escapes a rendered text line that a line-oriented markdown reader would
-/// otherwise take for the start of a list, blockquote, fenced code block, or
-/// `[[unknown: ...]]` marker — or, if it is blank, for the separator between
-/// two snippets.
-///
-/// The escape is a leading backslash, which CommonMark renders as the bare
-/// line. A line that already starts with a backslash is escaped too, so
-/// [`unescape_block_start`] is an exact inverse.
+/// prefixes `line` with a backslash if a line-oriented markdown reader would
+/// take it for the start of a block.
 pub fn escape_block_start(line: &str) -> String {
     if starts_block(line) {
         format!("\\{line}")
@@ -201,7 +192,7 @@ pub fn escape_block_start(line: &str) -> String {
     }
 }
 
-/// Inverse of [`escape_block_start`].
+/// inverse of [`escape_block_start`].
 pub fn unescape_block_start(line: &str) -> String {
     line.strip_prefix('\\').unwrap_or(line).to_string()
 }

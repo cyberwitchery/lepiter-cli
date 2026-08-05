@@ -33,7 +33,7 @@ fn run(args: &[&Path]) {
     );
 }
 
-/// A knowledge base holding one page built from `items`.
+/// a knowledge base holding one page built from `items`.
 fn kb_with_snippets(items: Value) -> TempDir {
     let dir = tempfile::tempdir().expect("tempdir");
     let page = json!({
@@ -49,8 +49,7 @@ fn kb_with_snippets(items: Value) -> TempDir {
     dir
 }
 
-/// Node trees as JSON, minus the `raw` payload of an `Unknown` node, which the
-/// markdown form does not carry.
+/// node trees as JSON, minus the `raw` payload of an `Unknown` node.
 fn normalized_nodes(nodes: &[Node]) -> Value {
     let mut value = serde_json::to_value(nodes).unwrap();
     strip_unknown_raw(&mut value);
@@ -70,8 +69,8 @@ fn strip_unknown_raw(value: &mut Value) {
     }
 }
 
-/// Exports `kb` to markdown, imports that back into a fresh knowledge base, and
-/// asserts every page parses to the same node tree on both sides.
+/// exports `kb`, imports it back, and asserts every page's node tree is
+/// unchanged.
 fn assert_roundtrips(kb: &Path) {
     let work = tempfile::tempdir().expect("tempdir");
     let markdown = work.path().join("markdown");
@@ -192,8 +191,7 @@ fn prose_lines_after_the_first_that_look_like_blocks_stay_prose() {
     assert_roundtrips(kb.path());
 }
 
-// Guards. Every test below already passed before the round-trip fix; they pin
-// behaviour the fix must not break rather than a bug it repairs.
+// guards
 
 #[test]
 fn guard_code_snippet_containing_a_longer_fence_survives() {

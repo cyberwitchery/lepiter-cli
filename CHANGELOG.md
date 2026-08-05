@@ -35,30 +35,14 @@ all notable changes to this project are documented in this file.
   referencing pages
 - `export`→`import` round-trip no longer silently converts some code snippets to
   plain text; all recognized code snippet types now round-trip losslessly
-- a code snippet whose body contains a ```` ``` ```` line is no longer shredded
-  on `import`. `export` now opens and closes such a snippet with a longer
-  backtick fence, so a page quoting a markdown fence — ordinary content in
-  programming notes — comes back as the one code snippet it started as instead
-  of a truncated snippet plus stray text snippets
-- a text snippet containing a line break is no longer split into one snippet per
-  line by `import`; consecutive lines are read back as the single paragraph
-  `export` wrote. a blank line inside a snippet no longer splits it in two
-  either — a snippet holding two paragraphs stays one snippet. the same applies
-  to multi-line headings and block quotes
-- a text snippet that is empty, is only whitespace, or begins or ends with a
-  blank line now survives the round trip. `export` used to write it as the same
-  blank line it puts between snippets, so `import` read it as separator and
-  dropped it
-- prose no longer changes type on the round trip. a text snippet reading
-  `- like a list`, opening with a ```` ``` ```` fence, or reading
-  `[[unknown: …]]` used to come back as a list, code, or unknown snippet, losing
-  the marker text; `export` now escapes those line starts and `import` unescapes
-  them. content that legitimately starts with a backslash is preserved. those
-  escapes belong to the exported file only: `show`, `search --full-text` and the
-  tui print every line the way the page has it, so prose reading `- like a list`
-  keeps its dash and prose starting with a backslash keeps its single backslash
-- `import` no longer swallows a ```` ```diff ```` block that has no `-`/`+`
-  lines; it is kept as a text snippet instead of vanishing
+- a text snippet survives `export`→`import` as one snippet: line breaks and
+  blank lines inside it no longer split it, and empty or whitespace-only
+  snippets are no longer dropped. the same holds for headings and block quotes
+- markup-looking content keeps its type through the round trip: prose reading
+  `- like a list`, opening with a ```` ``` ```` fence or reading
+  `[[unknown: …]]`, and a code snippet whose body quotes a fence. `show`,
+  `search --full-text` and the tui print all of it the way the page has it
+- `import` no longer drops a ```` ```diff ```` block that has no `-`/`+` lines
 - `import --help` now states which parts of a page do not survive the round trip
 - list items with sub-bullets or multiple content blocks are no longer truncated
   to their first line when a page is parsed; the nested content now appears in

@@ -27,6 +27,12 @@ all notable changes to this project are documented in this file.
   backlinks and TUI navigation, and keeps incorrect links out of exported
   markdown. the interactive `show <title>` and `links --for <title>` lookups
   keep their convenient substring matching
+- `check` now lists every page that references a missing attachment. when
+  several pages pointed at the same missing file, only one arbitrary page was
+  reported, so fixing that page and re-running surfaced the next one with the
+  same error. a page referencing the same missing file more than once is still
+  reported once, and the `missing_attachments` count (text and `--json`) counts
+  referencing pages
 - `export`→`import` round-trip no longer silently converts some code snippets to
   plain text; all recognized code snippet types now round-trip losslessly
 - a code snippet whose body contains a ```` ``` ```` line is no longer shredded

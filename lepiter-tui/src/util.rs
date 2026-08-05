@@ -72,8 +72,6 @@ pub fn matching_snippet(raw: &str, needle_lower: &str) -> Option<String> {
     let lower = raw.to_lowercase();
     let lower_idx = lower.find(needle_lower)?;
 
-    // Map byte offsets from the lowered text back to the raw text — lowercasing
-    // can change byte lengths for non-ASCII characters.
     let raw_match = lower_byte_to_raw_byte(raw, lower_idx);
     let raw_end = lower_byte_to_raw_byte(raw, lower_idx + needle_lower.len());
 

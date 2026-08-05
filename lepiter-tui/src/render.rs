@@ -394,8 +394,8 @@ pub fn highlight_selected_link_markers(
 }
 
 /// Highlight all occurrences of `needle` (case-insensitive) in the rendered
-/// lines.  The match at `current_idx` gets a distinct "active" style while all
-/// other matches share a dimmer highlight.
+/// lines.  The match at `current_match_line` gets a distinct "active" style
+/// while all other matches share a dimmer highlight.
 pub fn highlight_page_search(
     lines: &[Line<'static>],
     needle: &str,
@@ -436,8 +436,7 @@ fn highlight_all_in_line(
     lower_needle: &str,
     match_style: Style,
 ) -> Line<'static> {
-    // Flatten spans into (char_offset, byte_range_in_full_text, original_style).
-    // Then find all needle positions in the full text and split spans around them.
+    // Find all needle positions in the full text and split spans around them.
     let full_text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
     let lower_text = full_text.to_lowercase();
 
@@ -447,7 +446,6 @@ fn highlight_all_in_line(
     while let Some(pos) = lower_text[search_start..].find(lower_needle) {
         let abs_start = search_start + pos;
         let abs_end = abs_start + lower_needle.len();
-        // Map lowered byte offsets back to original text byte offsets.
         let raw_start = lower_byte_to_raw_byte(&full_text, abs_start);
         let raw_end = lower_byte_to_raw_byte(&full_text, abs_end);
         match_ranges.push((raw_start, raw_end));

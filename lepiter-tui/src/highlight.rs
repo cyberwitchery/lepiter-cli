@@ -2,9 +2,6 @@
 //! (ratatui spans) and the cli pretty-printer (ansi escape codes).
 
 /// a single token produced by the code-line tokenizer.
-///
-/// tokens borrow directly from the input line, avoiding per-token
-/// `String` allocations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CodeToken<'a> {
     /// rest-of-line comment (includes the comment marker).
@@ -23,10 +20,7 @@ pub enum CodeToken<'a> {
 
 /// per-language lexing rules that drive [`tokenize_code_line`].
 ///
-/// this is the single source of truth for comment/string/keyword syntax; the
-/// tokenizer loop is generic over it instead of hard-coding per-language
-/// conditionals. every delimiter is ascii, preserving the byte-level scanning
-/// invariant documented on [`tokenize_code_line`].
+/// single source of truth for comment/string/keyword syntax.
 struct LanguageSyntax {
     /// rest-of-line comment markers, e.g. `#` or `//`.
     line_comments: &'static [&'static str],
@@ -40,8 +34,7 @@ struct LanguageSyntax {
     keywords: &'static [&'static str],
 }
 
-/// languages with no known syntax: both quote styles are strings, matching the
-/// historical default for unrecognised languages.
+/// languages with no known syntax: both quote styles are strings.
 static DEFAULT_SYNTAX: LanguageSyntax = LanguageSyntax {
     line_comments: &[],
     block_comment: None,
@@ -277,10 +270,8 @@ mod tests {
 
     #[test]
     fn backslash_escape_in_string() {
-        // the old code used chars[i.saturating_sub(1)] which fails on
-        // trailing escaped backslashes like "hello\\"
+        // a trailing escaped backslash must not swallow the closing quote
         let tokens = tokenize_code_line(r#"x = "hello\\""#, Some("python"));
-        // should produce: Ident(x), Punct( ), Punct(=), Punct( ), StringLit("hello\\"), Ident()...
         // the string literal should end after the second backslash + closing quote
         let strings: Vec<_> = tokens
             .iter()
@@ -361,7 +352,6 @@ mod tests {
 
     #[test]
     fn smalltalk_double_quote_is_comment_not_string() {
-        // regression: pharo `"…"` is a comment, not a green string literal.
         let tokens = tokenize_code_line(r#"foo "a comment" bar"#, Some("pharo"));
         assert_eq!(comments(&tokens), vec![r#""a comment""#]);
         assert!(strings(&tokens).is_empty());

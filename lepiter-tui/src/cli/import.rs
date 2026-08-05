@@ -620,7 +620,7 @@ fn build_page_json(fm: &Frontmatter, snippets: &[Snippet]) -> serde_json::Value 
                 if let Some(is_method) = is_method_pattern {
                     obj["isMethodPattern"] = json!(is_method);
                 }
-                // language is implicit in the __type for now
+                // language is implicit in the __type
                 let _ = language;
                 items.push(obj);
             }
@@ -708,7 +708,6 @@ mod tests {
 
     #[test]
     fn parse_yaml_string_lone_quote_does_not_panic() {
-        // a value that is a single quote char used to slice `1..0` and panic
         assert_eq!(parse_yaml_string("\""), "\"");
         assert_eq!(parse_yaml_string("'"), "'");
         // normal quoting still works
@@ -726,7 +725,6 @@ mod tests {
 
     #[test]
     fn parse_frontmatter_lone_quote_title_does_not_panic() {
-        // a whole import run used to abort on a single stray quote in any file
         let content = "---\ntitle: \"\nid: lone-1\n---\n\nbody\n";
         let fm = parse_frontmatter(content).unwrap();
         assert_eq!(fm.title, "\"");
@@ -1310,7 +1308,6 @@ mod tests {
             snippet_type_for_language("shellcommand"),
             "shellCommandSnippet"
         );
-        // regression: this arm was missing and degraded the snippet to text.
         assert_eq!(
             snippet_type_for_language("robocodermetamodel"),
             "robocoderMetamodelSnippet"
@@ -1376,9 +1373,6 @@ mod tests {
 
     #[test]
     fn robocoder_metamodel_fence_roundtrips_to_its_snippet_type() {
-        // regression: a `robocoderMetamodelSnippet` exports as a
-        // `robocodermetamodel` fence and used to re-import as a plain
-        // textSnippet, silently losing its type.
         let slug_map = HashMap::new();
         let input = "```robocodermetamodel\nMetamodel new\n```\n\n";
         let snippets = parse_markdown_body(input, &slug_map);

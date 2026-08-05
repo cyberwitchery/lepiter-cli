@@ -554,9 +554,8 @@ mod tests {
 
     #[test]
     fn transient_error_not_cached() {
-        // Both attempts fail (hang → timeout → respawn with nonexistent
-        // binary → respawn fails → break).  The error must NOT be cached,
-        // so the same key can succeed on a later render.
+        // The error must NOT be cached, so the same key can succeed on a
+        // later render.
         let hang_script = "read line; sleep infinity";
         let proc =
             PluginProcess::spawn("bash", &["-c".to_string(), hang_script.to_string()]).unwrap();

@@ -228,7 +228,6 @@ impl EditState {
     pub fn save_to_disk(&mut self) -> Result<()> {
         let bytes = serde_json::to_vec_pretty(&self.raw)?;
 
-        // Validate the serialized JSON before writing to disk.
         serde_json::from_slice::<Value>(&bytes)
             .context("BUG: serialized page JSON failed re-parse validation")?;
 

@@ -35,6 +35,15 @@ all notable changes to this project are documented in this file.
   referencing pages
 - `export`→`import` round-trip no longer silently converts some code snippets to
   plain text; all recognized code snippet types now round-trip losslessly
+- a text snippet survives `export`→`import` as one snippet: line breaks and
+  blank lines inside it no longer split it, and empty or whitespace-only
+  snippets are no longer dropped. the same holds for headings and block quotes
+- markup-looking content keeps its type through the round trip: prose reading
+  `- like a list`, opening with a ```` ``` ```` fence or reading
+  `[[unknown: …]]`, and a code snippet whose body quotes a fence. `show`,
+  `search --full-text` and the tui print all of it the way the page has it
+- `import` no longer drops a ```` ```diff ```` block that has no `-`/`+` lines
+- `import --help` now states which parts of a page do not survive the round trip
 - list items with sub-bullets or multiple content blocks are no longer truncated
   to their first line when a page is parsed; the nested content now appears in
   rendered, searched, and exported output

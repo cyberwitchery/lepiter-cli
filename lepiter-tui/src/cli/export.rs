@@ -4,7 +4,8 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use lepiter_core::{
-    KnowledgeBaseIndex, LinkKind, LinkTargetKind, Node, Page, render_nodes_to_text_with,
+    BlockEscaping, KnowledgeBaseIndex, LinkKind, LinkTargetKind, Node, Page,
+    render_nodes_to_text_with,
 };
 
 use super::{ArgSpec, open_kb, parse_args};
@@ -147,7 +148,11 @@ fn render_with_rewritten_links(
             _ => None,
         }
     };
-    render_nodes_to_text_with(nodes, &mut export_link_rewriter(resolve))
+    render_nodes_to_text_with(
+        nodes,
+        &mut export_link_rewriter(resolve),
+        BlockEscaping::Escape,
+    )
 }
 
 /// The export link policy, layered over the shared [`lepiter_core`] scanner:

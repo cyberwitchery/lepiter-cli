@@ -15,18 +15,18 @@ const SPEC: ArgSpec<'static> = ArgSpec {
     usage: "usage: lepiter-cli import <input-dir> [kb-path]\n\n\
             converts exported markdown files (with yaml frontmatter) back\n\
             into lepiter page json files. reverses the `export` subcommand.\n\n\
-            page content survives the round trip, with these exceptions:\n\
-            \x20 - binary attachments (images, etc.) are not copied. picture\n\
-            \x20   snippet references are preserved but the files must be\n\
-            \x20   restored separately\n\
-            \x20 - an unknown snippet keeps its type but not its other fields\n\
-            \x20 - picture, youtube and word snippets come back as the link or\n\
-            \x20   text snippet their markdown form implies\n\
-            \x20 - a text snippet that is exactly [label](url) comes back as a\n\
-            \x20   link snippet\n\
-            \x20 - a carriage return in a text snippet is dropped; a crlf line\n\
-            \x20   break comes back as a plain newline\n\
-            \x20 - a snippet nested inside a list item is flattened to text",
+            page content survives the round trip, with these exceptions:\n  \
+            - binary attachments (images, etc.) are not copied. picture\n    \
+            snippet references are preserved but the files must be\n    \
+            restored separately\n  \
+            - an unknown snippet keeps its type but not its other fields\n  \
+            - picture, youtube and word snippets come back as the link or\n    \
+            text snippet their markdown form implies\n  \
+            - a text snippet that is exactly [label](url) comes back as a\n    \
+            link snippet\n  \
+            - a carriage return in a text snippet is dropped; a crlf line\n    \
+            break comes back as a plain newline\n  \
+            - a snippet nested inside a list item is flattened to text",
     toggles: &[],
     valued: &[],
 };

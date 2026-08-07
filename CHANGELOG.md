@@ -2,7 +2,7 @@
 
 all notable changes to this project are documented in this file.
 
-## Unreleased
+## 0.10.0 - 2026-08-07
 
 ### added
 - `check` now reports duplicate page ids. when two `.lepiter` files resolve to

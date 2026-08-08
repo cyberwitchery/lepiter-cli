@@ -578,14 +578,18 @@ mod tests {
     use serde_json::json;
     use std::fs;
     use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
+    /// a file path in a directory no other test shares. `tempfile` picks the
+    /// directory name: a timestamp cannot, because `SystemTime::now` ticks at
+    /// microsecond granularity here, so two tests in the same process stamp the
+    /// same value and collide.
     fn temp_file_path(name: &str) -> PathBuf {
-        let ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("time")
-            .as_nanos();
-        std::env::temp_dir().join(format!("lepiter-core-{name}-{ts}.lepiter"))
+        tempfile::Builder::new()
+            .prefix("lepiter-core-")
+            .tempdir()
+            .expect("temp dir")
+            .keep()
+            .join(format!("{name}.lepiter"))
     }
 
     #[test]

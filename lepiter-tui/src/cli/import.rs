@@ -744,13 +744,14 @@ mod tests {
 
     #[test]
     fn import_skips_traversal_id_without_writing_outside_kb() {
-        let dir = std::env::temp_dir().join(format!(
-            "lepiter-import-traversal-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        // `tempfile` picks the name: a timestamp cannot, because `SystemTime::now`
+        // ticks at microsecond granularity here, so two tests in the same process
+        // stamp the same value and share a directory.
+        let dir = tempfile::Builder::new()
+            .prefix("lepiter-import-traversal-")
+            .tempdir()
+            .expect("temp dir")
+            .keep();
         let input_dir = dir.join("input");
         let out_dir = dir.join("output");
         std::fs::create_dir_all(&input_dir).unwrap();
@@ -783,13 +784,14 @@ mod tests {
 
     #[test]
     fn import_skips_duplicate_id_keeping_first_file() {
-        let dir = std::env::temp_dir().join(format!(
-            "lepiter-import-dup-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        // `tempfile` picks the name: a timestamp cannot, because `SystemTime::now`
+        // ticks at microsecond granularity here, so two tests in the same process
+        // stamp the same value and share a directory.
+        let dir = tempfile::Builder::new()
+            .prefix("lepiter-import-dup-")
+            .tempdir()
+            .expect("temp dir")
+            .keep();
         let input_dir = dir.join("input");
         let out_dir = dir.join("output");
         std::fs::create_dir_all(&input_dir).unwrap();
@@ -1412,13 +1414,14 @@ mod tests {
 
     #[test]
     fn end_to_end_import() {
-        let dir = std::env::temp_dir().join(format!(
-            "lepiter-import-test-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        // `tempfile` picks the name: a timestamp cannot, because `SystemTime::now`
+        // ticks at microsecond granularity here, so two tests in the same process
+        // stamp the same value and share a directory.
+        let dir = tempfile::Builder::new()
+            .prefix("lepiter-import-test-")
+            .tempdir()
+            .expect("temp dir")
+            .keep();
         let out_dir = dir.join("output");
         let input_dir = dir.join("input");
         std::fs::create_dir_all(&input_dir).unwrap();

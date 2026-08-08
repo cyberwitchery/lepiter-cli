@@ -305,13 +305,14 @@ mod tests {
     use std::path::PathBuf;
 
     fn make_test_kb(pages: &[(&str, &str, &str)]) -> (std::path::PathBuf, KnowledgeBaseIndex) {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        let ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("time")
-            .as_nanos();
-        let dir = std::env::temp_dir().join(format!("lepiter-check-test-{ts}"));
-        std::fs::create_dir_all(&dir).unwrap();
+        // `tempfile` picks the name: a timestamp cannot, because `SystemTime::now`
+        // ticks at microsecond granularity here, so two tests in the same process
+        // stamp the same value and share a directory.
+        let dir = tempfile::Builder::new()
+            .prefix("lepiter-check-test-")
+            .tempdir()
+            .expect("temp dir")
+            .keep();
         for (id, title, body) in pages {
             let content = serde_json::json!({
                 "uid": {"uuid": id},

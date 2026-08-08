@@ -236,13 +236,15 @@ mod tests {
     use super::*;
     use std::fs;
 
+    /// a directory no other test shares. `tempfile` picks the name: a timestamp
+    /// cannot, because `SystemTime::now` ticks at microsecond granularity here, so
+    /// two tests in the same process stamp the same value and share a directory.
     fn temp_dir_path(name: &str) -> PathBuf {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        let ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("time")
-            .as_nanos();
-        std::env::temp_dir().join(format!("lepiter-core-{name}-{ts}"))
+        tempfile::Builder::new()
+            .prefix(&format!("lepiter-core-{name}-"))
+            .tempdir()
+            .expect("temp dir")
+            .keep()
     }
 
     #[test]

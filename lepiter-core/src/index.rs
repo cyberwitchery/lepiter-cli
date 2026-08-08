@@ -567,12 +567,17 @@ impl KnowledgeBaseIndex {
 
     /// Returns page ids that are not linked to by any other page.
     ///
-    /// The `toc_page_id` (table-of-contents) is excluded from the result since
-    /// it serves as the root entry point and is not expected to be linked to.
-    pub fn orphan_ids(&self, linked_pages: &HashSet<PageId>, toc_page_id: &str) -> Vec<PageId> {
+    /// The `toc_page_id` (table-of-contents), when present, is excluded from the
+    /// result since it serves as the root entry point and is not expected to be
+    /// linked to.
+    pub fn orphan_ids(
+        &self,
+        linked_pages: &HashSet<PageId>,
+        toc_page_id: Option<&str>,
+    ) -> Vec<PageId> {
         self.sorted_ids
             .iter()
-            .filter(|id| !linked_pages.contains(*id) && id.as_str() != toc_page_id)
+            .filter(|id| !linked_pages.contains(*id) && Some(id.as_str()) != toc_page_id)
             .cloned()
             .collect()
     }
@@ -1998,7 +2003,7 @@ mod tests {
             ("p2", "Page Two", &[], "target page"),
         ]);
         let result = index.analyze_links();
-        let orphans = index.orphan_ids(&result.linked_pages, "");
+        let orphans = index.orphan_ids(&result.linked_pages, None);
         // p2 is linked to by p1, so only p1 should be orphan.
         assert_eq!(orphans, vec!["p1"]);
         fs::remove_dir_all(&dir).unwrap();
@@ -2011,7 +2016,7 @@ mod tests {
             ("p1", "Page One", &[], "world"),
         ]);
         let result = index.analyze_links();
-        let orphans = index.orphan_ids(&result.linked_pages, "toc");
+        let orphans = index.orphan_ids(&result.linked_pages, Some("toc"));
         // toc excluded, only p1 should be orphan.
         assert_eq!(orphans, vec!["p1"]);
         fs::remove_dir_all(&dir).unwrap();

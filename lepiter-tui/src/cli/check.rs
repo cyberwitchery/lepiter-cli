@@ -1,4 +1,3 @@
-use std::fs;
 use std::io::Write;
 
 use anyhow::Result;
@@ -6,7 +5,7 @@ use lepiter_core::{
     BrokenLink, DuplicateId, DuplicateTitle, KnowledgeBaseIndex, MissingAttachment, ParseIssue,
 };
 
-use super::{ArgSpec, open_kb, parse_args};
+use super::{ArgSpec, open_kb, parse_args, read_kb_properties};
 
 const SPEC: ArgSpec<'static> = ArgSpec {
     usage: "usage: lepiter-cli check [--json] [kb-path]\n\n\
@@ -51,24 +50,14 @@ pub fn run_check(args: Vec<String>) -> Result<()> {
     let kb_path = args.kb_path(0);
     let index = open_kb(&kb_path)?;
 
-    // Read table-of-contents page id from lepiter.properties (excluded from orphans).
-    let props_path = kb_path.join("lepiter.properties");
-    let toc_page_id = if props_path.is_file() {
-        fs::read(&props_path)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-            .and_then(|v| {
-                v.get("tableOfContents")
-                    .and_then(|v| v.as_str())
-                    .map(String::from)
-            })
-            .unwrap_or_default()
-    } else {
-        String::new()
-    };
+    let toc_page_id = read_kb_properties(&kb_path)?.and_then(|v| {
+        v.get("tableOfContents")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+    });
 
     let analysis = index.analyze_all();
-    let orphan_ids = index.orphan_ids(&analysis.linked_pages, &toc_page_id);
+    let orphan_ids = index.orphan_ids(&analysis.linked_pages, toc_page_id.as_deref());
     let duplicate_titles = index.find_duplicate_titles();
 
     for issue in &index.index_issues {
@@ -439,7 +428,7 @@ mod tests {
     fn check_text_orphan_pages_listed_by_title() {
         let (dir, index) = make_test_kb(&[("p1", "Alpha", "hello"), ("p2", "Beta", "world")]);
         let analysis = index.analyze_all();
-        let orphan_ids = index.orphan_ids(&analysis.linked_pages, "");
+        let orphan_ids = index.orphan_ids(&analysis.linked_pages, None);
         let report = CheckReport {
             orphan_ids: &orphan_ids,
             ..empty_report(&index)
@@ -611,7 +600,7 @@ mod tests {
     fn check_json_orphan_pages_include_title() {
         let (dir, index) = make_test_kb(&[("p1", "Alpha", "hello")]);
         let analysis = index.analyze_all();
-        let orphan_ids = index.orphan_ids(&analysis.linked_pages, "");
+        let orphan_ids = index.orphan_ids(&analysis.linked_pages, None);
         let report = CheckReport {
             orphan_ids: &orphan_ids,
             ..empty_report(&index)
@@ -737,7 +726,7 @@ mod tests {
             ("p3", "Beta", "see [img](attachments/missing.png)"),
         ]);
         let analysis = index.analyze_all();
-        let orphan_ids = index.orphan_ids(&analysis.linked_pages, "");
+        let orphan_ids = index.orphan_ids(&analysis.linked_pages, None);
         let dupes = index.find_duplicate_titles();
         let report = CheckReport {
             broken_links: &analysis.broken_links,
@@ -768,7 +757,7 @@ mod tests {
             ("p2", "Alpha", "duplicate title"),
         ]);
         let analysis = index.analyze_all();
-        let orphan_ids = index.orphan_ids(&analysis.linked_pages, "");
+        let orphan_ids = index.orphan_ids(&analysis.linked_pages, None);
         let dupes = index.find_duplicate_titles();
         let report = CheckReport {
             broken_links: &analysis.broken_links,

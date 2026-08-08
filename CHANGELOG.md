@@ -2,6 +2,22 @@
 
 all notable changes to this project are documented in this file.
 
+## Unreleased
+
+### fixed
+- `check` no longer silently swallows a corrupt or unreadable
+  `lepiter.properties`. a malformed file could previously cause `check` to report
+  the table-of-contents page as a false orphan and exit 1 with no mention of the
+  real problem; it now prints a warning naming the file, and an unreadable
+  (but present) file surfaces an error instead of being ignored. `info` reports
+  the same warning on a malformed file
+
+### changed
+- `KnowledgeBaseIndex::orphan_ids` takes the table-of-contents id as
+  `Option<&str>` instead of `&str`. an absent id was previously spelled as an
+  empty string by one caller and `<none>` by the other, both used as lookup
+  keys; the absence is now in the type
+
 ## 0.10.0 - 2026-08-07
 
 ### added

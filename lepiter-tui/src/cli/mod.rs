@@ -23,6 +23,7 @@ pub use tags::run_tags;
 
 use std::collections::HashMap;
 use std::fmt;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -122,6 +123,31 @@ fn open_kb(path: &Path) -> Result<KnowledgeBaseIndex> {
         .with_context(|| format!("failed to open knowledge base at {}", path.display()))
 }
 
+/// Parses the `lepiter.properties` of the knowledge base at `kb_path`, or
+/// `Ok(None)` when it is absent. Malformed JSON is reported on stderr and
+/// treated as absent; an I/O failure on a present file is propagated rather
+/// than swallowed.
+fn read_kb_properties(kb_path: &Path) -> Result<Option<serde_json::Value>> {
+    let props_path = kb_path.join("lepiter.properties");
+    let bytes = match fs::read(&props_path) {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => {
+            return Err(err).with_context(|| format!("failed to read {}", props_path.display()));
+        }
+    };
+    match serde_json::from_slice(&bytes) {
+        Ok(value) => Ok(Some(value)),
+        Err(err) => {
+            eprintln!(
+                "warning: ignoring malformed {}: {err}",
+                props_path.display()
+            );
+            Ok(None)
+        }
+    }
+}
+
 fn resolve_page_id_by_title(index: &KnowledgeBaseIndex, title: &str) -> Result<String> {
     match index.resolve_page_id_by_title(title) {
         TitleResolution::Unique(id) => Ok(id),
@@ -217,5 +243,55 @@ mod tests {
     #[test]
     fn help_wins_over_a_later_unknown_flag() {
         assert!(parse(&["--help", "--nope"]).unwrap().is_none());
+    }
+
+    // --- read_kb_properties ---
+
+    fn props_temp_dir(tag: &str) -> PathBuf {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("lepiter-props-{tag}-{ts}"));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn read_kb_properties_absent_is_none() {
+        let dir = props_temp_dir("absent");
+        assert!(read_kb_properties(&dir).unwrap().is_none());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn read_kb_properties_parses_valid_json() {
+        let dir = props_temp_dir("valid");
+        fs::write(
+            dir.join("lepiter.properties"),
+            br#"{"tableOfContents":"toc-id"}"#,
+        )
+        .unwrap();
+        let props = read_kb_properties(&dir).unwrap().unwrap();
+        assert_eq!(props["tableOfContents"], "toc-id");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn read_kb_properties_malformed_json_is_none() {
+        let dir = props_temp_dir("malformed");
+        fs::write(dir.join("lepiter.properties"), b"{not valid json").unwrap();
+        assert!(read_kb_properties(&dir).unwrap().is_none());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn read_kb_properties_io_error_is_propagated() {
+        let dir = props_temp_dir("ioerr");
+        // A directory in place of the file makes the read fail with a non-NotFound error.
+        fs::create_dir(dir.join("lepiter.properties")).unwrap();
+        assert!(read_kb_properties(&dir).is_err());
+        fs::remove_dir_all(&dir).ok();
     }
 }

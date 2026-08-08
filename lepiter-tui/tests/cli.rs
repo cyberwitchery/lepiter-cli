@@ -1373,6 +1373,150 @@ mod check {
 }
 
 // ---------------------------------------------------------------------------
+// check: lepiter.properties failure handling
+// ---------------------------------------------------------------------------
+
+mod check_properties {
+    use super::*;
+    use std::path::Path;
+
+    fn temp_kb(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "lepiter-cli-props-{tag}-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn write_page(dir: &Path, id: &str, title: &str, body: &str) {
+        let page = serde_json::json!({
+            "uid": { "uuid": id },
+            "pageType": { "title": title },
+            "tags": [],
+            "children": { "items": [ { "__type": "textSnippet", "string": body } ] }
+        });
+        std::fs::write(
+            dir.join(format!("{id}.lepiter")),
+            serde_json::to_vec(&page).unwrap(),
+        )
+        .unwrap();
+    }
+
+    /// Two mutually linking pages, so neither is a genuine orphan.
+    fn write_linked_pair(dir: &Path) {
+        write_page(dir, "a", "Page A", "see [B](page:b)");
+        write_page(dir, "b", "Page B", "see [A](page:a)");
+    }
+
+    #[test]
+    fn corrupt_properties_warns_and_reports_no_false_orphan() {
+        let dir = temp_kb("corrupt");
+        write_linked_pair(&dir);
+        std::fs::write(dir.join("lepiter.properties"), b"{ not valid json").unwrap();
+
+        let out = run(&["check", "--json", dir.to_str().unwrap()]);
+        let err = stderr(&out);
+        assert!(
+            err.contains("lepiter.properties"),
+            "corruption should be reported on stderr, got: {err}"
+        );
+        let json: serde_json::Value =
+            serde_json::from_str(&stdout(&out)).expect("check --json should still emit valid JSON");
+        assert_eq!(
+            json["orphan_pages"].as_array().unwrap().len(),
+            0,
+            "linked pages must not be reported as orphans"
+        );
+        assert!(
+            out.status.success(),
+            "a corrupt config alone must not make check exit nonzero"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn missing_properties_is_silent_with_no_false_orphan() {
+        let dir = temp_kb("missing");
+        write_linked_pair(&dir);
+
+        let out = run(&["check", "--json", dir.to_str().unwrap()]);
+        assert!(
+            out.status.success(),
+            "missing properties must not fail check, stderr: {}",
+            stderr(&out)
+        );
+        assert!(
+            stderr(&out).is_empty(),
+            "a missing properties file must be silent, got: {}",
+            stderr(&out)
+        );
+        let json: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+        assert_eq!(json["orphan_pages"].as_array().unwrap().len(), 0);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn unreadable_properties_surfaces_an_error() {
+        let dir = temp_kb("unreadable");
+        write_linked_pair(&dir);
+        // A directory in place of the file makes the read fail with a non-NotFound error.
+        std::fs::create_dir(dir.join("lepiter.properties")).unwrap();
+
+        let out = run(&["check", dir.to_str().unwrap()]);
+        assert!(
+            !out.status.success(),
+            "an unreadable properties file must surface an error"
+        );
+        let err = stderr(&out);
+        assert!(
+            err.contains("failed to read") && err.contains("lepiter.properties"),
+            "error should name the unreadable file, got: {err}"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn valid_toc_page_is_not_reported_as_orphan() {
+        let dir = temp_kb("valid-toc");
+        write_page(
+            &dir,
+            "toc",
+            "Table of Contents",
+            "see [Content](page:content)",
+        );
+        write_page(&dir, "content", "Content", "body");
+        std::fs::write(
+            dir.join("lepiter.properties"),
+            br#"{"tableOfContents":"toc"}"#,
+        )
+        .unwrap();
+
+        let out = run(&["check", "--json", dir.to_str().unwrap()]);
+        assert!(
+            out.status.success(),
+            "a KB whose only unlinked page is the TOC should pass, stderr: {}",
+            stderr(&out)
+        );
+        let json: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+        let orphan_ids: Vec<&str> = json["orphan_pages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|p| p["id"].as_str())
+            .collect();
+        assert!(
+            !orphan_ids.contains(&"toc"),
+            "the TOC page must be excluded from orphans, got: {orphan_ids:?}"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
+// ---------------------------------------------------------------------------
 // help / usage
 // ---------------------------------------------------------------------------
 

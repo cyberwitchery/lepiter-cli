@@ -5,7 +5,12 @@
 - `List`: full-screen page index
 - `Search`: filtered list input state
 - `Page`: full-screen page reader
+- `PageSearch`: in-page search input state
+- `Backlinks`: pages linking to the current page
+- `NewPageTitle`: title input for a new page
 - `Edit`: snippet-level editor (text/code only)
+
+`?` toggles a per-mode help overlay in every mode.
 
 ## search
 
@@ -16,6 +21,7 @@
 - content matches show snippet previews in the list
 - opening a content-hit result attempts to jump to first visible match
 - `esc` returns to list view
+- in page mode, `/` searches within the page; `n`/`N` jump between matches
 
 ## rendering
 
@@ -50,6 +56,7 @@ navigation:
 - `tab` / `shift+tab`: select link
 - `enter`: follow selected link
 - `h`: back through link history
+- `B`: list pages linking to the current page (backlinks view)
 
 internal targets resolve by:
 
@@ -96,6 +103,7 @@ the list footer shows cache occupancy and full-text index progress.
 | `↓` / `j` | move selection down |
 | `enter` | open selected page |
 | `/` | enter search mode |
+| `n` | create a new page |
 | `esc` | clear search / return to list |
 | `backspace` | delete last search character |
 
@@ -109,6 +117,9 @@ the list footer shows cache occupancy and full-text index progress.
 | `page down` | scroll down half a screen |
 | `g` | jump to top |
 | `G` | jump to bottom |
+| `/` | search in page |
+| `n` / `N` | next / previous match |
+| `B` | show backlinks |
 | `tab` | select next link |
 | `shift+tab` | select previous link |
 | `enter` | follow selected link |
@@ -116,7 +127,7 @@ the list footer shows cache occupancy and full-text index progress.
 | `b` | back to list |
 | `e` | enter edit mode |
 | `O` | open current page externally (`LEPITER_OPEN_CMD`) |
-| `esc` | back to list |
+| `esc` | clear in-page search / back to list |
 | `q` | quit |
 
 ### edit mode
@@ -126,7 +137,9 @@ the list footer shows cache occupancy and full-text index progress.
 | `tab` / `shift+tab` | move to next / previous snippet |
 | `↑` / `↓` / `←` / `→` | cursor movement |
 | `home` / `end` | cursor to line start / end |
+| `page up` / `page down` | scroll preview |
+| `ctrl+a` | append a new text snippet |
 | `ctrl+u` | undo (snapshot-based) |
 | `backspace` | delete character before cursor |
 | `delete` | delete character at cursor |
-| `esc` | exit edit mode |
+| `esc` | save and exit edit mode |

@@ -5,7 +5,7 @@ terminal tools for reading lepiter knowledge bases stored as page json files.
 this repository is a cargo workspace with two crates:
 
 - `lepiter-core`: resilient parser, metadata index, and plain text renderer.
-- `lepiter-cli` (package in `lepiter-tui/`): read-only terminal ui for browsing and reading pages.
+- `lepiter-cli` (package in `lepiter-tui/`): terminal ui and cli subcommands for browsing, reading, and editing pages.
 
 `./lepiter/` is fixture/input data (the gt book knowledge base), not source code.
 
@@ -15,9 +15,10 @@ this repository is a cargo workspace with two crates:
 - lazy loading: metadata first, full page parsing on demand.
 - resilient parsing: unknown source node types are preserved as `Node::Unknown`.
 - probe example to inspect corpus shape and parse issues.
-- tui with full-screen list/search, full-screen page reading, markdown-like rendering, and internal link navigation.
+- tui with full-screen list/search, page reading, in-page search, backlinks, page creation, markdown-like rendering, and internal link navigation.
 - optional external snippet plugins via ipc (see `docs/plugins.md`).
 - tui editor for text and code snippets (auto-save with undo).
+- cli subcommands: `info`, `list`, `ids`, `search`, `show`, `links`, `tags`, `check`, `export`, `import` (`lepiter-cli help` for details).
 
 ## quick start
 
@@ -47,29 +48,9 @@ lepiter-cli info ./lepiter
 
 ## tui keybinds
 
-list/search view:
-
-- `j/k` or `up/down`: move selection
-- `enter`: open selected page
-- `/`: start search
-- `esc`: return to list view
-- `q`: quit
-
-page view:
-
-- `j/k` or `up/down`: scroll
-- `tab` / `shift+tab`: select next/previous link
-- `enter`: follow selected link
-- `h`: go back in page-link history
-- `b` or `esc`: return to list view
-- `e`: edit page snippets
-
-edit view:
-
-- `tab` / `shift+tab`: next/previous snippet
-- arrows: move cursor
-- `ctrl+u`: undo
-- `esc`: exit edit view
+`j/k` move, `enter` open, `/` search, `n` new page, `e` edit, `B` backlinks,
+`q` quit. press `?` in any mode for the full per-mode reference;
+[`docs/tui.md`](docs/tui.md) lists every binding.
 
 ## documentation
 

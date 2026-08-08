@@ -38,6 +38,36 @@ fn fixtures_path_str() -> String {
     fixtures_dir().display().to_string()
 }
 
+fn unique_temp(tag: &str) -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "lepiter-cli-{tag}-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ))
+}
+
+/// a temp kb holding one page, one text snippet per entry.
+fn write_text_snippet_kb(tag: &str, id: &str, title: &str, snippets: &[&str]) -> PathBuf {
+    let root = unique_temp(tag);
+    std::fs::create_dir_all(&root).unwrap();
+    let page = serde_json::json!({
+        "uid": { "uuid": id },
+        "pageType": { "title": title },
+        "children": { "items": snippets
+            .iter()
+            .map(|s| serde_json::json!({ "__type": "textSnippet", "string": s }))
+            .collect::<Vec<_>>() }
+    });
+    std::fs::write(
+        root.join(format!("{id}.lepiter")),
+        serde_json::to_vec(&page).unwrap(),
+    )
+    .unwrap();
+    root
+}
+
 // ---------------------------------------------------------------------------
 // info subcommand
 // ---------------------------------------------------------------------------
@@ -111,8 +141,7 @@ mod info {
         );
     }
 
-    /// `info` used to let the *last* positional win, disagreeing with every
-    /// other subcommand. All of them now take the first.
+    /// all subcommands take the first positional as the kb path
     #[test]
     fn first_positional_is_the_knowledge_base_path() {
         let out = run(&["info", &fixtures_path_str(), "/nonexistent/kb"]);
@@ -319,11 +348,6 @@ mod search {
 
     #[test]
     fn tag_match() {
-        // "alpha" is also a tag on page-alpha, but title match wins over tag.
-        // Search for something that only matches as a tag.
-        // The tag "fixture" appears on alpha page — but "fixture" also appears
-        // in every page id, so all pages match by title. This is fine — we
-        // just verify the alpha page has kind=title (id match counts as title).
         let out = run(&["search", "--json", "alpha", &fixtures_path_str()]);
         let json: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
         let alpha = json
@@ -435,6 +459,34 @@ mod search {
             "fourth column should hold the snippet, got: {}",
             parts[3]
         );
+    }
+
+    #[test]
+    fn full_text_snippet_holds_block_looking_prose_verbatim() {
+        let root = write_text_snippet_kb(
+            "search-verbatim",
+            "verbatim-page",
+            "Verbatim Page",
+            &["- looks like a list but is prose", "para one\n\npara two"],
+        );
+
+        let out = run(&[
+            "search",
+            "--full-text",
+            "--tsv",
+            "prose",
+            root.to_str().unwrap(),
+        ]);
+        assert!(out.status.success(), "search failed: {}", stderr(&out));
+        let text = stdout(&out);
+        let line = text.lines().next().expect("expected a result row");
+        let snippet = line.split('\t').nth(3).expect("expected a snippet column");
+        assert!(
+            snippet.contains("- looks like a list but is prose") && !snippet.contains('\\'),
+            "snippet should hold the prose verbatim, got: {snippet}"
+        );
+
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
@@ -649,6 +701,34 @@ mod show {
         assert!(text.contains("alpha paragraph"));
         assert!(text.contains("first item"));
         assert!(text.contains("second item"));
+    }
+
+    #[test]
+    fn plain_output_prints_block_looking_prose_verbatim() {
+        let root = write_text_snippet_kb(
+            "show-verbatim",
+            "verbatim-page",
+            "Verbatim Page",
+            &[
+                "- looks like a list but is prose",
+                "para one\n\npara two",
+                "\\newcommand{\\foo}{bar}",
+            ],
+        );
+
+        let out = run(&["show", "--id", "verbatim-page", root.to_str().unwrap()]);
+        assert!(out.status.success(), "show failed: {}", stderr(&out));
+        let text = stdout(&out);
+        let body = text
+            .split_once("---\n\n")
+            .expect("show prints a header separator")
+            .1;
+        assert_eq!(
+            body,
+            "- looks like a list but is prose\n\npara one\n\npara two\n\n\\newcommand{\\foo}{bar}\n"
+        );
+
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
@@ -1550,20 +1630,7 @@ mod import {
 mod import_export {
     use super::*;
 
-    fn unique_temp(tag: &str) -> PathBuf {
-        std::env::temp_dir().join(format!(
-            "lepiter-cli-{tag}-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ))
-    }
-
-    // exporting a code snippet to markdown and importing it back must preserve
-    // its `__type`. the robocoderMetamodelSnippet arm used to be missing from
-    // the reverse map, so this round-trip silently downgraded it to a plain
-    // textSnippet.
+    // the round-trip must preserve the snippet `__type`
     #[test]
     fn export_then_import_preserves_code_snippet_type() {
         let root = unique_temp("roundtrip");

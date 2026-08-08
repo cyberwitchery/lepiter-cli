@@ -412,6 +412,11 @@ mod tests {
         }
     }
 
+    fn hung_plugin() -> PluginProcess {
+        let script = "read line; sleep 60";
+        PluginProcess::spawn("bash", &["-c".to_string(), script.to_string()]).unwrap()
+    }
+
     #[test]
     fn working_plugin_responds_within_timeout() {
         let script = r#"read line; echo '{"ok":true,"lines":["hello"],"error":null}'"#;
@@ -498,10 +503,7 @@ mod tests {
 
     #[test]
     fn render_respawns_hung_plugin() {
-        // Start with a plugin that hangs after reading the request.
-        let hang_script = "read line; sleep infinity";
-        let proc =
-            PluginProcess::spawn("bash", &["-c".to_string(), hang_script.to_string()]).unwrap();
+        let proc = hung_plugin();
 
         // The handle's binary/args point to a *working* plugin, so the
         // respawn produces a process that actually responds.
@@ -528,9 +530,7 @@ mod tests {
 
     #[test]
     fn render_returns_error_when_respawn_fails() {
-        let hang_script = "read line; sleep infinity";
-        let proc =
-            PluginProcess::spawn("bash", &["-c".to_string(), hang_script.to_string()]).unwrap();
+        let proc = hung_plugin();
 
         let mut mgr = PluginManager::empty();
         mgr.timeout = Duration::from_millis(100);
@@ -554,12 +554,9 @@ mod tests {
 
     #[test]
     fn transient_error_not_cached() {
-        // Both attempts fail (hang → timeout → respawn with nonexistent
-        // binary → respawn fails → break).  The error must NOT be cached,
-        // so the same key can succeed on a later render.
-        let hang_script = "read line; sleep infinity";
-        let proc =
-            PluginProcess::spawn("bash", &["-c".to_string(), hang_script.to_string()]).unwrap();
+        // The error must NOT be cached, so the same key can succeed on a
+        // later render.
+        let proc = hung_plugin();
 
         let work_script =
             r#"while read line; do echo '{"ok":true,"lines":["recovered"],"error":null}'; done"#;
@@ -582,8 +579,8 @@ mod tests {
         // the error path.
         let r1 = mgr.render("testType", &snippet);
         assert!(
-            matches!(r1, Some(PluginRender::Error(_))),
-            "first render should fail"
+            matches!(r1, Some(PluginRender::Error(ref msg)) if msg.contains("timed out")),
+            "first render should fail with a timeout, got: {r1:?}"
         );
 
         // Second render with the SAME key: must retry the (now working)
@@ -597,12 +594,10 @@ mod tests {
 
     #[test]
     fn multiple_requests_work_after_respawn() {
-        let hang_script = "read line; sleep infinity";
         let work_script =
             r#"while read line; do echo '{"ok":true,"lines":["ok"],"error":null}'; done"#;
 
-        let proc =
-            PluginProcess::spawn("bash", &["-c".to_string(), hang_script.to_string()]).unwrap();
+        let proc = hung_plugin();
 
         let mut mgr = PluginManager::empty();
         mgr.timeout = Duration::from_millis(100);

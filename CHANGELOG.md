@@ -2,9 +2,14 @@
 
 all notable changes to this project are documented in this file.
 
-## Unreleased
+## 0.10.0 - 2026-08-07
 
 ### added
+- `check` now reports duplicate page ids. when two `.lepiter` files resolve to
+  the same page id, one page was silently dropped from the index, search, links,
+  and export with no diagnostic; `check` now lists the shared id and the files
+  claiming it (a `duplicate_ids` section in the text report, a `duplicate_ids`
+  array in `--json`) and exits non-zero
 - `search --full-text` now shows a matching-context snippet for each content
   hit, so you can see why a page matched without opening it. the snippet appears
   as a `snippet` field in `--json`, a fourth column in `--tsv`, and an indented
@@ -28,8 +33,23 @@ all notable changes to this project are documented in this file.
   backlinks and TUI navigation, and keeps incorrect links out of exported
   markdown. the interactive `show <title>` and `links --for <title>` lookups
   keep their convenient substring matching
+- `check` now lists every page that references a missing attachment. when
+  several pages pointed at the same missing file, only one arbitrary page was
+  reported, so fixing that page and re-running surfaced the next one with the
+  same error. a page referencing the same missing file more than once is still
+  reported once, and the `missing_attachments` count (text and `--json`) counts
+  referencing pages
 - `export`→`import` round-trip no longer silently converts some code snippets to
   plain text; all recognized code snippet types now round-trip losslessly
+- a text snippet survives `export`→`import` as one snippet: line breaks and
+  blank lines inside it no longer split it, and empty or whitespace-only
+  snippets are no longer dropped. the same holds for headings and block quotes
+- markup-looking content keeps its type through the round trip: prose reading
+  `- like a list`, opening with a ```` ``` ```` fence or reading
+  `[[unknown: …]]`, and a code snippet whose body quotes a fence. `show`,
+  `search --full-text` and the tui print all of it the way the page has it
+- `import` no longer drops a ```` ```diff ```` block that has no `-`/`+` lines
+- `import --help` now states which parts of a page do not survive the round trip
 - list items with sub-bullets or multiple content blocks are no longer truncated
   to their first line when a page is parsed; the nested content now appears in
   rendered, searched, and exported output
@@ -54,6 +74,8 @@ all notable changes to this project are documented in this file.
 - `info` now takes the *first* path argument as the knowledge base, like every
   other subcommand. `info a b` previously read `b` and silently ignored `a`,
   while `list a b` read `a`
+- `import` now warns on stderr when a page's `updated_at` frontmatter date can't
+  be parsed, instead of silently discarding the timestamp
 
 ## 0.9.0 - 2026-07-05
 

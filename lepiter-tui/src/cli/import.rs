@@ -4,7 +4,9 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use chrono::DateTime;
-use lepiter_core::{LinkKind, language_to_snippet_type, rewrite_inline_links};
+use lepiter_core::{
+    LinkKind, language_to_snippet_type, rewrite_inline_links, unescape_block_start,
+};
 use serde_json::json;
 
 use super::{ArgSpec, parse_args};
@@ -13,9 +15,18 @@ const SPEC: ArgSpec<'static> = ArgSpec {
     usage: "usage: lepiter-cli import <input-dir> [kb-path]\n\n\
             converts exported markdown files (with yaml frontmatter) back\n\
             into lepiter page json files. reverses the `export` subcommand.\n\n\
-            note: binary attachments (images, etc.) are not copied. picture\n\
-            snippet references are preserved but the files must be restored\n\
-            separately.",
+            page content survives the round trip, with these exceptions:\n  \
+            - binary attachments (images, etc.) are not copied. picture\n    \
+            snippet references are preserved but the files must be\n    \
+            restored separately\n  \
+            - an unknown snippet keeps its type but not its other fields\n  \
+            - picture, youtube and word snippets come back as the link or\n    \
+            text snippet their markdown form implies\n  \
+            - a text snippet that is exactly [label](url) comes back as a\n    \
+            link snippet\n  \
+            - a carriage return in a text snippet is dropped; a crlf line\n    \
+            break comes back as a plain newline\n  \
+            - a snippet nested inside a list item is flattened to text",
     toggles: &[],
     valued: &[],
 };
@@ -281,9 +292,8 @@ fn parse_markdown_body(body: &str, slug_to_id: &HashMap<String, String>) -> Vec<
         }
 
         // code block
-        if let Some(after_fence) = line.strip_prefix("```") {
-            let lang_part = after_fence.trim();
-            let (snipps, consumed) = parse_code_block(lang_part, &mut lines);
+        if let Some((fence_len, info)) = open_fence(line) {
+            let (snipps, consumed) = parse_code_block(fence_len, info, &mut lines);
             snippets.extend(snipps);
             if !consumed {
                 // unterminated code block — treat opening as text
@@ -293,14 +303,17 @@ fn parse_markdown_body(body: &str, slug_to_id: &HashMap<String, String>) -> Vec<
         }
 
         // blockquote
-        if line.starts_with("> ") || line == ">" {
-            let quote_text = if line == ">" {
-                String::new()
-            } else {
-                line[2..].to_string()
-            };
-            let rewritten = rewrite_links_to_internal(&format!("> {quote_text}"), slug_to_id);
-            snippets.push(Snippet::Text(rewritten));
+        if is_quote_line(line) {
+            let mut quoted = vec![quote_body(line)];
+            while let Some(&next) = lines.peek() {
+                if !is_quote_line(next) {
+                    break;
+                }
+                quoted.push(quote_body(next));
+                lines.next();
+            }
+            let text = format!("> {}", quoted.join("\n"));
+            snippets.push(Snippet::Text(rewrite_links_to_internal(&text, slug_to_id)));
             continue;
         }
 
@@ -324,101 +337,143 @@ fn parse_markdown_body(body: &str, slug_to_id: &HashMap<String, String>) -> Vec<
             }
             let items: Vec<String> = items
                 .into_iter()
-                .map(|item| rewrite_links_to_internal(&item, slug_to_id))
+                .map(|item| rewrite_links_to_internal(&unescape_lines(&item), slug_to_id))
                 .collect();
             snippets.push(Snippet::List(items));
             continue;
         }
 
-        // standalone link line: [text](url) with nothing else on the line
-        if is_standalone_link(line) {
-            let (text, url) = extract_standalone_link(line);
-            let url = rewrite_link_target_to_internal(&url, slug_to_id);
-            snippets.push(Snippet::Link { text, url });
-            continue;
+        // paragraph
+        let mut run = vec![line];
+        while let Some(&next) = lines.peek() {
+            if next.trim().is_empty()
+                || open_fence(next).is_some()
+                || is_quote_line(next)
+                || next.starts_with("- ")
+            {
+                break;
+            }
+            run.push(next);
+            lines.next();
         }
 
-        // unknown snippet type marker from export: [[unknown: TYPE]]
-        if let Some(typ) = line
-            .trim()
-            .strip_prefix("[[unknown: ")
-            .and_then(|rest| rest.strip_suffix("]]"))
-        {
-            snippets.push(Snippet::Unknown {
-                typ: typ.to_string(),
-            });
-            continue;
+        // a lone line may be a whole-snippet form instead
+        if let [only] = run[..] {
+            // unknown snippet type marker from export: [[unknown: TYPE]]
+            if let Some(typ) = only
+                .trim()
+                .strip_prefix("[[unknown: ")
+                .and_then(|rest| rest.strip_suffix("]]"))
+            {
+                snippets.push(Snippet::Unknown {
+                    typ: typ.to_string(),
+                });
+                continue;
+            }
+
+            // standalone link line: [text](url) with nothing else on the line
+            if is_standalone_link(only) {
+                let (text, url) = extract_standalone_link(only);
+                let url = rewrite_link_target_to_internal(&url, slug_to_id);
+                snippets.push(Snippet::Link { text, url });
+                continue;
+            }
         }
 
-        // heading or paragraph
-        let rewritten = rewrite_links_to_internal(line, slug_to_id);
-        snippets.push(Snippet::Text(rewritten));
+        let text = unescape_lines(&run.join("\n"));
+        snippets.push(Snippet::Text(rewrite_links_to_internal(&text, slug_to_id)));
     }
 
     snippets
 }
 
-fn parse_code_block<'a>(
-    lang_part: &str,
-    lines: &mut std::iter::Peekable<std::str::Lines<'a>>,
-) -> (Vec<Snippet>, bool) {
-    // check for diff rewrite block: ```diff <lang>
-    if let Some(after_diff) = lang_part.strip_prefix("diff ") {
-        let rewrite_lang = after_diff.trim();
-        if let Some(snippets) = try_parse_rewrite_block(rewrite_lang, lines) {
-            return (vec![snippets], true);
-        }
+fn unescape_lines(text: &str) -> String {
+    text.lines()
+        .map(unescape_block_start)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn is_quote_line(line: &str) -> bool {
+    line.starts_with("> ") || line == ">"
+}
+
+fn quote_body(line: &str) -> &str {
+    line.strip_prefix("> ").unwrap_or("")
+}
+
+/// backtick count and info string of an opening code fence.
+fn open_fence(line: &str) -> Option<(usize, &str)> {
+    let ticks = line.chars().take_while(|c| *c == '`').count();
+    if ticks < 3 {
+        return None;
     }
+    let info = line[ticks..].trim();
+    if info.contains('`') {
+        return None;
+    }
+    Some((ticks, info))
+}
 
-    let language = if lang_part.is_empty() {
-        None
-    } else {
-        Some(lang_part.to_string())
-    };
+/// whether `line` closes a fence opened with `open_len` backticks.
+fn closes_fence(line: &str, open_len: usize) -> bool {
+    let rest = line.trim_start_matches(' ');
+    if line.len() - rest.len() > 3 {
+        return false;
+    }
+    let ticks = rest.chars().take_while(|c| *c == '`').count();
+    ticks >= open_len && rest[ticks..].trim().is_empty()
+}
 
-    let mut code_lines = Vec::new();
+fn parse_code_block(
+    fence_len: usize,
+    info: &str,
+    lines: &mut std::iter::Peekable<std::str::Lines<'_>>,
+) -> (Vec<Snippet>, bool) {
+    let mut body = Vec::new();
     let mut found_end = false;
 
     for line in lines.by_ref() {
-        if line.starts_with("```") && line.trim() == "```" {
+        if closes_fence(line, fence_len) {
             found_end = true;
             break;
         }
-        code_lines.push(line);
+        body.push(line);
     }
 
     if !found_end {
         return (Vec::new(), false);
     }
 
-    let code = code_lines.join("\n");
-    (vec![Snippet::Code { language, code }], true)
+    // diff rewrite block: ```diff <lang>
+    if let Some(rewrite_lang) = info.strip_prefix("diff ")
+        && let Some(snippet) = try_parse_rewrite_block(rewrite_lang.trim(), &body)
+    {
+        return (vec![snippet], true);
+    }
+
+    let language = if info.is_empty() {
+        None
+    } else {
+        Some(info.to_string())
+    };
+
+    (
+        vec![Snippet::Code {
+            language,
+            code: body.join("\n"),
+        }],
+        true,
+    )
 }
 
-fn try_parse_rewrite_block<'a>(
-    lang: &str,
-    lines: &mut std::iter::Peekable<std::str::Lines<'a>>,
-) -> Option<Snippet> {
+fn try_parse_rewrite_block(lang: &str, all_lines: &[&str]) -> Option<Snippet> {
     let mut scope = None;
     let mut is_method_pattern = None;
     let mut search_lines = Vec::new();
     let mut replace_lines = Vec::new();
-    let mut found_end = false;
-    let mut all_lines = Vec::new();
 
-    for line in lines.by_ref() {
-        if line.starts_with("```") && line.trim() == "```" {
-            found_end = true;
-            break;
-        }
-        all_lines.push(line.to_string());
-    }
-
-    if !found_end {
-        return None;
-    }
-
-    for line in &all_lines {
+    for line in all_lines {
         if let Some(rest) = line.strip_prefix("# scope: ") {
             scope = Some(rest.to_string());
         } else if let Some(rest) = line.strip_prefix("# method_pattern: ") {
@@ -563,7 +618,7 @@ fn build_page_json(fm: &Frontmatter, snippets: &[Snippet]) -> serde_json::Value 
                 if let Some(is_method) = is_method_pattern {
                     obj["isMethodPattern"] = json!(is_method);
                 }
-                // language is implicit in the __type for now
+                // language is implicit in the __type
                 let _ = language;
                 items.push(obj);
             }
@@ -587,12 +642,20 @@ fn build_page_json(fm: &Frontmatter, snippets: &[Snippet]) -> serde_json::Value 
         page["tags"] = json!(fm.tags);
     }
 
-    if let Some(updated) = &fm.updated_at
-        && DateTime::parse_from_rfc3339(updated).is_ok()
-    {
-        page["editTime"] = json!({
-            "time": { "dateAndTimeString": updated }
-        });
+    if let Some(updated) = &fm.updated_at {
+        match DateTime::parse_from_rfc3339(updated) {
+            Ok(_) => {
+                page["editTime"] = json!({
+                    "time": { "dateAndTimeString": updated }
+                });
+            }
+            Err(_) => {
+                eprintln!(
+                    "warning: ignoring unparseable updated_at {updated:?} for page {} (expected RFC 3339)",
+                    fm.id
+                );
+            }
+        }
     }
 
     page
@@ -643,7 +706,6 @@ mod tests {
 
     #[test]
     fn parse_yaml_string_lone_quote_does_not_panic() {
-        // a value that is a single quote char used to slice `1..0` and panic
         assert_eq!(parse_yaml_string("\""), "\"");
         assert_eq!(parse_yaml_string("'"), "'");
         // normal quoting still works
@@ -661,7 +723,6 @@ mod tests {
 
     #[test]
     fn parse_frontmatter_lone_quote_title_does_not_panic() {
-        // a whole import run used to abort on a single stray quote in any file
         let content = "---\ntitle: \"\nid: lone-1\n---\n\nbody\n";
         let fm = parse_frontmatter(content).unwrap();
         assert_eq!(fm.title, "\"");
@@ -848,6 +909,131 @@ mod tests {
     }
 
     #[test]
+    fn parse_code_block_with_a_longer_fence() {
+        let slug_map = HashMap::new();
+        let input = "````python\ndoc = '''\n```\nnested\n```\n'''\n````\n\n";
+        let snippets = parse_markdown_body(input, &slug_map);
+        assert_eq!(snippets.len(), 1);
+        match &snippets[0] {
+            Snippet::Code { language, code } => {
+                assert_eq!(language.as_deref(), Some("python"));
+                assert_eq!(code, "doc = '''\n```\nnested\n```\n'''");
+            }
+            other => panic!("expected Code, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn closing_fence_may_be_indented_by_up_to_three_spaces() {
+        let slug_map = HashMap::new();
+        let snippets = parse_markdown_body("```\ncode\n   ```\n\n", &slug_map);
+        assert_eq!(snippets.len(), 1);
+        assert!(matches!(&snippets[0], Snippet::Code { code, .. } if code == "code"));
+
+        // four spaces is an indented code line, not a fence
+        let snippets = parse_markdown_body("```\ncode\n    ```\n```\n\n", &slug_map);
+        assert!(matches!(&snippets[0], Snippet::Code { code, .. } if code == "code\n    ```"));
+    }
+
+    #[test]
+    fn a_shorter_backtick_run_does_not_close_a_longer_fence() {
+        assert!(!closes_fence("```", 4));
+        assert!(closes_fence("````", 4));
+        assert!(closes_fence("`````", 4));
+        assert!(!closes_fence("``` text", 3));
+    }
+
+    #[test]
+    fn open_fence_rejects_a_backtick_in_the_info_string() {
+        assert_eq!(open_fence("```python"), Some((3, "python")));
+        assert_eq!(open_fence("````python"), Some((4, "python")));
+        assert_eq!(open_fence("``"), None);
+        assert_eq!(open_fence("```a`b"), None);
+    }
+
+    #[test]
+    fn diff_block_without_change_lines_stays_text() {
+        let slug_map = HashMap::new();
+        let input = "```diff pharo\njust a note\n```\n\nafter\n";
+        let snippets = parse_markdown_body(input, &slug_map);
+        assert_eq!(snippets.len(), 2);
+        assert!(matches!(&snippets[0], Snippet::Code { .. }));
+        assert!(matches!(&snippets[1], Snippet::Text(t) if t == "after"));
+    }
+
+    #[test]
+    fn consecutive_lines_become_one_text_snippet() {
+        let slug_map = HashMap::new();
+        let input = "para line one\npara line two\n\nsecond snippet\n";
+        let snippets = parse_markdown_body(input, &slug_map);
+        assert_eq!(snippets.len(), 2);
+        assert!(matches!(&snippets[0], Snippet::Text(t) if t == "para line one\npara line two"));
+        assert!(matches!(&snippets[1], Snippet::Text(t) if t == "second snippet"));
+    }
+
+    #[test]
+    fn consecutive_quote_lines_become_one_snippet() {
+        let slug_map = HashMap::new();
+        let input = "> first\n>\n> third\n\n";
+        let snippets = parse_markdown_body(input, &slug_map);
+        assert_eq!(snippets.len(), 1);
+        assert!(matches!(&snippets[0], Snippet::Text(t) if t == "> first\n\nthird"));
+    }
+
+    #[test]
+    fn escaped_block_starts_come_back_as_prose() {
+        let slug_map = HashMap::new();
+        let input = "\\- not a list\n\n\\[[unknown: x]]\n\n\\```rust\n\n\\\\already\n";
+        let snippets = parse_markdown_body(input, &slug_map);
+        let texts: Vec<&str> = snippets
+            .iter()
+            .map(|s| match s {
+                Snippet::Text(t) => t.as_str(),
+                other => panic!("expected Text, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            texts,
+            ["- not a list", "[[unknown: x]]", "```rust", "\\already"]
+        );
+    }
+
+    #[test]
+    fn an_escaped_blank_line_stays_inside_the_paragraph() {
+        let slug_map = HashMap::new();
+        let input = "para one\n\\\npara two\n\nsecond snippet\n";
+        let snippets = parse_markdown_body(input, &slug_map);
+        assert_eq!(snippets.len(), 2);
+        assert!(matches!(&snippets[0], Snippet::Text(t) if t == "para one\n\npara two"));
+        assert!(matches!(&snippets[1], Snippet::Text(t) if t == "second snippet"));
+    }
+
+    #[test]
+    fn escaped_blank_snippets_stay_separate_snippets() {
+        let slug_map = HashMap::new();
+        let input = "before\n\n\\\n\n\\  \n\nafter\n";
+        let snippets = parse_markdown_body(input, &slug_map);
+        let texts: Vec<&str> = snippets
+            .iter()
+            .map(|s| match s {
+                Snippet::Text(t) => t.as_str(),
+                other => panic!("expected Text, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(texts, ["before", "", "  ", "after"]);
+    }
+
+    #[test]
+    fn a_link_line_inside_a_paragraph_stays_paragraph_text() {
+        let slug_map = HashMap::new();
+        let snippets = parse_markdown_body("intro\n[click](https://example.com)\n", &slug_map);
+        assert_eq!(snippets.len(), 1);
+        assert!(
+            matches!(&snippets[0], Snippet::Text(t) if t == "intro\n[click](https://example.com)")
+        );
+    }
+
+    #[test]
     fn parse_list() {
         let slug_map = HashMap::new();
         let input = "- first\n- second\n- third\n\n";
@@ -1008,6 +1194,30 @@ mod tests {
     }
 
     #[test]
+    fn build_page_json_updated_at_parse() {
+        let valid = Frontmatter {
+            title: "Valid".to_string(),
+            id: "valid-1".to_string(),
+            tags: Vec::new(),
+            updated_at: Some("2024-01-01T00:00:00+00:00".to_string()),
+        };
+        let json = build_page_json(&valid, &[]);
+        assert_eq!(
+            json["editTime"]["time"]["dateAndTimeString"],
+            "2024-01-01T00:00:00+00:00"
+        );
+
+        let invalid = Frontmatter {
+            title: "Invalid".to_string(),
+            id: "invalid-1".to_string(),
+            tags: Vec::new(),
+            updated_at: Some("not-a-date".to_string()),
+        };
+        let json = build_page_json(&invalid, &[]);
+        assert!(json.get("editTime").is_none());
+    }
+
+    #[test]
     fn build_page_json_empty_content() {
         let fm = Frontmatter {
             title: "Empty".to_string(),
@@ -1096,7 +1306,6 @@ mod tests {
             snippet_type_for_language("shellcommand"),
             "shellCommandSnippet"
         );
-        // regression: this arm was missing and degraded the snippet to text.
         assert_eq!(
             snippet_type_for_language("robocodermetamodel"),
             "robocoderMetamodelSnippet"
@@ -1162,9 +1371,6 @@ mod tests {
 
     #[test]
     fn robocoder_metamodel_fence_roundtrips_to_its_snippet_type() {
-        // regression: a `robocoderMetamodelSnippet` exports as a
-        // `robocodermetamodel` fence and used to re-import as a plain
-        // textSnippet, silently losing its type.
         let slug_map = HashMap::new();
         let input = "```robocodermetamodel\nMetamodel new\n```\n\n";
         let snippets = parse_markdown_body(input, &slug_map);

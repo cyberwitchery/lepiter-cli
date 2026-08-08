@@ -25,11 +25,10 @@ pub struct KnowledgeBaseIndex {
     root: PathBuf,
     /// Metadata map keyed by canonical page id.
     pub pages: HashMap<PageId, PageMeta>,
-    /// Page ids in case-insensitive title sort order, computed once at open time.
+    /// Page ids in case-insensitive title sort order, computed at open time,
+    /// maintained by [`Self::register_page`].
     pub sorted_ids: Vec<PageId>,
     /// Exact-title lookup index: lowercased title -> page ids sharing that title.
-    /// Lets exact-title resolution run in O(1) instead of scanning every page,
-    /// which keeps backlink/graph builds off the O(N^2 * L) full-scan path.
     /// Kept in sync with `pages` by [`Self::register_page`].
     title_index: HashMap<String, Vec<PageId>>,
     /// Non-fatal issues encountered while scanning metadata.
@@ -37,9 +36,11 @@ pub struct KnowledgeBaseIndex {
     /// Reverse link index: target page id -> sorted list of source page ids that link to it.
     backlinks: HashMap<PageId, Vec<PageId>>,
     /// Forward link index: source page id -> set of target page ids it links to.
-    /// Kept in sync with `backlinks` so that incremental updates can remove
-    /// stale entries in O(outgoing_links) instead of scanning every backlink.
+    /// Kept in sync with `backlinks`.
     forward_links: HashMap<PageId, HashSet<PageId>>,
+    /// Ids claimed by more than one `.lepiter` file, captured during [`KnowledgeBase::open`]
+    /// before the collision is lost to `pages`.
+    pub duplicate_ids: Vec<DuplicateId>,
 }
 
 /// Entry point for opening a Lepiter knowledge base directory.
@@ -54,6 +55,7 @@ impl KnowledgeBase {
         let root = path.as_ref().to_path_buf();
         let mut pages = HashMap::new();
         let mut issues = Vec::new();
+        let mut id_paths: HashMap<PageId, Vec<PathBuf>> = HashMap::new();
 
         for entry in WalkDir::new(&root)
             .min_depth(1)
@@ -81,6 +83,10 @@ impl KnowledgeBase {
                         meta.title = meta.id.clone();
                         meta.title_lower = meta.title.to_lowercase();
                     }
+                    id_paths
+                        .entry(meta.id.clone())
+                        .or_default()
+                        .push(file_path.to_path_buf());
                     pages.insert(meta.id.clone(), meta);
                 }
                 Err(err) => issues.push(ParseIssue {
@@ -92,6 +98,7 @@ impl KnowledgeBase {
 
         let sorted_ids = compute_sorted_ids(&pages);
         let title_index = compute_title_index(&pages, &sorted_ids);
+        let duplicate_ids = collect_duplicate_ids(id_paths);
 
         Ok(KnowledgeBaseIndex {
             root,
@@ -101,14 +108,14 @@ impl KnowledgeBase {
             index_issues: issues,
             backlinks: HashMap::new(),
             forward_links: HashMap::new(),
+            duplicate_ids,
         })
     }
 }
 
 impl KnowledgeBaseIndex {
     /// Registers a page in the index, inserting it at the correct
-    /// sorted position via binary search instead of re-sorting the
-    /// entire list.  If the page already exists, its old sort position
+    /// sorted position via binary search.  If the page already exists, its old sort position
     /// is removed first so re-registration never creates duplicates
     /// (and handles title changes correctly).
     ///
@@ -502,6 +509,7 @@ impl KnowledgeBaseIndex {
                 }
             };
             seen_edges.clear();
+            seen_attachments.clear();
             for target in extract_link_targets(&page.content) {
                 match self.classify_link_target(&target) {
                     LinkTargetKind::InternalPage(target_id) if target_id != *id => {
@@ -547,15 +555,12 @@ impl KnowledgeBaseIndex {
         }
     }
 
-    /// Analyzes all pages, collecting broken links, linked pages, missing
-    /// attachments, and load errors.
+    /// alias for [`Self::scan_all_pages`].
     pub fn analyze_all(&self) -> LinkAnalysisResult {
         self.scan_all_pages()
     }
 
-    /// Analyzes all links in the knowledge base, collecting broken links,
-    /// the set of pages linked to by at least one other page, and any pages
-    /// that could not be loaded.
+    /// alias for [`Self::scan_all_pages`].
     pub fn analyze_links(&self) -> LinkAnalysisResult {
         self.scan_all_pages()
     }
@@ -597,7 +602,13 @@ impl KnowledgeBaseIndex {
         dupes
     }
 
-    /// Finds attachment references whose files are missing from disk.
+    /// Returns page ids claimed by more than one file, captured at open time.
+    pub fn find_duplicate_ids(&self) -> Vec<DuplicateId> {
+        self.duplicate_ids.clone()
+    }
+
+    /// Finds attachment references whose files are missing from disk; see
+    /// [`LinkAnalysisResult::missing_attachments`].
     pub fn find_missing_attachments(&self) -> Vec<MissingAttachment> {
         self.scan_all_pages().missing_attachments
     }
@@ -634,7 +645,8 @@ pub struct LinkAnalysisResult {
     pub linked_pages: HashSet<PageId>,
     /// Pages that could not be loaded (e.g. corrupted JSON).
     pub load_errors: Vec<PageLoadError>,
-    /// Attachment references whose files are missing from disk.
+    /// Attachment references whose files are missing from disk, at most one
+    /// per (referencing page, resolved path).
     pub missing_attachments: Vec<MissingAttachment>,
     /// Deduplicated directed link graph edges (self-links excluded).
     pub edges: Vec<LinkEdge>,
@@ -663,6 +675,15 @@ pub struct DuplicateTitle {
     pub title: String,
     /// Page ids sharing this title.
     pub page_ids: Vec<PageId>,
+}
+
+/// A set of `.lepiter` files that resolve to the same page id.
+#[derive(Debug, Clone)]
+pub struct DuplicateId {
+    /// The shared page id.
+    pub id: PageId,
+    /// Paths of the files claiming this id, sorted.
+    pub paths: Vec<PathBuf>,
 }
 
 /// An attachment reference that points to a file not found on disk.
@@ -697,9 +718,7 @@ fn title_sort_key<'a>(pages: &'a HashMap<PageId, PageMeta>, id: &str) -> &'a str
 }
 
 /// Inserts `source_id` into `sources` at the position that keeps the vec
-/// sorted by title.  Uses `partition_point` (binary search) for O(log n)
-/// lookup with zero key clones, vs the old push-then-sort which was
-/// O(n log n) with n clones per call.
+/// sorted by title.  Uses `partition_point` (binary search).
 fn insert_sorted_by_title(
     sources: &mut Vec<PageId>,
     pages: &HashMap<PageId, PageMeta>,
@@ -714,6 +733,21 @@ fn compute_sorted_ids(pages: &HashMap<PageId, PageMeta>) -> Vec<PageId> {
     let mut entries: Vec<_> = pages.values().collect();
     entries.sort_by(|a, b| a.title_lower.cmp(&b.title_lower));
     entries.into_iter().map(|m| m.id.clone()).collect()
+}
+
+/// Collapses the scan-time id -> paths map into sorted `DuplicateId`s for every
+/// id claimed by more than one file.
+fn collect_duplicate_ids(id_paths: HashMap<PageId, Vec<PathBuf>>) -> Vec<DuplicateId> {
+    let mut dupes: Vec<DuplicateId> = id_paths
+        .into_iter()
+        .filter(|(_, paths)| paths.len() > 1)
+        .map(|(id, mut paths)| {
+            paths.sort();
+            DuplicateId { id, paths }
+        })
+        .collect();
+    dupes.sort_by(|a, b| a.id.cmp(&b.id));
+    dupes
 }
 
 /// Builds the exact-title lookup index keyed by lowercased title.  Ids are
@@ -819,6 +853,7 @@ mod tests {
             index_issues: Vec::new(),
             backlinks: HashMap::new(),
             forward_links: HashMap::new(),
+            duplicate_ids: Vec::new(),
         };
 
         assert_eq!(index.filter_page_ids("alpha"), vec!["id-1".to_string()]);
@@ -869,6 +904,7 @@ mod tests {
             index_issues: Vec::new(),
             backlinks: HashMap::new(),
             forward_links: HashMap::new(),
+            duplicate_ids: Vec::new(),
         };
 
         assert_eq!(
@@ -889,8 +925,8 @@ mod tests {
             index.resolve_page_id_by_title_exact("ALPHA"),
             TitleResolution::Unique("id-1".to_string())
         );
-        // ...but never falls back to a substring: "alp" and "alpha" (a prefix of
-        // "alphabet") both resolve to nothing rather than a fabricated match.
+        // ...but never falls back to a substring: "alp" resolves to nothing,
+        // "alpha" only to its exact match.
         assert_eq!(
             index.resolve_page_id_by_title_exact("alp"),
             TitleResolution::NotFound
@@ -941,6 +977,7 @@ mod tests {
             index_issues: Vec::new(),
             backlinks: HashMap::new(),
             forward_links: HashMap::new(),
+            duplicate_ids: Vec::new(),
         };
 
         assert!(matches!(
@@ -1353,6 +1390,42 @@ mod tests {
         let meta = index.pages.values().next().unwrap();
         assert_eq!(meta.id, "mypage");
         assert_eq!(meta.title, "mypage");
+        Ok(())
+    }
+
+    #[test]
+    fn open_reports_duplicate_ids_across_files() -> anyhow::Result<()> {
+        let dir = temp_dir_path("dup-ids");
+        fs::create_dir_all(&dir)?;
+        let page = |body: &str| {
+            json!({
+                "uid": {"uuid": "shared"},
+                "pageType": {"title": "Whatever"},
+                "tags": [],
+                "children": {"items": [{"__type": "textSnippet", "string": body}]}
+            })
+        };
+        let a = dir.join("a.lepiter");
+        let b = dir.join("b.lepiter");
+        fs::write(&a, serde_json::to_vec(&page("first"))?)?;
+        fs::write(&b, serde_json::to_vec(&page("second"))?)?;
+
+        let index = KnowledgeBase::open(&dir)?;
+        fs::remove_dir_all(&dir)?;
+
+        assert_eq!(index.pages.len(), 1);
+        let dupes = index.find_duplicate_ids();
+        assert_eq!(dupes.len(), 1);
+        assert_eq!(dupes[0].id, "shared");
+        assert_eq!(dupes[0].paths, vec![a, b]);
+        Ok(())
+    }
+
+    #[test]
+    fn open_reports_no_duplicate_ids_for_unique_kb() -> anyhow::Result<()> {
+        let (dir, index) = make_kb_on_disk(&[("p1", "Alpha", &[], "a"), ("p2", "Beta", &[], "b")]);
+        assert!(index.find_duplicate_ids().is_empty());
+        fs::remove_dir_all(&dir).unwrap();
         Ok(())
     }
 
@@ -2060,14 +2133,29 @@ mod tests {
     }
 
     #[test]
-    fn find_missing_attachments_deduplicates_across_pages() {
+    fn find_missing_attachments_reports_every_referencing_page() {
         let (dir, index) = make_kb_on_disk(&[
             ("p1", "Alpha", &[], "see [img](attachments/missing.png)"),
             ("p2", "Beta", &[], "see [img](attachments/missing.png)"),
         ]);
         let missing = index.find_missing_attachments();
-        // Same missing file referenced from two pages — reported once.
+        assert_eq!(missing.len(), 2);
+        let sources: Vec<&str> = missing.iter().map(|m| m.source_id.as_str()).collect();
+        assert_eq!(sources, vec!["p1", "p2"]);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn find_missing_attachments_deduplicates_within_a_page() {
+        let (dir, index) = make_kb_on_disk(&[(
+            "p1",
+            "Alpha",
+            &[],
+            "see [a](attachments/missing.png) and [b](attachments/missing.png)",
+        )]);
+        let missing = index.find_missing_attachments();
         assert_eq!(missing.len(), 1);
+        assert_eq!(missing[0].source_id, "p1");
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -2151,13 +2239,27 @@ mod tests {
     }
 
     #[test]
-    fn analyze_all_deduplicates_missing_attachments() {
+    fn analyze_all_reports_missing_attachment_once_per_page() {
         let (dir, index) = make_kb_on_disk(&[
             ("p1", "Alpha", &[], "see [img](attachments/missing.png)"),
-            ("p2", "Beta", &[], "see [img](attachments/missing.png)"),
+            (
+                "p2",
+                "Beta",
+                &[],
+                "see [a](attachments/missing.png) and [b](attachments/missing.png)",
+            ),
+            ("p3", "Gamma", &[], "see [img](attachments/missing.png)"),
         ]);
         let result = index.analyze_all();
-        assert_eq!(result.missing_attachments.len(), 1);
+        let reported: Vec<(&str, &str)> = result
+            .missing_attachments
+            .iter()
+            .map(|m| (m.source_id.as_str(), m.source_title.as_str()))
+            .collect();
+        assert_eq!(
+            reported,
+            vec![("p1", "Alpha"), ("p2", "Beta"), ("p3", "Gamma")]
+        );
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -2265,8 +2367,7 @@ mod tests {
             ("p2", "Rust Programming", &[], "nothing"),
         ]);
         let result = index.scan_all_pages();
-        // `[[Rust]]` has no exact-title match, so it must not silently bind to
-        // the substring page "Rust Programming": no edge, one broken link.
+        // `[[Rust]]` has no exact-title match: no edge, one broken link.
         assert!(
             result.edges.is_empty(),
             "substring title match fabricated a graph edge: {:?}",

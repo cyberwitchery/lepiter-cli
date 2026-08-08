@@ -116,11 +116,10 @@ struct KbInfo<'a> {
 fn compute_detailed_info(index: &KnowledgeBaseIndex, toc_page_id: Option<&str>) -> DetailedInfo {
     use lepiter_core::collect_node_types_in_file;
 
-    // Link analysis via unified core function.
     let analysis = index.analyze_all();
     let orphan_ids = index.orphan_ids(&analysis.linked_pages, toc_page_id);
 
-    // Log page-load errors rather than silently skipping.
+    // Log page-load errors.
     for err in &analysis.load_errors {
         eprintln!(
             "warning: failed to load page {} ({}): {}",
@@ -144,7 +143,6 @@ fn compute_detailed_info(index: &KnowledgeBaseIndex, toc_page_id: Option<&str>) 
         }
     }
 
-    // Sort snippet types by count descending.
     let mut snippet_types: Vec<(String, usize)> = snippet_totals.into_iter().collect();
     snippet_types.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
 

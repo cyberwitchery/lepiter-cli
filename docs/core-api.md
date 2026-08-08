@@ -35,6 +35,7 @@ the block-oriented model includes:
 - `Code`
 - `Link`
 - `Quote`
+- `Rewrite`
 - `Unknown`
 
 `Unknown` preserves unsupported schema variants without crashing consumers.

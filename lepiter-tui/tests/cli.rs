@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
-/// Path to the test fixture corpus (6 pages with known content).
+/// Path to the test fixture corpus (7 pages with known content).
 fn fixtures_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -80,7 +80,7 @@ mod info {
         let out = run(&["info", &fixtures_path_str()]);
         assert!(out.status.success());
         let text = stdout(&out);
-        assert!(text.contains("pages: 6"), "expected 6 pages, got: {text}");
+        assert!(text.contains("pages: 7"), "expected 7 pages, got: {text}");
         assert!(text.contains("Knowledge Base"));
         assert!(text.contains("name: <unknown>"));
     }
@@ -91,8 +91,8 @@ mod info {
         assert!(out.status.success());
         let text = stdout(&out);
         assert!(
-            text.contains("unique_tags: 2"),
-            "expected 2 tags, got: {text}"
+            text.contains("unique_tags: 3"),
+            "expected 3 tags, got: {text}"
         );
     }
 
@@ -102,9 +102,9 @@ mod info {
         assert!(out.status.success());
         let json: serde_json::Value =
             serde_json::from_str(&stdout(&out)).expect("info --json should produce valid JSON");
-        assert_eq!(json["pages"], 6);
+        assert_eq!(json["pages"], 7);
         assert_eq!(json["name"], "<unknown>");
-        assert_eq!(json["unique_tags"], 2);
+        assert_eq!(json["unique_tags"], 3);
         assert!(json["updated_range"].is_object());
     }
 
@@ -151,7 +151,7 @@ mod info {
             stderr(&out)
         );
         let text = stdout(&out);
-        assert!(text.contains("pages: 6"), "expected 6 pages, got: {text}");
+        assert!(text.contains("pages: 7"), "expected 7 pages, got: {text}");
         assert!(
             text.contains(&format!("path: {}", fixtures_path_str())),
             "expected the first path to be reported, got: {text}"
@@ -185,12 +185,13 @@ mod list {
         let text = stdout(&out);
         assert!(text.contains("title"));
         assert!(text.contains("id"));
-        // All 6 fixture pages should appear.
+        // All 7 fixture pages should appear.
         assert!(text.contains("alpha page"));
         assert!(text.contains("beta page"));
         assert!(text.contains("gamma unknown page"));
         assert!(text.contains("media page"));
         assert!(text.contains("rewrite page"));
+        assert!(text.contains("tag only page"));
         assert!(text.contains("word page"));
     }
 
@@ -216,7 +217,7 @@ mod list {
         assert!(out.status.success());
         let text = stdout(&out);
         let lines: Vec<&str> = text.lines().collect();
-        assert_eq!(lines.len(), 6, "expected 6 TSV lines");
+        assert_eq!(lines.len(), 7, "expected 7 TSV lines");
         for line in &lines {
             let parts: Vec<&str> = line.split('\t').collect();
             assert_eq!(parts.len(), 2, "expected 2 columns, got: {line}");
@@ -230,7 +231,7 @@ mod list {
         assert!(out.status.success());
         let json: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("valid JSON");
         let arr = json.as_array().expect("should be an array");
-        assert_eq!(arr.len(), 6);
+        assert_eq!(arr.len(), 7);
 
         // Verify first page structure (sorted alphabetically → alpha page).
         let first = &arr[0];
@@ -348,7 +349,72 @@ mod search {
 
     #[test]
     fn tag_match() {
+        // "shelved" is a tag on the tag-only page and appears in no title or id.
+        let out = run(&["search", "--json", "shelved", &fixtures_path_str()]);
+        assert!(out.status.success());
+        let json: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+        let arr = json.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["id"], "fixture-page-tagonly");
+        assert_eq!(arr[0]["kind"], "tag");
+        assert_eq!(
+            arr[0]["snippet"], "",
+            "tag hit should have an empty snippet"
+        );
+    }
+
+    #[test]
+    fn tag_match_survives_full_text() {
+        let out = run(&[
+            "search",
+            "--full-text",
+            "--json",
+            "shelved",
+            &fixtures_path_str(),
+        ]);
+        assert!(out.status.success());
+        let json: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+        let arr = json.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["kind"], "tag");
+    }
+
+    #[test]
+    fn tag_match_tsv_reports_tag_kind() {
+        let out = run(&["search", "--tsv", "shelved", &fixtures_path_str()]);
+        assert!(out.status.success());
+        let text = stdout(&out);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 1);
+        let parts: Vec<&str> = lines[0].split('\t').collect();
+        assert_eq!(parts.len(), 4, "expected title\\tid\\tkind\\tsnippet");
+        assert_eq!(parts[0], "tag only page");
+        assert_eq!(parts[1], "fixture-page-tagonly");
+        assert_eq!(parts[2], "tag");
+        assert_eq!(parts[3], "");
+    }
+
+    #[test]
+    fn tag_match_plain_reports_tag_kind() {
+        let out = run(&["search", "shelved", &fixtures_path_str()]);
+        assert!(out.status.success());
+        let text = stdout(&out);
+        let row = text
+            .lines()
+            .find(|l| l.contains("fixture-page-tagonly"))
+            .unwrap_or_else(|| panic!("expected a result row, got: {text}"));
+        assert_eq!(
+            row.split_whitespace().last(),
+            Some("tag"),
+            "plain match column should read 'tag', got: {row}"
+        );
+    }
+
+    #[test]
+    fn title_outranks_tag() {
+        // the alpha page carries "alpha" both in its title and as a tag.
         let out = run(&["search", "--json", "alpha", &fixtures_path_str()]);
+        assert!(out.status.success());
         let json: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
         let alpha = json
             .as_array()
@@ -356,7 +422,6 @@ mod search {
             .iter()
             .find(|h| h["id"] == "fixture-page-alpha")
             .unwrap();
-        // "alpha" matches on both title and tag — title wins.
         assert_eq!(alpha["kind"], "title");
     }
 
@@ -772,7 +837,7 @@ mod show {
 
     #[test]
     fn ambiguous_title_fails() {
-        // "page" is a partial match for all 6 fixture pages.
+        // "page" is a partial match for all 7 fixture pages.
         let out = run(&["show", "page", &fixtures_path_str()]);
         assert!(!out.status.success());
         let err = stderr(&out);
@@ -804,7 +869,7 @@ mod links {
         assert!(out.status.success());
         let text = stdout(&out);
         assert!(text.contains("Link Graph"), "should show header");
-        assert!(text.contains("pages: 6"), "expected 6 pages, got: {text}");
+        assert!(text.contains("pages: 7"), "expected 7 pages, got: {text}");
         assert!(text.contains("links: 1"), "expected 1 link, got: {text}");
     }
 
@@ -835,6 +900,10 @@ mod links {
             "gamma should be isolated"
         );
         assert!(text.contains("word page"), "word should be isolated");
+        assert!(
+            text.contains("tag only page"),
+            "tag only page should be isolated"
+        );
     }
 
     #[test]
@@ -957,11 +1026,12 @@ mod tags {
         assert!(out.status.success());
         let text = stdout(&out);
         assert!(
-            text.contains("Tags (2 unique)"),
-            "expected 2 unique tags, got: {text}"
+            text.contains("Tags (3 unique)"),
+            "expected 3 unique tags, got: {text}"
         );
         assert!(text.contains("fixture"), "should list fixture tag");
         assert!(text.contains("alpha"), "should list alpha tag");
+        assert!(text.contains("shelved"), "should list shelved tag");
     }
 
     #[test]
@@ -985,12 +1055,14 @@ mod tags {
         let json: serde_json::Value =
             serde_json::from_str(&stdout(&out)).expect("tags --json should produce valid JSON");
         let arr = json.as_array().expect("should be an array");
-        assert_eq!(arr.len(), 2);
-        // Sorted by count descending: fixture (2), alpha (1).
+        assert_eq!(arr.len(), 3);
+        // Sorted by count descending, ties alphabetically: fixture (2), alpha (1), shelved (1).
         assert_eq!(arr[0]["tag"], "fixture");
         assert_eq!(arr[0]["count"], 2);
         assert_eq!(arr[1]["tag"], "alpha");
         assert_eq!(arr[1]["count"], 1);
+        assert_eq!(arr[2]["tag"], "shelved");
+        assert_eq!(arr[2]["count"], 1);
     }
 
     #[test]
@@ -999,7 +1071,7 @@ mod tags {
         assert!(out.status.success());
         let text = stdout(&out);
         let lines: Vec<&str> = text.lines().collect();
-        assert_eq!(lines.len(), 2, "expected 2 TSV lines");
+        assert_eq!(lines.len(), 3, "expected 3 TSV lines");
         for line in &lines {
             let parts: Vec<&str> = line.split('\t').collect();
             assert_eq!(parts.len(), 2, "expected tag\\tcount, got: {line}");
@@ -1123,8 +1195,8 @@ mod check {
             "expected 0 broken links, got: {text}"
         );
         assert!(
-            text.contains("orphan_pages: 5"),
-            "expected 5 orphan pages, got: {text}"
+            text.contains("orphan_pages: 6"),
+            "expected 6 orphan pages, got: {text}"
         );
         assert!(
             text.contains("load_errors: 0"),
@@ -1154,7 +1226,7 @@ mod check {
     fn plain_output_lists_orphan_pages() {
         let out = run(&["check", &fixtures_path_str()]);
         let text = stdout(&out);
-        assert!(text.contains("Orphan Pages (5)"));
+        assert!(text.contains("Orphan Pages (6)"));
         // alpha page is linked to by beta, so it should NOT be orphan
         assert!(
             !text.lines().any(|l| l.trim() == "alpha page"),
@@ -1167,6 +1239,10 @@ mod check {
             "gamma should be orphan"
         );
         assert!(text.contains("word page"), "word should be orphan");
+        assert!(
+            text.contains("tag only page"),
+            "tag only page should be orphan"
+        );
     }
 
     #[test]
@@ -1197,7 +1273,7 @@ mod check {
         let broken = json["broken_links"].as_array().unwrap();
         assert_eq!(broken.len(), 0, "expected 0 broken links");
         let orphans = json["orphan_pages"].as_array().unwrap();
-        assert_eq!(orphans.len(), 5, "expected 5 orphan pages");
+        assert_eq!(orphans.len(), 6, "expected 6 orphan pages");
     }
 
     #[test]

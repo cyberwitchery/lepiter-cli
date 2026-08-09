@@ -1,0 +1,10 @@
+{
+  "uid": { "uuid": "fixture-page-tagonly" },
+  "pageType": { "title": "tag only page" },
+  "tags": ["shelved"],
+  "children": {
+    "items": [
+      { "__type": "textSnippet", "string": "reachable through its tag" }
+    ]
+  }
+}

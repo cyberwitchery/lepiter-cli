@@ -395,6 +395,22 @@ mod search {
     }
 
     #[test]
+    fn tag_match_plain_reports_tag_kind() {
+        let out = run(&["search", "shelved", &fixtures_path_str()]);
+        assert!(out.status.success());
+        let text = stdout(&out);
+        let row = text
+            .lines()
+            .find(|l| l.contains("fixture-page-tagonly"))
+            .unwrap_or_else(|| panic!("expected a result row, got: {text}"));
+        assert_eq!(
+            row.split_whitespace().last(),
+            Some("tag"),
+            "plain match column should read 'tag', got: {row}"
+        );
+    }
+
+    #[test]
     fn title_outranks_tag() {
         // the alpha page carries "alpha" both in its title and as a tag.
         let out = run(&["search", "--json", "alpha", &fixtures_path_str()]);

@@ -4,7 +4,7 @@ this matrix is generated from `cargo run -p lepiter-core --example probe -- --ma
 
 | source type | observed | parser mapping | render | link nav | status |
 |---|---:|---|---|---|---|
-| `textSnippet` | 4 | `Node::Paragraph`/`Node::Heading`/`Node::Text` | markdown-like | yes | full |
+| `textSnippet` | 5 | `Node::Paragraph`/`Node::Heading`/`Node::Text` | markdown-like | yes | full |
 | `elementSnippet` | 1 | `Node::Code` | code block | no | partial |
 | `listSnippet` | 1 | `Node::List` | list block | no | full |
 | `mysterySnippet` | 1 | `Node::Unknown` | `[[unknown: <type>]]` | no | fallback |

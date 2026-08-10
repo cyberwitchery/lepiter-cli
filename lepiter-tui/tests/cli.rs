@@ -38,14 +38,16 @@ fn fixtures_path_str() -> String {
     fixtures_dir().display().to_string()
 }
 
+/// a directory no other test shares. `tempfile` picks the name: a timestamp
+/// cannot, because `SystemTime::now` ticks at microsecond granularity here, so
+/// two tests in the same process stamp the same value and collide. unlike the
+/// old helper this creates the directory, which both callers went on to do.
 fn unique_temp(tag: &str) -> PathBuf {
-    std::env::temp_dir().join(format!(
-        "lepiter-cli-{tag}-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ))
+    tempfile::Builder::new()
+        .prefix(&format!("lepiter-cli-{tag}-"))
+        .tempdir()
+        .expect("temp dir")
+        .keep()
 }
 
 /// a temp kb holding one page, one text snippet per entry.
@@ -1457,15 +1459,11 @@ mod check_properties {
     use std::path::Path;
 
     fn temp_kb(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "lepiter-cli-props-{tag}-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+        tempfile::Builder::new()
+            .prefix(&format!("lepiter-cli-props-{tag}-"))
+            .tempdir()
+            .expect("temp dir")
+            .keep()
     }
 
     fn write_page(dir: &Path, id: &str, title: &str, body: &str) {

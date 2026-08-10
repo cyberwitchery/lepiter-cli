@@ -200,13 +200,14 @@ mod tests {
     fn make_test_kb(
         pages: &[(&str, &str, &[&str], &str)],
     ) -> (std::path::PathBuf, KnowledgeBaseIndex) {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        let ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("time")
-            .as_nanos();
-        let dir = std::env::temp_dir().join(format!("lepiter-search-test-{ts}"));
-        std::fs::create_dir_all(&dir).unwrap();
+        // `tempfile` picks the name: a timestamp cannot, because `SystemTime::now`
+        // ticks at microsecond granularity here, so two tests in the same process
+        // stamp the same value and share a directory.
+        let dir = tempfile::Builder::new()
+            .prefix("lepiter-search-test-")
+            .tempdir()
+            .expect("temp dir")
+            .keep();
         for (id, title, tags, body) in pages {
             let tags_json: Vec<serde_json::Value> =
                 tags.iter().map(|t| serde_json::json!(t)).collect();

@@ -248,14 +248,14 @@ mod tests {
     // --- read_kb_properties ---
 
     fn props_temp_dir(tag: &str) -> PathBuf {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        let ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let dir = std::env::temp_dir().join(format!("lepiter-props-{tag}-{ts}"));
-        fs::create_dir_all(&dir).unwrap();
-        dir
+        // `tempfile` picks the name: a timestamp cannot, because `SystemTime::now`
+        // ticks at microsecond granularity here, so two tests in the same process
+        // stamp the same value and share a directory.
+        tempfile::Builder::new()
+            .prefix(&format!("lepiter-props-{tag}-"))
+            .tempdir()
+            .expect("temp dir")
+            .keep()
     }
 
     #[test]

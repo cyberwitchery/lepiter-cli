@@ -321,13 +321,14 @@ mod tests {
     }
 
     fn make_test_kb(pages: &[(&str, &str)]) -> (std::path::PathBuf, KnowledgeBaseIndex) {
-        let dir = std::env::temp_dir().join(format!(
-            "lepiter-export-test-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        // `tempfile` picks the name: a timestamp cannot, because `SystemTime::now`
+        // ticks at microsecond granularity here, so two tests in the same process
+        // stamp the same value and share a directory.
+        let dir = tempfile::Builder::new()
+            .prefix("lepiter-export-test-")
+            .tempdir()
+            .expect("temp dir")
+            .keep();
         std::fs::create_dir_all(&dir).unwrap();
 
         for (id, title) in pages {

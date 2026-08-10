@@ -784,14 +784,16 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::fs;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
+    /// a directory no other test shares. `tempfile` picks the name: a timestamp
+    /// cannot, because `SystemTime::now` ticks at microsecond granularity here, so
+    /// two tests in the same process stamp the same value and share a directory.
     fn temp_dir_path(name: &str) -> PathBuf {
-        let ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("time")
-            .as_nanos();
-        std::env::temp_dir().join(format!("lepiter-core-{name}-{ts}"))
+        tempfile::Builder::new()
+            .prefix(&format!("lepiter-core-{name}-"))
+            .tempdir()
+            .expect("temp dir")
+            .keep()
     }
 
     fn make_kb_on_disk(pages: &[(&str, &str, &[&str], &str)]) -> (PathBuf, KnowledgeBaseIndex) {

@@ -40,6 +40,10 @@ pub struct InlineLink<'a> {
 /// is matched before `[label](target)` at each position. All delimiters are
 /// ASCII, so multi-byte UTF-8 content in labels and targets is handled
 /// correctly.
+///
+/// A `[label](target)` target may contain parentheses as long as they balance;
+/// an unbalanced `(` yields no link at that position. Backslash escapes are not
+/// interpreted.
 pub fn scan_inline_links(text: &str) -> InlineLinks<'_> {
     InlineLinks { text, i: 0 }
 }
@@ -79,7 +83,7 @@ impl<'a> Iterator for InlineLinks<'a> {
                 && let Some(label_end) = find_byte(bytes, b']', i + 1)
                 && label_end + 1 < bytes.len()
                 && bytes[label_end + 1] == b'('
-                && let Some(target_end) = find_byte(bytes, b')', label_end + 2)
+                && let Some(target_end) = find_balanced_close_paren(bytes, label_end + 2)
             {
                 let target = self.text[label_end + 2..target_end].trim();
                 if !target.is_empty() {
@@ -142,6 +146,19 @@ fn find_closing_double_bracket(bytes: &[u8], start: usize) -> Option<usize> {
 
 fn find_byte(bytes: &[u8], target: u8, start: usize) -> Option<usize> {
     (start..bytes.len()).find(|&i| bytes[i] == target)
+}
+
+fn find_balanced_close_paren(bytes: &[u8], start: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    for (i, &byte) in bytes.iter().enumerate().skip(start) {
+        match byte {
+            b'(' => depth += 1,
+            b')' if depth == 0 => return Some(i),
+            b')' => depth -= 1,
+            _ => {}
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -227,6 +244,53 @@ mod tests {
     }
 
     #[test]
+    fn markdown_target_keeps_balanced_parens() {
+        let text = "see [Ruby](https://en.wikipedia.org/wiki/Ruby_(programming_language)) here";
+        let links = scan(text);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].label, "Ruby");
+        assert_eq!(
+            links[0].target,
+            "https://en.wikipedia.org/wiki/Ruby_(programming_language)"
+        );
+        assert_eq!(
+            &text[links[0].range.clone()],
+            "[Ruby](https://en.wikipedia.org/wiki/Ruby_(programming_language))"
+        );
+    }
+
+    #[test]
+    fn markdown_target_keeps_nested_parens() {
+        let text = "[x](a(b(c)d)e)";
+        let links = scan(text);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].target, "a(b(c)d)e");
+        assert_eq!(links[0].range, 0..text.len());
+    }
+
+    #[test]
+    fn unbalanced_open_paren_yields_no_link() {
+        assert!(scan("[x](a(b)").is_empty());
+        assert!(scan("[x](a(b").is_empty());
+    }
+
+    #[test]
+    fn unbalanced_target_does_not_swallow_a_later_link() {
+        let links = scan("[a](un(closed and [b](ok)");
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].label, "b");
+        assert_eq!(links[0].target, "ok");
+    }
+
+    #[test]
+    fn close_paren_after_a_link_is_not_part_of_the_target() {
+        let links = scan("(see [a](b) too)");
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].target, "b");
+        assert_eq!(links[0].range, 5..11);
+    }
+
+    #[test]
     fn unicode_content_in_labels_and_targets() {
         let links = scan("[名前](ページ) [[日本語]]");
         assert_eq!(links.len(), 2);
@@ -264,6 +328,21 @@ mod tests {
                 (LinkKind::Wiki, "c".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn rewrite_replaces_a_paren_url_without_orphaning_a_tail() {
+        let text = "see [Ruby](https://en.wikipedia.org/wiki/Ruby_(programming_language)) here";
+        let mut seen = Vec::new();
+        let out = rewrite_inline_links(text, |_, target| {
+            seen.push(target.to_string());
+            Some("page:abc".to_string())
+        });
+        assert_eq!(
+            seen,
+            vec!["https://en.wikipedia.org/wiki/Ruby_(programming_language)"]
+        );
+        assert_eq!(out, "see [Ruby](page:abc) here");
     }
 
     #[test]

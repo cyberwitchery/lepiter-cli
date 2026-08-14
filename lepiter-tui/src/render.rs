@@ -618,6 +618,21 @@ mod tests {
     }
 
     #[test]
+    fn inline_url_link_with_parens_in_the_target() {
+        let mut links = Vec::new();
+        let line = parse_inline_markdown(
+            "see [Ruby](https://en.wikipedia.org/wiki/Ruby_(programming_language)) here",
+            &mut links,
+        );
+        assert_eq!(links.len(), 1);
+        assert_eq!(
+            links[0].target,
+            "https://en.wikipedia.org/wiki/Ruby_(programming_language)"
+        );
+        assert_eq!(line.spans[3].content.as_ref(), " here");
+    }
+
+    #[test]
     fn inline_annotation() {
         let mut links = Vec::new();
         let line = parse_inline_markdown("text {{gtView}} more", &mut links);

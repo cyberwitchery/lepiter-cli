@@ -27,6 +27,9 @@ pub enum InlineElement {
 ///
 /// handles `**bold**`, `*italic*`, `` `code` ``, `[text](url)`,
 /// `[[wiki-link]]`, and `{{annotation}}` syntax.
+///
+/// a `[text](url)` target may contain parentheses as long as they balance; an
+/// unbalanced `(` yields no link at that position.
 pub fn parse_inline(text: &str) -> Vec<InlineElement> {
     let chars = text.chars().collect::<Vec<_>>();
     let mut i = 0usize;
@@ -115,19 +118,17 @@ pub fn parse_inline(text: &str) -> Vec<InlineElement> {
             while j < chars.len() && chars[j] != ']' {
                 j += 1;
             }
-            if j + 1 < chars.len() && chars[j] == ']' && chars[j + 1] == '(' {
-                let mut k = j + 2;
-                while k < chars.len() && chars[k] != ')' {
-                    k += 1;
-                }
-                if k < chars.len() {
-                    flush(&mut out, &mut buf, bold, italic, code);
-                    let label = chars[i + 1..j].iter().collect::<String>();
-                    let target = chars[j + 2..k].iter().collect::<String>();
-                    out.push(InlineElement::Link { label, target });
-                    i = k + 1;
-                    continue;
-                }
+            if j + 1 < chars.len()
+                && chars[j] == ']'
+                && chars[j + 1] == '('
+                && let Some(k) = find_balanced_close_paren(&chars, j + 2)
+            {
+                flush(&mut out, &mut buf, bold, italic, code);
+                let label = chars[i + 1..j].iter().collect::<String>();
+                let target = chars[j + 2..k].iter().collect::<String>();
+                out.push(InlineElement::Link { label, target });
+                i = k + 1;
+                continue;
             }
         }
 
@@ -139,9 +140,23 @@ pub fn parse_inline(text: &str) -> Vec<InlineElement> {
     out
 }
 
+fn find_balanced_close_paren(chars: &[char], start: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    for (i, &c) in chars.iter().enumerate().skip(start) {
+        match c {
+            '(' => depth += 1,
+            ')' if depth == 0 => return Some(i),
+            ')' => depth -= 1,
+            _ => {}
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lepiter_core::{LinkKind, scan_inline_links};
 
     #[test]
     fn plain_text() {
@@ -239,6 +254,93 @@ mod tests {
                 target: "https://example.com".into(),
             }
         );
+    }
+
+    #[test]
+    fn url_link_keeps_balanced_parens() {
+        let elems = parse_inline(
+            "see [Ruby](https://en.wikipedia.org/wiki/Ruby_(programming_language)) here",
+        );
+        assert_eq!(
+            elems[1],
+            InlineElement::Link {
+                label: "Ruby".into(),
+                target: "https://en.wikipedia.org/wiki/Ruby_(programming_language)".into(),
+            }
+        );
+        assert_eq!(
+            elems[2],
+            InlineElement::Styled {
+                text: " here".into(),
+                bold: false,
+                italic: false,
+                code: false,
+            }
+        );
+    }
+
+    #[test]
+    fn url_link_keeps_nested_parens() {
+        assert_eq!(
+            parse_inline("[x](a(b(c)d)e)"),
+            vec![InlineElement::Link {
+                label: "x".into(),
+                target: "a(b(c)d)e".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn unbalanced_target_is_not_a_link() {
+        assert_eq!(
+            parse_inline("[x](a(b)"),
+            vec![InlineElement::Styled {
+                text: "[x](a(b)".into(),
+                bold: false,
+                italic: false,
+                code: false,
+            }]
+        );
+    }
+
+    #[test]
+    fn unbalanced_target_does_not_swallow_a_later_link() {
+        let elems = parse_inline("[a](un(closed and [b](ok)");
+        assert_eq!(elems.len(), 2);
+        assert_eq!(
+            elems[1],
+            InlineElement::Link {
+                label: "b".into(),
+                target: "ok".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn markdown_targets_match_the_core_scanner() {
+        let cases = [
+            "see [Ruby](https://en.wikipedia.org/wiki/Ruby_(programming_language)) here",
+            "[x](a(b(c)d)e)",
+            "[x](a(b)",
+            "[a](un(closed and [b](ok)",
+            "(see [a](b) too)",
+            "[[wiki]] and [md](target)",
+            "click [here](https://example.com) done",
+        ];
+        for text in cases {
+            let core = scan_inline_links(text)
+                .filter(|link| link.kind == LinkKind::Markdown)
+                .map(|link| link.target.to_string())
+                .collect::<Vec<_>>();
+            let tui = parse_inline(text)
+                .into_iter()
+                .filter_map(|element| match element {
+                    InlineElement::Link { target, .. } => Some(target),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(core, tui, "{text}");
+        }
     }
 
     #[test]

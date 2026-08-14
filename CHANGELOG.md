@@ -7,11 +7,12 @@ all notable changes to this project are documented in this file.
 ### fixed
 - a `[label](target)` link whose target contains balanced parentheses, such as
   `[Ruby](https://en.wikipedia.org/wiki/Ruby_(programming_language))`, is no
-  longer cut short at the first `)`. the truncated url used to reach backlinks
-  and `check`'s broken-link report, and export and import rewrote the shortened
-  link while leaving the `_language))` remainder behind as loose text in the
-  document. a target whose parentheses never balance is now not recognised as a
-  link at all, instead of being silently truncated
+  longer cut short at the first `)` inside it — for that url, the closing `)`
+  was dropped. the shortened url reached backlinks and `check`'s broken-link
+  report, the reader displayed and opened it, and export and import rewrote the
+  link over the short span, leaving the unmatched `)` behind as loose text
+  (`see [Ruby](page:abc)) here`). a target whose parentheses never balance is
+  now not recognised as a link at all, instead of being silently truncated
 - `check` no longer silently swallows a corrupt or unreadable
   `lepiter.properties`. a malformed file could previously cause `check` to report
   the table-of-contents page as a false orphan and exit 1 with no mention of the

@@ -69,6 +69,15 @@ fn strip_unknown_raw(value: &mut Value) {
     }
 }
 
+/// the markdown `export` writes for the page `kb_with_snippets` builds.
+fn exported_markdown(kb: &Path) -> String {
+    let work = tempfile::tempdir().expect("tempdir");
+    let markdown = work.path().join("markdown");
+    run(&[Path::new("export"), &markdown, kb]);
+    let page = markdown.join("roundtrip-page.md");
+    std::fs::read_to_string(&page).unwrap_or_else(|e| panic!("read {}: {e}", page.display()))
+}
+
 /// exports `kb`, imports it back, and asserts every page's node tree is
 /// unchanged.
 fn assert_roundtrips(kb: &Path) {
@@ -225,6 +234,11 @@ fn guard_prose_that_is_exactly_a_link_stays_prose() {
         { "__type": "textSnippet", "string": "[label](https://example.com)" },
         { "__type": "textSnippet", "string": "  [padded](https://example.com)  " },
     ]));
+    let markdown = exported_markdown(kb.path());
+    assert!(
+        markdown.contains("\\[label](https://example.com)\n"),
+        "a whole-snippet link was not escaped:\n{markdown}"
+    );
     assert_roundtrips(kb.path());
 }
 
@@ -239,6 +253,11 @@ fn guard_list_item_that_is_a_link_stays_a_list_item() {
             ] }
         },
     ]));
+    let markdown = exported_markdown(kb.path());
+    assert!(
+        markdown.contains("- [label](https://example.com)\n"),
+        "a list item link was escaped into literal text:\n{markdown}"
+    );
     assert_roundtrips(kb.path());
 }
 
@@ -255,6 +274,11 @@ fn guard_prose_with_a_link_line_among_others_stays_prose() {
     let kb = kb_with_snippets(json!([
         { "__type": "textSnippet", "string": "intro\n[label](https://example.com)\noutro" },
     ]));
+    let markdown = exported_markdown(kb.path());
+    assert!(
+        markdown.contains("intro\n[label](https://example.com)\noutro\n"),
+        "a link line inside a paragraph was escaped into literal text:\n{markdown}"
+    );
     assert_roundtrips(kb.path());
 }
 

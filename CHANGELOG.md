@@ -4,6 +4,11 @@ all notable changes to this project are documented in this file.
 
 ## Unreleased
 
+### added
+- `is_standalone_link()` public function in lepiter-core reports whether a line
+  is one `[label](target)` markdown link and nothing else — the shape `import`
+  reads back as a link snippet
+
 ### fixed
 - a `[label](target)` link whose target contains balanced parentheses, such as
   `[Ruby](https://en.wikipedia.org/wiki/Ruby_(programming_language))`, is no

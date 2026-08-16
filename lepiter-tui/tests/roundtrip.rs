@@ -220,6 +220,45 @@ fn guard_prose_that_starts_with_a_backslash_survives() {
 }
 
 #[test]
+fn guard_prose_that_is_exactly_a_link_stays_prose() {
+    let kb = kb_with_snippets(json!([
+        { "__type": "textSnippet", "string": "[label](https://example.com)" },
+        { "__type": "textSnippet", "string": "  [padded](https://example.com)  " },
+    ]));
+    assert_roundtrips(kb.path());
+}
+
+#[test]
+fn guard_list_item_that_is_a_link_stays_a_list_item() {
+    let kb = kb_with_snippets(json!([
+        {
+            "__type": "listSnippet",
+            "children": { "items": [
+                { "__type": "textSnippet", "string": "[label](https://example.com)" },
+                { "__type": "textSnippet", "string": "plain item" },
+            ] }
+        },
+    ]));
+    assert_roundtrips(kb.path());
+}
+
+#[test]
+fn guard_link_snippet_still_comes_back_as_a_link() {
+    let kb = kb_with_snippets(json!([
+        { "__type": "linkSnippet", "string": "label", "url": "https://example.com" },
+    ]));
+    assert_roundtrips(kb.path());
+}
+
+#[test]
+fn guard_prose_with_a_link_line_among_others_stays_prose() {
+    let kb = kb_with_snippets(json!([
+        { "__type": "textSnippet", "string": "intro\n[label](https://example.com)\noutro" },
+    ]));
+    assert_roundtrips(kb.path());
+}
+
+#[test]
 fn guard_rewrite_block_survives_alongside_a_code_snippet() {
     let kb = kb_with_snippets(json!([
         {

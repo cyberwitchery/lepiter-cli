@@ -5,7 +5,8 @@ use std::path::PathBuf;
 use anyhow::{Context, Result, bail};
 use chrono::DateTime;
 use lepiter_core::{
-    LinkKind, language_to_snippet_type, rewrite_inline_links, unescape_block_start,
+    LinkKind, is_standalone_link, language_to_snippet_type, rewrite_inline_links,
+    unescape_block_start,
 };
 use serde_json::json;
 
@@ -22,8 +23,6 @@ const SPEC: ArgSpec<'static> = ArgSpec {
             - an unknown snippet keeps its type but not its other fields\n  \
             - picture, youtube and word snippets come back as the link or\n    \
             text snippet their markdown form implies\n  \
-            - a text snippet that is exactly [label](url) comes back as a\n    \
-            link snippet\n  \
             - a carriage return in a text snippet is dropped; a crlf line\n    \
             break comes back as a plain newline\n  \
             - a snippet nested inside a list item is flattened to text",
@@ -503,18 +502,6 @@ fn try_parse_rewrite_block(lang: &str, all_lines: &[&str]) -> Option<Snippet> {
         scope,
         is_method_pattern,
     })
-}
-
-fn is_standalone_link(line: &str) -> bool {
-    let trimmed = line.trim();
-    if !trimmed.starts_with('[') {
-        return false;
-    }
-    let Some(bracket_end) = trimmed.find("](") else {
-        return false;
-    };
-    let after = &trimmed[bracket_end + 2..];
-    after.ends_with(')') && !after[..after.len() - 1].contains(')')
 }
 
 fn extract_standalone_link(line: &str) -> (String, String) {

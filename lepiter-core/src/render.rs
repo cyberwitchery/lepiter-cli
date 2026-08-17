@@ -35,14 +35,22 @@ pub fn render_nodes_to_text_with(
     escaping: BlockEscaping,
 ) -> String {
     let mut out = String::new();
-    render_nodes_into(nodes, rewrite, escaping, &mut out);
+    render_nodes_into(nodes, rewrite, escaping, Position::Snippet, &mut out);
     out
+}
+
+/// whether a node is a snippet of its own or sits inside a list item.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Position {
+    Snippet,
+    ListItem,
 }
 
 fn render_nodes_into(
     nodes: &[Node],
     rewrite: &mut impl FnMut(LinkKind, &str) -> Option<String>,
     escaping: BlockEscaping,
+    position: Position,
     out: &mut String,
 ) {
     for node in nodes {
@@ -59,18 +67,22 @@ fn render_nodes_into(
                 }
                 out.push('\n');
             }
-            Node::Paragraph { text } => {
-                push_block_lines(&rewrite_inline_links(text, &mut *rewrite), escaping, out);
-                out.push('\n');
-            }
-            Node::Text { text } => {
-                push_block_lines(&rewrite_inline_links(text, &mut *rewrite), escaping, out);
+            Node::Paragraph { text } | Node::Text { text } => {
+                let text = rewrite_inline_links(text, &mut *rewrite);
+                if escaping == BlockEscaping::Escape
+                    && position == Position::Snippet
+                    && !text.contains('\n')
+                    && is_standalone_link(&text)
+                {
+                    out.push('\\');
+                }
+                push_block_lines(&text, escaping, out);
                 out.push('\n');
             }
             Node::List { items } => {
                 for item in items {
                     let mut item_out = String::new();
-                    render_nodes_into(item, rewrite, escaping, &mut item_out);
+                    render_nodes_into(item, rewrite, escaping, Position::ListItem, &mut item_out);
                     let mut lines = item_out.trim().lines();
                     if let Some(first) = lines.next() {
                         out.push_str("- ");
@@ -206,6 +218,23 @@ fn starts_block(line: &str) -> bool {
         || line == ">"
         || line.starts_with("```")
         || (trimmed.starts_with("[[unknown: ") && trimmed.ends_with("]]"))
+}
+
+/// whether `line`, ignoring surrounding whitespace, is one `[label](target)`
+/// markdown link and nothing else.
+///
+/// the markdown `import` reads such a line back as a link snippet, but only
+/// where it is a whole snippet on its own.
+pub fn is_standalone_link(line: &str) -> bool {
+    let trimmed = line.trim();
+    if !trimmed.starts_with('[') {
+        return false;
+    }
+    let Some(bracket_end) = trimmed.find("](") else {
+        return false;
+    };
+    let after = &trimmed[bracket_end + 2..];
+    after.ends_with(')') && !after[..after.len() - 1].contains(')')
 }
 
 /// Checks whether the rendered text of a page contains `needle`
@@ -410,10 +439,32 @@ mod tests {
     }
 
     #[test]
+    fn line_escaping_leaves_a_standalone_link_to_the_node_renderer() {
+        assert_eq!(escape_block_start("[label](url)"), "[label](url)");
+        assert_eq!(escape_block_start("  [pad](url)  "), "  [pad](url)  ");
+    }
+
+    #[test]
     fn escape_block_start_leaves_ordinary_prose_alone() {
-        for line in ["plain", "-dash", "a - b", ">>chevron", "``inline``"] {
+        for line in [
+            "plain",
+            "-dash",
+            "a - b",
+            ">>chevron",
+            "``inline``",
+            "see [label](url) below",
+            "[label](url) trails off",
+            "[unclosed](url",
+            "[no target]",
+        ] {
             assert_eq!(escape_block_start(line), line);
         }
+    }
+
+    #[test]
+    fn escape_block_start_matches_the_importer_on_a_hand_escaped_link() {
+        assert_eq!(escape_block_start("\\[label](url)"), "\\\\[label](url)");
+        assert!(!is_standalone_link("\\[label](url)"));
     }
 
     #[test]
@@ -431,6 +482,9 @@ mod tests {
             "\\- hand-escaped",
             "  ",
             "\\ ",
+            "[label](url)",
+            "  [pad](url)  ",
+            "\\[label](url)",
         ] {
             assert_eq!(unescape_block_start(&escape_block_start(line)), line);
         }
@@ -491,6 +545,59 @@ mod tests {
     }
 
     #[test]
+    fn text_node_that_is_only_a_link_is_escaped() {
+        let text = render_escaped(&[Node::Text {
+            text: "[label](https://example.com)".to_string(),
+        }]);
+        assert_eq!(text, "\\[label](https://example.com)\n\n");
+        let padded = render_escaped(&[Node::Text {
+            text: "  [pad](https://example.com)  ".to_string(),
+        }]);
+        assert_eq!(padded, "\\  [pad](https://example.com)  \n\n");
+    }
+
+    #[test]
+    fn a_link_line_among_others_is_left_a_working_link() {
+        let text = render_escaped(&[Node::Text {
+            text: "intro\n[label](https://example.com)\noutro".to_string(),
+        }]);
+        assert_eq!(text, "intro\n[label](https://example.com)\noutro\n\n");
+    }
+
+    #[test]
+    fn a_list_item_that_is_a_link_is_left_a_working_link() {
+        let text = render_escaped(&[Node::List {
+            items: vec![
+                vec![Node::Text {
+                    text: "[label](https://example.com)".to_string(),
+                }],
+                vec![Node::Text {
+                    text: "plain".to_string(),
+                }],
+            ],
+        }]);
+        assert_eq!(text, "- [label](https://example.com)\n- plain\n\n");
+    }
+
+    #[test]
+    fn a_heading_continuation_that_is_a_link_is_left_a_working_link() {
+        let text = render_escaped(&[Node::Heading {
+            level: 2,
+            text: "title\n[label](https://example.com)".to_string(),
+        }]);
+        assert_eq!(text, "## title\n[label](https://example.com)\n\n");
+    }
+
+    #[test]
+    fn link_node_renders_unescaped() {
+        let text = render_escaped(&[Node::Link {
+            text: "label".to_string(),
+            url: "https://example.com".to_string(),
+        }]);
+        assert_eq!(text, "[label](https://example.com)\n\n");
+    }
+
+    #[test]
     fn render_emits_carriage_returns_verbatim_though_import_drops_them() {
         let text = render_escaped(&[Node::Paragraph {
             text: "one\r\ntwo".to_string(),
@@ -501,11 +608,12 @@ mod tests {
     #[test]
     fn display_render_leaves_block_looking_prose_alone() {
         let text = render_nodes_to_text(&[Node::Paragraph {
-            text: "intro\n- not a list\n> not a quote\n```not a fence".to_string(),
+            text: "intro\n- not a list\n> not a quote\n```not a fence\n[not](a-link-snippet)"
+                .to_string(),
         }]);
         assert_eq!(
             text,
-            "intro\n- not a list\n> not a quote\n```not a fence\n\n"
+            "intro\n- not a list\n> not a quote\n```not a fence\n[not](a-link-snippet)\n\n"
         );
     }
 

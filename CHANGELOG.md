@@ -4,6 +4,11 @@ all notable changes to this project are documented in this file.
 
 ## Unreleased
 
+### added
+- `is_standalone_link()` public function in lepiter-core reports whether a line
+  is one `[label](target)` markdown link and nothing else — the shape `import`
+  reads back as a link snippet
+
 ### fixed
 - a `[label](target)` link whose target contains balanced parentheses, such as
   `[Ruby](https://en.wikipedia.org/wiki/Ruby_(programming_language))`, is no
@@ -19,6 +24,10 @@ all notable changes to this project are documented in this file.
   real problem; it now prints a warning naming the file, and an unreadable
   (but present) file surfaces an error instead of being ignored. `info` reports
   the same warning on a malformed file
+- a text snippet whose whole content is a single markdown link, such as
+  `[label](https://example.com)`, now comes back from `export` -> `import` as a
+  text snippet. it previously turned into a link snippet, changing the note's
+  type behind the reader's back
 
 ### changed
 - `KnowledgeBaseIndex::orphan_ids` takes the table-of-contents id as

@@ -2,7 +2,7 @@
 
 all notable changes to this project are documented in this file.
 
-## Unreleased
+## 0.11.0 - 2026-08-17
 
 ### added
 - `is_standalone_link()` public function in lepiter-core reports whether a line

@@ -4,7 +4,7 @@ resolver = "2"
 
 [workspace.package]
 edition = "2024"
-version = "0.10.0"
+version = "0.11.0"
 license = "MIT"
 repository = "https://github.com/cyberwitchery/lepiter-cli"
 homepage = "https://github.com/cyberwitchery/lepiter-cli"
@@ -14,7 +14,7 @@ anyhow = "1"
 indexmap = "2"
 chrono = { version = "0.4", features = ["serde"] }
 crossterm = "0.29"
-lepiter-core = { version = "0.10.0", path = "lepiter-core" }
+lepiter-core = { version = "0.11.0", path = "lepiter-core" }
 open = "5"
 ratatui = "0.30"
 serde = { version = "1", features = ["derive"] }

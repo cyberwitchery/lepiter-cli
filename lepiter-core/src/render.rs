@@ -220,10 +220,10 @@ fn starts_block(line: &str) -> bool {
         || (trimmed.starts_with("[[unknown: ") && trimmed.ends_with("]]"))
 }
 
-/// Whether `line`, ignoring surrounding whitespace, is one `[label](target)`
+/// whether `line`, ignoring surrounding whitespace, is one `[label](target)`
 /// markdown link and nothing else.
 ///
-/// The markdown `import` reads such a line back as a link snippet, but only
+/// the markdown `import` reads such a line back as a link snippet, but only
 /// where it is a whole snippet on its own.
 pub fn is_standalone_link(line: &str) -> bool {
     let trimmed = line.trim();

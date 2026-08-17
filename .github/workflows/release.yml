@@ -120,7 +120,8 @@ jobs:
         if: matrix.publish_crates
         uses: taiki-e/install-action@v2
         with:
-          tool: cargo-cyclonedx,sbom-diff
+          # pinned: an unpinned bump changed what counts as a component and broke this gate
+          tool: cargo-cyclonedx@0.5.9,sbom-diff@0.8.0
 
       - name: generate sbom
         if: matrix.publish_crates

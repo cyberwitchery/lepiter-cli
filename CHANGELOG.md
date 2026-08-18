@@ -2,6 +2,14 @@
 
 all notable changes to this project are documented in this file.
 
+## Unreleased
+
+### changed
+- when a render plugin crashes, exits, or answers with an unreadable line, the
+  reader now shows the tail of what that plugin wrote to its own stderr next to
+  the error, instead of discarding it. `LEPITER_PLUGIN_STDERR_BYTES` caps how
+  much is kept (default `2048`, `0` discards stderr as before)
+
 ## 0.11.0 - 2026-08-17
 
 ### added

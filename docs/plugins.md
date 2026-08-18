@@ -60,6 +60,10 @@ on error:
 { "ok": false, "lines": [], "error": "reason" }
 ```
 
+stdout is reserved for the protocol. write diagnostics to stderr instead: the
+tail of what a plugin writes there is appended to the error the tui reports
+when that plugin crashes, exits, or answers with an unreadable line.
+
 ## demo plugin
 
 the repository ships a minimal example:
@@ -112,9 +116,12 @@ lepiter_plugin_main!(handle);
 - `LEPITER_PLUGIN_CACHE`: max cached render entries (default `128`, `0` disables)
 - `LEPITER_PLUGIN_TIMEOUT_MS`: per-request timeout (default `250`)
 - `LEPITER_PLUGIN_RETRIES`: retries after failures (default `1`)
+- `LEPITER_PLUGIN_STDERR_BYTES`: bytes of plugin stderr kept for error reports
+  (default `2048`, `0` discards stderr)
 
 ## limitations
 
 - plugins cannot render inline text styles (tui treats returned lines as plain text)
 - plugins only run for unknown snippet types
-- plugin stderr is discarded (stdout is reserved for protocol)
+- plugin stderr is only kept as a bounded tail, and only surfaces when a render
+  fails (stdout is reserved for protocol)

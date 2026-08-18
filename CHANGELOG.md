@@ -2,6 +2,17 @@
 
 all notable changes to this project are documented in this file.
 
+## Unreleased
+
+### fixed
+- an asterisk inside `` ` `` backticks is no longer eaten and no longer restyles
+  the rest of the line. reading a page containing `` `**kwargs` `` or `` `a * b` ``
+  showed the code with the asterisks deleted, and the emphasis it switched on
+  carried past the closing backtick — the text after a `` `**kwargs` `` span was
+  rendered bold to the end of the line, and a line mixing `` `a * b` `` with a
+  real `*italic*` had the emphasis land on the wrong words. affects both the
+  `read` output and the interactive reader
+
 ## 0.11.0 - 2026-08-17
 
 ### added

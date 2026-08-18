@@ -46,15 +46,30 @@ pub struct InlineLink<'a> {
 /// as long as each balances; an unbalanced `[` or `(` yields no link at that
 /// position. A label may nest an image, and the outer target is the one
 /// reported; a label nesting a link of its own is not a label at all, so the
-/// nested link is reported instead. Backslash escapes are not interpreted.
+/// nested link is reported instead — a link inside an image's alt text is part
+/// of the image, so it does not count. Backslash escapes are not interpreted.
 pub fn scan_inline_links(text: &str) -> InlineLinks<'_> {
-    InlineLinks { text, i: 0 }
+    InlineLinks {
+        text,
+        i: 0,
+        guard_nesting: true,
+    }
+}
+
+/// Scans without the nested-link guard, yielding a label's outermost links only.
+fn scan_shallow(text: &str) -> InlineLinks<'_> {
+    InlineLinks {
+        text,
+        i: 0,
+        guard_nesting: false,
+    }
 }
 
 /// Iterator returned by [`scan_inline_links`].
 pub struct InlineLinks<'a> {
     text: &'a str,
     i: usize,
+    guard_nesting: bool,
 }
 
 impl<'a> Iterator for InlineLinks<'a> {
@@ -87,7 +102,7 @@ impl<'a> Iterator for InlineLinks<'a> {
                 && label_end + 1 < bytes.len()
                 && bytes[label_end + 1] == b'('
                 && let Some(target_end) = find_balanced_close_paren(bytes, label_end + 2)
-                && !nests_a_link(&self.text[i + 1..label_end])
+                && (!self.guard_nesting || !nests_a_link(&self.text[i + 1..label_end]))
             {
                 let target = self.text[label_end + 2..target_end].trim();
                 if !target.is_empty() {
@@ -164,7 +179,7 @@ fn find_balanced_close_bracket(bytes: &[u8], start: usize) -> Option<usize> {
 /// Reports whether `label` contains a link other than an image.
 fn nests_a_link(label: &str) -> bool {
     label.contains('[')
-        && scan_inline_links(label).any(|link| {
+        && scan_shallow(label).any(|link| {
             link.kind != LinkKind::Markdown
                 || link.range.start == 0
                 || label.as_bytes()[link.range.start - 1] != b'!'
@@ -341,6 +356,35 @@ mod tests {
         assert_eq!(links.len(), 1);
         assert_eq!(links[0].label, "b");
         assert_eq!(links[0].target, "ok");
+    }
+
+    #[test]
+    fn a_link_in_an_images_alt_text_leaves_the_outer_target() {
+        let text = "[![[x](y)](z)](t)";
+        let links = scan(text);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].label, "![[x](y)](z)");
+        assert_eq!(links[0].target, "t");
+        assert_eq!(links[0].range, 0..text.len());
+    }
+
+    #[test]
+    fn deeply_nested_links_do_not_blow_up_the_scan() {
+        for innermost in ["![a](p)", "[x](y)"] {
+            let mut text = innermost.to_string();
+            for _ in 0..24 {
+                text = format!("[{text}](t)");
+            }
+            let started = std::time::Instant::now();
+            let links = scan(&text);
+            let elapsed = started.elapsed();
+            assert_eq!(links.len(), 1);
+            assert!(
+                elapsed < std::time::Duration::from_secs(2),
+                "scanning {} bytes of nesting took {elapsed:?}",
+                text.len()
+            );
+        }
     }
 
     #[test]

@@ -25,7 +25,8 @@ pub enum LinkKind {
 pub struct InlineLink<'a> {
     pub kind: LinkKind,
     /// The display label. For [`LinkKind::Markdown`] this is the raw slice
-    /// between `[` and `]`; for [`LinkKind::Wiki`] it equals `target`.
+    /// between `[` and its matching `]`; for [`LinkKind::Wiki`] it equals
+    /// `target`.
     pub label: &'a str,
     /// The link target, trimmed of surrounding whitespace. Never empty.
     pub target: &'a str,
@@ -41,9 +42,11 @@ pub struct InlineLink<'a> {
 /// ASCII, so multi-byte UTF-8 content in labels and targets is handled
 /// correctly.
 ///
-/// A `[label](target)` target may contain parentheses as long as they balance;
-/// an unbalanced `(` yields no link at that position. Backslash escapes are not
-/// interpreted.
+/// A `[label](target)` label may contain brackets and its target parentheses,
+/// as long as each balances; an unbalanced `[` or `(` yields no link at that
+/// position. A label may nest an image, and the outer target is the one
+/// reported; a label nesting a link of its own is not a label at all, so the
+/// nested link is reported instead. Backslash escapes are not interpreted.
 pub fn scan_inline_links(text: &str) -> InlineLinks<'_> {
     InlineLinks { text, i: 0 }
 }
@@ -80,10 +83,11 @@ impl<'a> Iterator for InlineLinks<'a> {
             }
             // [label](target)
             if bytes[i] == b'['
-                && let Some(label_end) = find_byte(bytes, b']', i + 1)
+                && let Some(label_end) = find_balanced_close_bracket(bytes, i + 1)
                 && label_end + 1 < bytes.len()
                 && bytes[label_end + 1] == b'('
                 && let Some(target_end) = find_balanced_close_paren(bytes, label_end + 2)
+                && !nests_a_link(&self.text[i + 1..label_end])
             {
                 let target = self.text[label_end + 2..target_end].trim();
                 if !target.is_empty() {
@@ -144,8 +148,27 @@ fn find_closing_double_bracket(bytes: &[u8], start: usize) -> Option<usize> {
     None
 }
 
-fn find_byte(bytes: &[u8], target: u8, start: usize) -> Option<usize> {
-    (start..bytes.len()).find(|&i| bytes[i] == target)
+fn find_balanced_close_bracket(bytes: &[u8], start: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    for (i, &byte) in bytes.iter().enumerate().skip(start) {
+        match byte {
+            b'[' => depth += 1,
+            b']' if depth == 0 => return Some(i),
+            b']' => depth -= 1,
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Reports whether `label` contains a link other than an image.
+fn nests_a_link(label: &str) -> bool {
+    label.contains('[')
+        && scan_inline_links(label).any(|link| {
+            link.kind != LinkKind::Markdown
+                || link.range.start == 0
+                || label.as_bytes()[link.range.start - 1] != b'!'
+        })
 }
 
 fn find_balanced_close_paren(bytes: &[u8], start: usize) -> Option<usize> {
@@ -235,12 +258,106 @@ mod tests {
 
     #[test]
     fn unclosed_wiki_falls_through_to_markdown() {
-        // No closing `]]`, so the leading `[` opens a markdown link instead.
         let links = scan("[[text](url)");
         assert_eq!(links.len(), 1);
         assert_eq!(links[0].kind, LinkKind::Markdown);
-        assert_eq!(links[0].label, "[text");
+        assert_eq!(links[0].label, "text");
         assert_eq!(links[0].target, "url");
+        assert_eq!(links[0].range, 1..12);
+    }
+
+    #[test]
+    fn markdown_label_keeps_balanced_brackets() {
+        let text = "[a [b] c](t)";
+        let links = scan(text);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].label, "a [b] c");
+        assert_eq!(links[0].target, "t");
+        assert_eq!(links[0].range, 0..text.len());
+    }
+
+    #[test]
+    fn markdown_label_keeps_nested_brackets() {
+        let text = "[a [b [c] d] e](t)";
+        let links = scan(text);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].label, "a [b [c] d] e");
+        assert_eq!(links[0].target, "t");
+        assert_eq!(links[0].range, 0..text.len());
+    }
+
+    #[test]
+    fn linked_image_yields_the_outer_target() {
+        let text = "[![img](a.png)](target)";
+        let links = scan(text);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].kind, LinkKind::Markdown);
+        assert_eq!(links[0].label, "![img](a.png)");
+        assert_eq!(links[0].target, "target");
+        assert_eq!(links[0].range, 0..text.len());
+    }
+
+    #[test]
+    fn unbalanced_open_bracket_yields_no_link() {
+        assert!(scan("[a [b] c(t)").is_empty());
+        assert!(scan("[a [b(t)").is_empty());
+    }
+
+    #[test]
+    fn unbalanced_close_bracket_yields_no_link() {
+        assert!(scan("[a]](t)").is_empty());
+        assert!(scan("a] b](t)").is_empty());
+    }
+
+    #[test]
+    fn unbalanced_label_does_not_swallow_a_later_link() {
+        let links = scan("[a [unclosed and [b](ok)");
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].label, "b");
+        assert_eq!(links[0].target, "ok");
+    }
+
+    #[test]
+    fn bracket_label_link_beside_a_plain_one() {
+        let links = scan("[a [b] c](t) and [d](e)");
+        assert_eq!(links.len(), 2);
+        assert_eq!(links[0].label, "a [b] c");
+        assert_eq!(links[0].target, "t");
+        assert_eq!(links[1].label, "d");
+        assert_eq!(links[1].target, "e");
+    }
+
+    #[test]
+    fn wiki_nested_in_a_label_still_wins() {
+        let links = scan("[label [[wiki]] more](t)");
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].kind, LinkKind::Wiki);
+        assert_eq!(links[0].target, "wiki");
+    }
+
+    #[test]
+    fn markdown_link_nested_in_a_label_wins_over_the_outer() {
+        let links = scan("[a [b](ok) c](t)");
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].label, "b");
+        assert_eq!(links[0].target, "ok");
+    }
+
+    #[test]
+    fn rewrite_a_linked_image_touches_only_the_outer_target() {
+        let mut seen = Vec::new();
+        let out = rewrite_inline_links("see [![img](a.png)](page:abc) here", |_, target| {
+            seen.push(target.to_string());
+            Some(format!("{target}.md"))
+        });
+        assert_eq!(seen, vec!["page:abc"]);
+        assert_eq!(out, "see [![img](a.png)](page:abc.md) here");
+    }
+
+    #[test]
+    fn rewrite_none_leaves_a_bracket_label_verbatim() {
+        let text = "[a [b] c](  t  ) and [![img](a.png)](u)";
+        assert_eq!(rewrite_inline_links(text, |_, _| None), text);
     }
 
     #[test]

@@ -44,12 +44,11 @@ pub enum PluginRender {
     Error(String),
 }
 
-/// Distinguishes timeout errors from other plugin failures so the retry
-/// loop can decide whether to kill-and-respawn.
+/// A failed plugin request; the retry loop respawns on either variant.
 #[derive(Debug)]
 enum RequestError {
-    /// Plugin did not respond within the deadline.
-    Timeout(Duration),
+    /// Plugin did not respond within the deadline, with any stderr it wrote.
+    Timeout(Duration, String),
     /// Plugin process died, produced bad output, or hit an I/O error.
     Failed(anyhow::Error),
 }
@@ -57,9 +56,21 @@ enum RequestError {
 impl std::fmt::Display for RequestError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            RequestError::Timeout(d) => write!(f, "timed out after {}ms", d.as_millis()),
+            RequestError::Timeout(d, tail) => {
+                let msg = format!("timed out after {}ms", d.as_millis());
+                write!(f, "{}", with_stderr(msg, tail))
+            }
             RequestError::Failed(e) => write!(f, "{e}"),
         }
+    }
+}
+
+/// Appends a plugin's stderr tail to a failure message, if it wrote any.
+fn with_stderr(msg: String, tail: &str) -> String {
+    if tail.is_empty() {
+        msg
+    } else {
+        format!("{msg} (stderr: {tail})")
     }
 }
 
@@ -127,7 +138,12 @@ impl StderrTail {
         }
         let bytes = state.buf.iter().copied().collect::<Vec<u8>>();
         drop(state);
-        one_line(&String::from_utf8_lossy(&bytes))
+        // The tail can start mid-character; skip to the first boundary.
+        let start = bytes
+            .iter()
+            .position(|b| b & 0xC0 != 0x80)
+            .unwrap_or(bytes.len());
+        one_line(&String::from_utf8_lossy(&bytes[start..]))
     }
 }
 
@@ -147,6 +163,13 @@ fn one_line(input: &str) -> String {
         }
     }
     out
+}
+
+/// Records a failure message unless an identical attempt already did.
+fn push_distinct(msgs: &mut Vec<String>, msg: String) {
+    if !msgs.contains(&msg) {
+        msgs.push(msg);
+    }
 }
 
 fn drain_stderr(mut stderr: ChildStderr, tail: Arc<StderrTail>) {
@@ -269,7 +292,10 @@ impl PluginProcess {
             Ok(Err(io_err)) => {
                 Err(self.failed(format!("plugin stdout error: {io_err}"), STDERR_FLUSH_WAIT))
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => Err(RequestError::Timeout(timeout)),
+            Err(mpsc::RecvTimeoutError::Timeout) => Err(RequestError::Timeout(
+                timeout,
+                self.stderr.snapshot(Duration::ZERO),
+            )),
             Err(mpsc::RecvTimeoutError::Disconnected) => Err(self.failed(
                 "plugin reader thread terminated unexpectedly".to_string(),
                 STDERR_FLUSH_WAIT,
@@ -281,11 +307,7 @@ impl PluginProcess {
     /// wait for the drain thread, and is zero unless the process is gone.
     fn failed(&self, msg: String, flush: Duration) -> RequestError {
         let tail = self.stderr.snapshot(flush);
-        if tail.is_empty() {
-            RequestError::Failed(anyhow::anyhow!("{msg}"))
-        } else {
-            RequestError::Failed(anyhow::anyhow!("{msg} (stderr: {tail})"))
-        }
+        RequestError::Failed(anyhow::anyhow!("{}", with_stderr(msg, &tail)))
     }
 }
 
@@ -427,7 +449,7 @@ impl PluginManager {
             typ: typ.to_string(),
             snippet: raw.clone(),
         };
-        let mut last_err = None;
+        let mut errs: Vec<String> = Vec::new();
         for _ in 0..=self.retries {
             let result = self.processes[idx]
                 .process
@@ -446,7 +468,7 @@ impl PluginManager {
                     return Some(rendered);
                 }
                 Err(e) => {
-                    last_err = Some(format!("{e}"));
+                    push_distinct(&mut errs, format!("{e}"));
                     // Kill the hung/dead plugin and try to respawn for the next
                     // retry attempt. Respawning is essential after a timeout
                     // because the old channel may contain a stale response.
@@ -457,14 +479,18 @@ impl PluginManager {
                             self.processes[idx].process = new_process;
                         }
                         Err(spawn_err) => {
-                            last_err = Some(format!("respawn failed: {spawn_err}"));
+                            push_distinct(&mut errs, format!("respawn failed: {spawn_err}"));
                             break;
                         }
                     }
                 }
             }
         }
-        let err = last_err.unwrap_or_else(|| "plugin failed".to_string());
+        let err = if errs.is_empty() {
+            "plugin failed".to_string()
+        } else {
+            errs.join("; ")
+        };
         let rendered = PluginRender::Error(format!("{}: {err}", self.processes[idx].name));
         // Don't cache transport-level errors (timeout/crash) — they are
         // transient and the plugin may recover after respawn.  Plugin-returned
@@ -587,8 +613,8 @@ mod tests {
         let result = proc.request_with_timeout(&req, Duration::from_millis(100));
         let elapsed = start.elapsed();
         match result {
-            Err(RequestError::Timeout(d)) => {
-                assert_eq!(d, Duration::from_millis(100));
+            Err(ref err @ RequestError::Timeout(..)) => {
+                assert_eq!(err.to_string(), "timed out after 100ms");
                 // Should have taken roughly the timeout duration, not much more.
                 assert!(elapsed < Duration::from_millis(500));
             }
@@ -890,6 +916,119 @@ mod tests {
             1,
             "drain thread outlived the plugin process"
         );
+    }
+
+    #[test]
+    fn timed_out_plugin_reports_the_stderr_it_already_wrote() {
+        let script = r#"echo "connecting to api.example.com ..." >&2; read line; sleep 60"#;
+        let mut proc = PluginProcess::spawn(
+            "bash",
+            &["-c".to_string(), script.to_string()],
+            DEFAULT_STDERR_BYTES,
+        )
+        .unwrap();
+        std::thread::sleep(Duration::from_millis(150));
+        let start = std::time::Instant::now();
+        let result = proc.request_with_timeout(&dummy_request(), Duration::from_millis(100));
+        let elapsed = start.elapsed();
+        match result {
+            Err(ref err @ RequestError::Timeout(..)) => {
+                let msg = err.to_string();
+                assert!(
+                    msg.starts_with("timed out after 100ms"),
+                    "unexpected: {msg}"
+                );
+                assert!(
+                    msg.contains("connecting to api.example.com"),
+                    "stderr missing from: {msg}"
+                );
+            }
+            other => panic!("expected Timeout, got: {other:?}"),
+        }
+        // Alive and holding stderr open: any wait would add STDERR_FLUSH_WAIT.
+        assert!(
+            elapsed < Duration::from_millis(250),
+            "timeout path waited on stderr: {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn a_crash_diagnostic_survives_a_later_bare_timeout() {
+        let crashing = r#"read line; echo "REALDIAGNOSTIC: token expired" >&2; exit 1"#;
+        let hanging = "read line; sleep 60";
+        let proc = PluginProcess::spawn(
+            "bash",
+            &["-c".to_string(), crashing.to_string()],
+            DEFAULT_STDERR_BYTES,
+        )
+        .unwrap();
+
+        let mut mgr = PluginManager::empty();
+        mgr.timeout = Duration::from_millis(100);
+        mgr.retries = 1;
+        mgr.processes.push(PluginHandle {
+            name: "test".to_string(),
+            binary: "bash".to_string(),
+            args: vec!["-c".to_string(), hanging.to_string()],
+            process: proc,
+        });
+        mgr.by_type.insert("testType".to_string(), 0);
+
+        match mgr.render("testType", &serde_json::json!({})) {
+            Some(PluginRender::Error(ref msg)) => {
+                assert!(
+                    msg.contains("REALDIAGNOSTIC: token expired"),
+                    "first attempt's stderr lost from: {msg}"
+                );
+                assert!(msg.contains("timed out after 100ms"), "unexpected: {msg}");
+            }
+            other => panic!("expected Error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn identical_attempt_failures_are_reported_once() {
+        let crashing = r#"read line; echo "REALDIAGNOSTIC: token expired" >&2; exit 1"#;
+        let proc = PluginProcess::spawn(
+            "bash",
+            &["-c".to_string(), crashing.to_string()],
+            DEFAULT_STDERR_BYTES,
+        )
+        .unwrap();
+
+        let mut mgr = PluginManager::empty();
+        mgr.timeout = Duration::from_secs(5);
+        mgr.retries = 1;
+        mgr.processes.push(PluginHandle {
+            name: "test".to_string(),
+            binary: "bash".to_string(),
+            args: vec!["-c".to_string(), crashing.to_string()],
+            process: proc,
+        });
+        mgr.by_type.insert("testType".to_string(), 0);
+
+        match mgr.render("testType", &serde_json::json!({})) {
+            Some(PluginRender::Error(ref msg)) => {
+                assert_eq!(
+                    msg.matches("REALDIAGNOSTIC").count(),
+                    1,
+                    "repeated failure listed twice: {msg}"
+                );
+            }
+            other => panic!("expected Error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stderr_tail_cut_mid_character_starts_at_a_boundary() {
+        let tail = StderrTail::new(10);
+        tail.push("日本語テスト".as_bytes());
+        assert_eq!(tail.snapshot(Duration::ZERO), "テスト");
+
+        // A cap too small for even one character leaves nothing to show.
+        let sliver = StderrTail::new(2);
+        sliver.push("語".as_bytes());
+        assert_eq!(sliver.snapshot(Duration::ZERO), "");
     }
 
     #[test]

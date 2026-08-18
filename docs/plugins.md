@@ -63,7 +63,8 @@ on error:
 stdout is reserved for the protocol. write diagnostics to stderr instead: the
 tail of what a plugin writes there is appended to the error the tui reports
 when that plugin crashes, exits, times out, or answers with an unreadable
-line.
+line. only what a plugin wrote since it last answered a request is kept, so a
+diagnostic has to accompany the failure it explains.
 
 ## demo plugin
 

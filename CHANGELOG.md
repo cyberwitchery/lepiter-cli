@@ -7,7 +7,9 @@ all notable changes to this project are documented in this file.
 ### changed
 - when a render plugin crashes, exits, times out, or answers with an unreadable
   line, the reader now shows the tail of what that plugin wrote to its own
-  stderr next to the error, instead of discarding it.
+  stderr next to the error, instead of discarding it. only stderr written since
+  the plugin last answered a request is shown, so a chatty plugin's routine log
+  is not offered as the reason for a later failure.
   `LEPITER_PLUGIN_STDERR_BYTES` caps how much is kept (default `2048`, `0`
   discards stderr as before)
 - when every attempt at a plugin render fails, the reader lists each distinct

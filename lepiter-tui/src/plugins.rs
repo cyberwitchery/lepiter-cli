@@ -117,6 +117,10 @@ impl StderrTail {
         state.buf.drain(..overflow);
     }
 
+    fn reset(&self) {
+        self.lock().buf.clear();
+    }
+
     fn finish(&self) {
         self.lock().finished = true;
         self.finished.notify_all();
@@ -191,6 +195,8 @@ struct PluginProcess {
     /// Receives lines read by a background reader thread.
     rx: mpsc::Receiver<io::Result<String>>,
     stderr: Arc<StderrTail>,
+    /// Whether the captured stderr predates an exchange the plugin answered.
+    stderr_stale: bool,
 }
 
 impl Drop for PluginProcess {
@@ -258,6 +264,7 @@ impl PluginProcess {
             stdin: BufWriter::new(stdin),
             rx,
             stderr,
+            stderr_stale: false,
         })
     }
 
@@ -274,6 +281,11 @@ impl PluginProcess {
             return Err(self.failed(format!("plugin exited: {status}"), STDERR_FLUSH_WAIT));
         }
 
+        if self.stderr_stale {
+            self.stderr.reset();
+            self.stderr_stale = false;
+        }
+
         let mut payload = serde_json::to_string(req).map_err(|e| RequestError::Failed(e.into()))?;
         payload.push('\n');
         let written = self
@@ -286,7 +298,10 @@ impl PluginProcess {
 
         match self.rx.recv_timeout(timeout) {
             Ok(Ok(line)) => match serde_json::from_str::<PluginResponse>(&line) {
-                Ok(resp) => Ok(resp),
+                Ok(resp) => {
+                    self.stderr_stale = true;
+                    Ok(resp)
+                }
                 Err(e) => Err(self.failed(e.to_string(), Duration::ZERO)),
             },
             Ok(Err(io_err)) => {
@@ -1029,6 +1044,107 @@ mod tests {
         let sliver = StderrTail::new(2);
         sliver.push("語".as_bytes());
         assert_eq!(sliver.snapshot(Duration::ZERO), "");
+    }
+
+    #[test]
+    fn a_plugin_that_dies_between_requests_still_reports_its_last_words() {
+        let script = r#"read line; echo '{"ok":true,"lines":["x"],"error":null}'; echo "fatal: token expired" >&2; exit 3"#;
+        let mut proc = PluginProcess::spawn(
+            "bash",
+            &["-c".to_string(), script.to_string()],
+            DEFAULT_STDERR_BYTES,
+        )
+        .unwrap();
+        assert!(
+            proc.request_with_timeout(&dummy_request(), Duration::from_secs(5))
+                .is_ok(),
+            "first request should have been answered"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+
+        match proc.request_with_timeout(&dummy_request(), Duration::from_secs(1)) {
+            Err(RequestError::Failed(ref e)) => {
+                let msg = e.to_string();
+                assert!(msg.contains("plugin exited"), "unexpected error: {msg}");
+                assert!(
+                    msg.contains("fatal: token expired"),
+                    "stderr missing from: {msg}"
+                );
+            }
+            other => panic!("expected Failed, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_timeout_does_not_report_stderr_from_earlier_successful_renders() {
+        let script = r#"i=0; while read line; do i=$((i+1)); if [ "$i" -ge 3 ]; then sleep 60; fi; echo "note: rendering snippet #$i" >&2; sleep 0.05; echo '{"ok":true,"lines":["x"],"error":null}'; done"#;
+        let proc = PluginProcess::spawn(
+            "bash",
+            &["-c".to_string(), script.to_string()],
+            DEFAULT_STDERR_BYTES,
+        )
+        .unwrap();
+
+        let mut mgr = PluginManager::empty();
+        mgr.timeout = Duration::from_millis(400);
+        mgr.retries = 0;
+        mgr.processes.push(PluginHandle {
+            name: "test".to_string(),
+            binary: "bash".to_string(),
+            args: vec!["-c".to_string(), script.to_string()],
+            process: proc,
+        });
+        mgr.by_type.insert("testType".to_string(), 0);
+
+        for n in 1..=2 {
+            match mgr.render("testType", &serde_json::json!({ "n": n })) {
+                Some(PluginRender::Lines(_)) => {}
+                other => panic!("render {n} should have succeeded, got: {other:?}"),
+            }
+        }
+
+        match mgr.render("testType", &serde_json::json!({"n": 3})) {
+            Some(PluginRender::Error(ref msg)) => {
+                assert_eq!(msg, "test: timed out after 400ms");
+            }
+            other => panic!("expected Error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_timeout_does_not_report_stderr_logged_after_an_earlier_response() {
+        let script = r#"i=0; while read line; do i=$((i+1)); if [ "$i" -ge 2 ]; then sleep 60; fi; echo '{"ok":true,"lines":["x"],"error":null}'; sleep 0.05; echo "note: refreshed cache for snippet #$i" >&2; done"#;
+        let proc = PluginProcess::spawn(
+            "bash",
+            &["-c".to_string(), script.to_string()],
+            DEFAULT_STDERR_BYTES,
+        )
+        .unwrap();
+
+        let mut mgr = PluginManager::empty();
+        mgr.timeout = Duration::from_millis(200);
+        mgr.retries = 0;
+        mgr.processes.push(PluginHandle {
+            name: "test".to_string(),
+            binary: "bash".to_string(),
+            args: vec!["-c".to_string(), script.to_string()],
+            process: proc,
+        });
+        mgr.by_type.insert("testType".to_string(), 0);
+
+        match mgr.render("testType", &serde_json::json!({"n": 1})) {
+            Some(PluginRender::Lines(_)) => {}
+            other => panic!("render 1 should have succeeded, got: {other:?}"),
+        }
+        // The note lands 50ms after the response, well before the next request.
+        std::thread::sleep(Duration::from_millis(200));
+
+        match mgr.render("testType", &serde_json::json!({"n": 2})) {
+            Some(PluginRender::Error(ref msg)) => {
+                assert_eq!(msg, "test: timed out after 200ms");
+            }
+            other => panic!("expected Error, got: {other:?}"),
+        }
     }
 
     #[test]

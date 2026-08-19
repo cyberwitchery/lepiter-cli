@@ -84,6 +84,8 @@ const STDERR_FLUSH_WAIT: Duration = Duration::from_millis(200);
 #[derive(Default)]
 struct TailState {
     buf: VecDeque<u8>,
+    /// What `rotate` moved aside: the stderr of the last answered exchange.
+    previous: VecDeque<u8>,
     finished: bool,
 }
 
@@ -117,8 +119,9 @@ impl StderrTail {
         state.buf.drain(..overflow);
     }
 
-    fn reset(&self) {
-        self.lock().buf.clear();
+    fn rotate(&self) {
+        let mut state = self.lock();
+        state.previous = std::mem::take(&mut state.buf);
     }
 
     fn finish(&self) {
@@ -129,6 +132,16 @@ impl StderrTail {
     /// Captured tail as one sanitized line, waiting up to `flush` for the
     /// drain thread to finish first.
     fn snapshot(&self, flush: Duration) -> String {
+        self.tail(flush, false)
+    }
+
+    /// Captured tail, falling back to the stderr of the last answered
+    /// exchange when the plugin has written nothing since.
+    fn snapshot_or_last_words(&self, flush: Duration) -> String {
+        self.tail(flush, true)
+    }
+
+    fn tail(&self, flush: Duration, fall_back: bool) -> String {
         if self.cap == 0 {
             return String::new();
         }
@@ -140,7 +153,12 @@ impl StderrTail {
                 .unwrap_or_else(|e| e.into_inner());
             state = guard;
         }
-        let bytes = state.buf.iter().copied().collect::<Vec<u8>>();
+        let src = if fall_back && state.buf.is_empty() {
+            &state.previous
+        } else {
+            &state.buf
+        };
+        let bytes = src.iter().copied().collect::<Vec<u8>>();
         drop(state);
         // The tail can start mid-character; skip to the first boundary.
         let start = bytes
@@ -282,7 +300,7 @@ impl PluginProcess {
         }
 
         if self.stderr_stale {
-            self.stderr.reset();
+            self.stderr.rotate();
             self.stderr_stale = false;
         }
 
@@ -319,9 +337,14 @@ impl PluginProcess {
     }
 
     /// Wraps a failure with the plugin's stderr tail; `flush` is how long to
-    /// wait for the drain thread, and is zero unless the process is gone.
+    /// wait for the drain thread, and is zero unless the process is gone. A
+    /// gone process also falls back to the stderr of its last exchange.
     fn failed(&self, msg: String, flush: Duration) -> RequestError {
-        let tail = self.stderr.snapshot(flush);
+        let tail = if flush.is_zero() {
+            self.stderr.snapshot(flush)
+        } else {
+            self.stderr.snapshot_or_last_words(flush)
+        };
         RequestError::Failed(anyhow::anyhow!("{}", with_stderr(msg, &tail)))
     }
 }
@@ -1048,7 +1071,9 @@ mod tests {
 
     #[test]
     fn a_plugin_that_dies_between_requests_still_reports_its_last_words() {
-        let script = r#"read line; echo '{"ok":true,"lines":["x"],"error":null}'; echo "fatal: token expired" >&2; exit 3"#;
+        // The tui renders consecutive snippets back to back, so no gap here; the
+        // linger keeps the plugin alive across the second request.
+        let script = r#"read line; echo '{"ok":true,"lines":["x"],"error":null}'; echo "fatal: token expired" >&2; sleep 0.2; exit 3"#;
         let mut proc = PluginProcess::spawn(
             "bash",
             &["-c".to_string(), script.to_string()],
@@ -1060,15 +1085,40 @@ mod tests {
                 .is_ok(),
             "first request should have been answered"
         );
-        std::thread::sleep(Duration::from_millis(100));
 
         match proc.request_with_timeout(&dummy_request(), Duration::from_secs(1)) {
             Err(RequestError::Failed(ref e)) => {
                 let msg = e.to_string();
-                assert!(msg.contains("plugin exited"), "unexpected error: {msg}");
                 assert!(
-                    msg.contains("fatal: token expired"),
+                    msg.ends_with("(stderr: fatal: token expired)"),
                     "stderr missing from: {msg}"
+                );
+            }
+            other => panic!("expected Failed, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_crash_with_its_own_stderr_does_not_report_the_earlier_exchange() {
+        let script = r#"i=0; while read line; do i=$((i+1)); echo "note: rendering snippet #$i" >&2; sleep 0.05; if [ "$i" -ge 2 ]; then echo "fatal: cache corrupt" >&2; exit 4; fi; echo '{"ok":true,"lines":["x"],"error":null}'; done"#;
+        let mut proc = PluginProcess::spawn(
+            "bash",
+            &["-c".to_string(), script.to_string()],
+            DEFAULT_STDERR_BYTES,
+        )
+        .unwrap();
+        assert!(
+            proc.request_with_timeout(&dummy_request(), Duration::from_secs(5))
+                .is_ok(),
+            "first request should have been answered"
+        );
+
+        match proc.request_with_timeout(&dummy_request(), Duration::from_secs(5)) {
+            Err(RequestError::Failed(ref e)) => {
+                let msg = e.to_string();
+                assert!(
+                    msg.ends_with("(stderr: note: rendering snippet #2 fatal: cache corrupt)"),
+                    "unexpected stderr in: {msg}"
                 );
             }
             other => panic!("expected Failed, got: {other:?}"),

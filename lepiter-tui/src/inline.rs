@@ -4,6 +4,12 @@
 //! inline markdown (bold, italic, code, links, wiki-links, annotations).
 //! this module provides a single parser that produces [`InlineElement`]s,
 //! which each renderer converts to its own output format.
+//!
+//! links are located by [`lepiter_core::scan_inline_links`], the scanner every
+//! other caller resolves link targets through; this module parses only the
+//! styling that scanner does not describe.
+
+use lepiter_core::{LinkKind, scan_inline_links};
 
 /// a parsed fragment of inline markdown.
 #[derive(Debug, Clone, PartialEq)]
@@ -28,10 +34,13 @@ pub enum InlineElement {
 /// handles `**bold**`, `*italic*`, `` `code` ``, `[text](url)`,
 /// `[[wiki-link]]`, and `{{annotation}}` syntax.
 ///
-/// a `[text](url)` target may contain parentheses as long as they balance; an
-/// unbalanced `(` yields no link at that position.
+/// link syntax is whatever [`scan_inline_links`] accepts, and targets are
+/// reported as it reports them: trimmed, never empty. a link inside a
+/// `{{annotation}}` stays part of the annotation.
 pub fn parse_inline(text: &str) -> Vec<InlineElement> {
     let chars = text.chars().collect::<Vec<_>>();
+    let byte_at = byte_offsets(&chars);
+    let mut links = scan_inline_links(text).peekable();
     let mut i = 0usize;
     let mut out = Vec::new();
     let mut buf = String::new();
@@ -95,39 +104,25 @@ pub fn parse_inline(text: &str) -> Vec<InlineElement> {
 
         // links: [[wiki]] or [text](url)
         if chars[i] == '[' {
-            // wiki-link: [[text]]
-            if i + 1 < chars.len() && chars[i + 1] == '[' {
-                let mut j = i + 2;
-                while j + 1 < chars.len() {
-                    if chars[j] == ']' && chars[j + 1] == ']' {
-                        break;
-                    }
-                    j += 1;
-                }
-                if j + 1 < chars.len() && chars[j] == ']' && chars[j + 1] == ']' {
-                    flush(&mut out, &mut buf, bold, italic, code);
-                    let link_text = chars[i + 2..j].iter().collect::<String>();
-                    out.push(InlineElement::WikiLink { text: link_text });
-                    i = j + 2;
-                    continue;
-                }
-            }
-
-            // url link: [text](url)
-            let mut j = i + 1;
-            while j < chars.len() && chars[j] != ']' {
-                j += 1;
-            }
-            if j + 1 < chars.len()
-                && chars[j] == ']'
-                && chars[j + 1] == '('
-                && let Some(k) = find_balanced_close_paren(&chars, j + 2)
+            // an annotation can consume a link, so drop any the walk has passed.
+            while links
+                .peek()
+                .is_some_and(|link| link.range.start < byte_at[i])
             {
+                links.next();
+            }
+            if let Some(link) = links.next_if(|link| link.range.start == byte_at[i]) {
                 flush(&mut out, &mut buf, bold, italic, code);
-                let label = chars[i + 1..j].iter().collect::<String>();
-                let target = chars[j + 2..k].iter().collect::<String>();
-                out.push(InlineElement::Link { label, target });
-                i = k + 1;
+                out.push(match link.kind {
+                    LinkKind::Wiki => InlineElement::WikiLink {
+                        text: link.target.to_string(),
+                    },
+                    LinkKind::Markdown => InlineElement::Link {
+                        label: link.label.to_string(),
+                        target: link.target.to_string(),
+                    },
+                });
+                i += text[link.range].chars().count();
                 continue;
             }
         }
@@ -140,23 +135,21 @@ pub fn parse_inline(text: &str) -> Vec<InlineElement> {
     out
 }
 
-fn find_balanced_close_paren(chars: &[char], start: usize) -> Option<usize> {
-    let mut depth = 0usize;
-    for (i, &c) in chars.iter().enumerate().skip(start) {
-        match c {
-            '(' => depth += 1,
-            ')' if depth == 0 => return Some(i),
-            ')' => depth -= 1,
-            _ => {}
-        }
+/// byte offset of each char, plus the end of the text.
+fn byte_offsets(chars: &[char]) -> Vec<usize> {
+    let mut offsets = Vec::with_capacity(chars.len() + 1);
+    let mut offset = 0usize;
+    for c in chars {
+        offsets.push(offset);
+        offset += c.len_utf8();
     }
-    None
+    offsets.push(offset);
+    offsets
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lepiter_core::{LinkKind, scan_inline_links};
 
     #[test]
     fn plain_text() {
@@ -341,6 +334,106 @@ mod tests {
                 .collect::<Vec<_>>();
             assert_eq!(core, tui, "{text}");
         }
+    }
+
+    fn scanner_targets(text: &str) -> Vec<(LinkKind, String)> {
+        scan_inline_links(text)
+            .map(|link| (link.kind, link.target.to_string()))
+            .collect()
+    }
+
+    fn reader_targets(text: &str) -> Vec<(LinkKind, String)> {
+        parse_inline(text)
+            .into_iter()
+            .filter_map(|element| match element {
+                InlineElement::Link { target, .. } => Some((LinkKind::Markdown, target)),
+                InlineElement::WikiLink { text } => Some((LinkKind::Wiki, text)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn issue_153_table_rows_open_the_scanner_target() {
+        for text in [
+            "[a [b] c](t)",
+            "[text with [inner] brackets](url)",
+            "[![alt](img.png)](href)",
+            "[![[x](y)](z)](t)",
+        ] {
+            assert_eq!(reader_targets(text), scanner_targets(text), "{text}");
+        }
+    }
+
+    #[test]
+    fn link_target_is_trimmed() {
+        assert_eq!(
+            parse_inline("[a]( t )"),
+            vec![InlineElement::Link {
+                label: "a".into(),
+                target: "t".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn wiki_target_is_trimmed() {
+        assert_eq!(
+            parse_inline("[[ a ]]"),
+            vec![InlineElement::WikiLink { text: "a".into() }]
+        );
+    }
+
+    #[test]
+    fn empty_target_is_not_a_link() {
+        assert_eq!(
+            parse_inline("[a]() and [[ ]]"),
+            vec![InlineElement::Styled {
+                text: "[a]() and [[ ]]".into(),
+                bold: false,
+                italic: false,
+                code: false,
+            }]
+        );
+    }
+
+    #[test]
+    fn a_link_inside_an_annotation_stays_annotation_text() {
+        assert_eq!(
+            parse_inline("{{see [a](b)}}"),
+            vec![InlineElement::Annotation {
+                text: "{{see [a](b)}}".into(),
+            }]
+        );
+        assert_eq!(scanner_targets("{{see [a](b)}}").len(), 1);
+    }
+
+    #[test]
+    fn corpus_targets_match_the_core_scanner() {
+        let alphabet = ['[', ']', '(', ')', '!', 'a', ' ', '*', '`', 'b', '\u{e9}'];
+        let mut state = 0x2545_f491_4f6c_dd1d_u64;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        let mut link_bearing = 0usize;
+        for _ in 0..20_000 {
+            let len = 3 + (next() % 16) as usize;
+            let text = (0..len)
+                .map(|_| alphabet[(next() % alphabet.len() as u64) as usize])
+                .collect::<String>();
+            let scanner = scanner_targets(&text);
+            if !scanner.is_empty() {
+                link_bearing += 1;
+            }
+            assert_eq!(reader_targets(&text), scanner, "{text:?}");
+        }
+        assert!(
+            link_bearing > 100,
+            "corpus grew too few links: {link_bearing}"
+        );
     }
 
     #[test]

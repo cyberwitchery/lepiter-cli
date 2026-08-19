@@ -2,6 +2,18 @@
 
 all notable changes to this project are documented in this file.
 
+## Unreleased
+
+### fixed
+- the reader now opens the link target that `check`, backlinks and the export
+  and import rewriters resolve. reading a page, the `read` output and the
+  interactive reader located links with a grammar of their own, so on a linked
+  image — `[![alt](img.png)](href)` — the reader highlighted and opened the
+  image source while the rest of the tool resolved `href`. surrounding
+  whitespace is now trimmed from a displayed and opened target, `[a]( t )`
+  opens `t`, and a link with no target at all, `[a]()` or `[[ ]]`, is shown as
+  the plain text it is instead of as an empty link the reader offered to open
+
 ## 0.11.0 - 2026-08-17
 
 ### added

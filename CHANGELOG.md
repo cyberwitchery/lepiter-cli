@@ -17,7 +17,15 @@ all notable changes to this project are documented in this file.
 - when every attempt at a plugin render fails, the reader lists each distinct
   failure instead of only the last, so a first attempt's diagnostic is no longer
   replaced by a bare timeout from the retry
+
 ### fixed
+- an asterisk inside `` ` `` backticks is no longer eaten and no longer restyles
+  the rest of the line. reading a page containing `` `**kwargs` `` or `` `a * b` ``
+  showed the code with the asterisks deleted, and the emphasis it switched on
+  carried past the closing backtick — the text after a `` `**kwargs` `` span was
+  rendered bold to the end of the line, and a line mixing `` `a * b` `` with a
+  real `*italic*` had the emphasis land on the wrong words. affects both the
+  `read` output and the interactive reader
 - a `[label](target)` link whose label contains balanced brackets is now
   recognised. `[a [b] c](t)` was previously not seen as a link at all, so its
   target was invisible to `check`'s broken-link report and to backlinks, and

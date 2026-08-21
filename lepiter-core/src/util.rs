@@ -310,9 +310,18 @@ mod tests {
 
     #[test]
     fn inline_nested_brackets() {
-        // The first ] found closes [inner], and the char after it is not (,
-        // so the outer link is never matched.
-        assert!(inline_targets("[text with [inner] brackets](url)").is_empty());
+        assert_eq!(
+            inline_targets("[text with [inner] brackets](url)"),
+            vec!["url"]
+        );
+    }
+
+    #[test]
+    fn inline_linked_image_yields_the_link_not_the_image_source() {
+        assert_eq!(
+            inline_targets("[![img](a.png)](page:abc)"),
+            vec!["page:abc"]
+        );
     }
 
     #[test]

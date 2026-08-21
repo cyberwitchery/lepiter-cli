@@ -423,6 +423,17 @@ mod tests {
     }
 
     #[test]
+    fn balanced_bracket_label_reaches_the_reader() {
+        assert_eq!(
+            parse_inline("[a [b] c](t)"),
+            vec![InlineElement::Link {
+                label: "a [b] c".into(),
+                target: "t".into(),
+            }]
+        );
+    }
+
+    #[test]
     fn link_target_is_trimmed() {
         assert_eq!(
             parse_inline("[a]( t )"),
@@ -463,6 +474,28 @@ mod tests {
             }]
         );
         assert_eq!(scanner_targets("{{see [a](b)}}").len(), 1);
+    }
+
+    #[test]
+    fn a_link_after_an_annotation_containing_a_link_is_still_a_link() {
+        assert_eq!(
+            parse_inline("{{see [a](b)}} and [c](d)"),
+            vec![
+                InlineElement::Annotation {
+                    text: "{{see [a](b)}}".into(),
+                },
+                InlineElement::Styled {
+                    text: " and ".into(),
+                    bold: false,
+                    italic: false,
+                    code: false,
+                },
+                InlineElement::Link {
+                    label: "c".into(),
+                    target: "d".into(),
+                },
+            ]
+        );
     }
 
     #[test]
@@ -521,6 +554,25 @@ mod tests {
                 },
                 InlineElement::Annotation {
                     text: "{{note}}".into(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn code_span_keeps_emphasis_literal_around_a_scanner_link() {
+        assert_eq!(
+            parse_inline("`a * [b [c] d](t)`"),
+            vec![
+                InlineElement::Styled {
+                    text: "a * ".into(),
+                    bold: false,
+                    italic: false,
+                    code: true,
+                },
+                InlineElement::Link {
+                    label: "b [c] d".into(),
+                    target: "t".into(),
                 },
             ]
         );

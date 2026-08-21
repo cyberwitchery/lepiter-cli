@@ -4,7 +4,36 @@ all notable changes to this project are documented in this file.
 
 ## Unreleased
 
+### changed
+- when a render plugin crashes, exits, times out, or answers with an unreadable
+  line, the reader now shows the tail of what that plugin wrote to its own
+  stderr next to the error, instead of discarding it. what the plugin wrote
+  since it last answered a request is preferred, so a chatty plugin's routine
+  log is not offered as the reason for a later hang; a plugin that dies without
+  writing anything about the request that failed reports its last words from
+  before it instead.
+  `LEPITER_PLUGIN_STDERR_BYTES` caps how much is kept (default `2048`, `0`
+  discards stderr as before)
+- when every attempt at a plugin render fails, the reader lists each distinct
+  failure instead of only the last, so a first attempt's diagnostic is no longer
+  replaced by a bare timeout from the retry
+
 ### fixed
+- an asterisk inside `` ` `` backticks is no longer eaten and no longer restyles
+  the rest of the line. reading a page containing `` `**kwargs` `` or `` `a * b` ``
+  showed the code with the asterisks deleted, and the emphasis it switched on
+  carried past the closing backtick — the text after a `` `**kwargs` `` span was
+  rendered bold to the end of the line, and a line mixing `` `a * b` `` with a
+  real `*italic*` had the emphasis land on the wrong words. affects both the
+  `read` output and the interactive reader
+- a `[label](target)` link whose label contains balanced brackets is now
+  recognised. `[a [b] c](t)` was previously not seen as a link at all, so its
+  target was invisible to `check`'s broken-link report and to backlinks, and
+  export and import left it unrewritten. a linked image, `[![alt](img.png)](href)`,
+  was worse than invisible: it was read as a link to `img.png`, so `check`
+  validated the image source as if it were the link's destination and the export
+  rewriter would rewrite the image source while leaving `href` untouched. the
+  image source is now left alone and `href` is the target
 - the reader now opens the link target that `check`, backlinks and the export
   and import rewriters resolve. reading a page, the `read` output and the
   interactive reader located links with a grammar of their own, so on a linked

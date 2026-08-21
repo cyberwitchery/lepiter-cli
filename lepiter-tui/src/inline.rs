@@ -36,7 +36,9 @@ pub enum InlineElement {
 ///
 /// link syntax is whatever [`scan_inline_links`] accepts, and targets are
 /// reported as it reports them: trimmed, never empty. a link inside a
-/// `{{annotation}}` stays part of the annotation.
+/// `{{annotation}}` stays part of the annotation. emphasis markers inside a
+/// code span are literal text; links and annotations are still recognised
+/// there.
 pub fn parse_inline(text: &str) -> Vec<InlineElement> {
     let chars = text.chars().collect::<Vec<_>>();
     let byte_at = byte_offsets(&chars);
@@ -79,7 +81,7 @@ pub fn parse_inline(text: &str) -> Vec<InlineElement> {
         }
 
         // bold toggle: **
-        if i + 1 < chars.len() && chars[i] == '*' && chars[i + 1] == '*' {
+        if !code && i + 1 < chars.len() && chars[i] == '*' && chars[i + 1] == '*' {
             flush(&mut out, &mut buf, bold, italic, code);
             bold = !bold;
             i += 2;
@@ -87,7 +89,7 @@ pub fn parse_inline(text: &str) -> Vec<InlineElement> {
         }
 
         // italic toggle: *
-        if chars[i] == '*' {
+        if !code && chars[i] == '*' {
             flush(&mut out, &mut buf, bold, italic, code);
             italic = !italic;
             i += 1;
@@ -213,6 +215,60 @@ mod tests {
     }
 
     #[test]
+    fn code_span_keeps_double_asterisks() {
+        assert_eq!(
+            parse_inline("call `f(**kwargs)` now"),
+            vec![
+                InlineElement::Styled {
+                    text: "call ".into(),
+                    bold: false,
+                    italic: false,
+                    code: false,
+                },
+                InlineElement::Styled {
+                    text: "f(**kwargs)".into(),
+                    bold: false,
+                    italic: false,
+                    code: true,
+                },
+                InlineElement::Styled {
+                    text: " now".into(),
+                    bold: false,
+                    italic: false,
+                    code: false,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn code_span_keeps_single_asterisk() {
+        assert_eq!(
+            parse_inline("`a * b` and *italic*"),
+            vec![
+                InlineElement::Styled {
+                    text: "a * b".into(),
+                    bold: false,
+                    italic: false,
+                    code: true,
+                },
+                InlineElement::Styled {
+                    text: " and ".into(),
+                    bold: false,
+                    italic: false,
+                    code: false,
+                },
+                InlineElement::Styled {
+                    text: "italic".into(),
+                    bold: false,
+                    italic: true,
+                    code: false,
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn bold_and_italic() {
         let elems = parse_inline("**bold *and italic* still bold**");
         assert_eq!(
@@ -318,6 +374,7 @@ mod tests {
             "[a](un(closed and [b](ok)",
             "(see [a](b) too)",
             "[[wiki]] and [md](target)",
+            "`[a](b)` inside a code span",
             "click [here](https://example.com) done",
         ];
         for text in cases {
@@ -444,6 +501,28 @@ mod tests {
             InlineElement::Annotation {
                 text: "{{gtView}}".into(),
             }
+        );
+    }
+
+    #[test]
+    fn code_span_still_yields_links_and_annotations() {
+        assert_eq!(
+            parse_inline("`[a](b) {{note}}`"),
+            vec![
+                InlineElement::Link {
+                    label: "a".into(),
+                    target: "b".into(),
+                },
+                InlineElement::Styled {
+                    text: " ".into(),
+                    bold: false,
+                    italic: false,
+                    code: true,
+                },
+                InlineElement::Annotation {
+                    text: "{{note}}".into(),
+                },
+            ]
         );
     }
 

@@ -17,6 +17,15 @@ all notable changes to this project are documented in this file.
 - when every attempt at a plugin render fails, the reader lists each distinct
   failure instead of only the last, so a first attempt's diagnostic is no longer
   replaced by a bare timeout from the retry
+### fixed
+- a `[label](target)` link whose label contains balanced brackets is now
+  recognised. `[a [b] c](t)` was previously not seen as a link at all, so its
+  target was invisible to `check`'s broken-link report and to backlinks, and
+  export and import left it unrewritten. a linked image, `[![alt](img.png)](href)`,
+  was worse than invisible: it was read as a link to `img.png`, so `check`
+  validated the image source as if it were the link's destination and the export
+  rewriter would rewrite the image source while leaving `href` untouched. the
+  image source is now left alone and `href` is the target
 
 ## 0.11.0 - 2026-08-17
 

@@ -4,6 +4,19 @@ all notable changes to this project are documented in this file.
 
 ## Unreleased
 
+### changed
+- when a render plugin crashes, exits, times out, or answers with an unreadable
+  line, the reader now shows the tail of what that plugin wrote to its own
+  stderr next to the error, instead of discarding it. what the plugin wrote
+  since it last answered a request is preferred, so a chatty plugin's routine
+  log is not offered as the reason for a later hang; a plugin that dies without
+  writing anything about the request that failed reports its last words from
+  before it instead.
+  `LEPITER_PLUGIN_STDERR_BYTES` caps how much is kept (default `2048`, `0`
+  discards stderr as before)
+- when every attempt at a plugin render fails, the reader lists each distinct
+  failure instead of only the last, so a first attempt's diagnostic is no longer
+  replaced by a bare timeout from the retry
 ### fixed
 - a `[label](target)` link whose label contains balanced brackets is now
   recognised. `[a [b] c](t)` was previously not seen as a link at all, so its

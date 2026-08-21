@@ -5,9 +5,8 @@
 //! the grammar's edge cases live in one place instead of being re-implemented
 //! per caller.
 //!
-//! This is distinct from the char-based styling parser in the tui crate's
-//! `inline` module, which exists to render display spans and is intentionally
-//! left separate.
+//! The tui crate's `inline` module locates links with this scanner too, and
+//! parses only the styling the scanner does not describe.
 
 use std::ops::Range;
 

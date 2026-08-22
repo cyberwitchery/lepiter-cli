@@ -19,6 +19,16 @@ all notable changes to this project are documented in this file.
   replaced by a bare timeout from the retry
 
 ### fixed
+- a lone `` ` `` in prose no longer styles the rest of the line as code, and
+  inline code can now contain a backtick. any paragraph that merely mentioned a
+  single backtick lost everything after it to the code style, and there was no
+  way to write a code span holding one. a code span now opens on a run of
+  backticks and closes at the next run of the same length, so `` ``a ` b`` ``
+  reads as code containing a backtick, a run of two or more opens one span
+  rather than an empty one, and an opening run with no matching closer stays
+  literal text. content is taken verbatim, without CommonMark's stripping of a
+  single leading and trailing space. affects both the `read` output and the
+  interactive reader
 - an asterisk inside `` ` `` backticks is no longer eaten and no longer restyles
   the rest of the line. reading a page containing `` `**kwargs` `` or `` `a * b` ``
   showed the code with the asterisks deleted, and the emphasis it switched on

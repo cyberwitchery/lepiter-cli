@@ -46,6 +46,11 @@ pub enum InlineElement {
 /// exactly n, so a span can contain a shorter run. an opening run with no such
 /// closer is literal text and opens nothing. content is taken verbatim: no
 /// leading or trailing space is stripped.
+///
+/// `**` and `*` open emphasis only when a marker of the same length closes it
+/// later, outside any code span, link, or annotation; a marker with no such
+/// closer is literal text. a marker followed by whitespace cannot open and one
+/// preceded by whitespace cannot close, so a lone `*` in prose stays literal.
 pub fn parse_inline(text: &str) -> Vec<InlineElement> {
     let chars = text.chars().collect::<Vec<_>>();
     let byte_at = byte_offsets(&chars);
@@ -75,37 +80,36 @@ pub fn parse_inline(text: &str) -> Vec<InlineElement> {
 
     while i < chars.len() {
         // annotations: {{...}}
-        if i + 1 < chars.len() && chars[i] == '{' && chars[i + 1] == '{' {
-            let limit = code.map_or(chars.len(), |span| span.close_at);
-            let mut j = i + 2;
-            while j + 1 < limit {
-                if chars[j] == '}' && chars[j + 1] == '}' {
-                    break;
-                }
-                j += 1;
-            }
-            if j + 1 < limit && chars[j] == '}' && chars[j + 1] == '}' {
-                flush(&mut out, &mut buf, bold, italic, code.is_some());
-                let annotation = chars[i..=j + 1].iter().collect::<String>();
-                out.push(InlineElement::Annotation { text: annotation });
-                i = j + 2;
-                continue;
-            }
-        }
-
-        // bold toggle: **
-        if code.is_none() && i + 1 < chars.len() && chars[i] == '*' && chars[i + 1] == '*' {
-            flush(&mut out, &mut buf, bold, italic, false);
-            bold = !bold;
-            i += 2;
+        let limit = code.map_or(chars.len(), |span| span.close_at);
+        if let Some(end) = annotation_end(&chars, i, limit) {
+            flush(&mut out, &mut buf, bold, italic, code.is_some());
+            let annotation = chars[i..end].iter().collect::<String>();
+            out.push(InlineElement::Annotation { text: annotation });
+            i = end;
             continue;
         }
 
-        // italic toggle: *
+        // emphasis: ** and *, each closed by a marker of the same length
         if code.is_none() && chars[i] == '*' {
-            flush(&mut out, &mut buf, bold, italic, false);
-            italic = !italic;
-            i += 1;
+            let len = marker_len(&chars, i);
+            let open = if len == 2 { bold } else { italic };
+            let delimits = if open {
+                can_close(&chars, i)
+            } else {
+                can_open(&chars, i, len)
+                    && emphasis_closer(&chars, &byte_at, &link_ranges, i + len, len).is_some()
+            };
+            if delimits {
+                flush(&mut out, &mut buf, bold, italic, false);
+                if len == 2 {
+                    bold = !bold;
+                } else {
+                    italic = !italic;
+                }
+            } else {
+                buf.extend(&chars[i..i + len]);
+            }
+            i += len;
             continue;
         }
 
@@ -200,6 +204,81 @@ fn closing_run(
             return Some(i);
         }
         i += run;
+    }
+    None
+}
+
+/// end of the `{{...}}` annotation opening at `start`, if it closes before
+/// `limit`.
+fn annotation_end(chars: &[char], start: usize, limit: usize) -> Option<usize> {
+    if start + 1 >= chars.len() || chars[start] != '{' || chars[start + 1] != '{' {
+        return None;
+    }
+    let mut i = start + 2;
+    while i + 1 < limit {
+        if chars[i] == '}' && chars[i + 1] == '}' {
+            return Some(i + 2);
+        }
+        i += 1;
+    }
+    None
+}
+
+/// length of the emphasis marker at `start`.
+fn marker_len(chars: &[char], start: usize) -> usize {
+    if chars.get(start + 1) == Some(&'*') {
+        2
+    } else {
+        1
+    }
+}
+
+/// whether the `len`-char marker at `start` is followed by text, so it can open.
+fn can_open(chars: &[char], start: usize, len: usize) -> bool {
+    chars.get(start + len).is_some_and(|c| !c.is_whitespace())
+}
+
+/// whether the marker at `start` is preceded by text, so it can close.
+fn can_close(chars: &[char], start: usize) -> bool {
+    start > 0 && !chars[start - 1].is_whitespace()
+}
+
+/// start of the marker that closes an emphasis of `len` chars whose content
+/// begins at `from`, skipping what a code span, link, or annotation consumes.
+fn emphasis_closer(
+    chars: &[char],
+    byte_at: &[usize],
+    link_ranges: &[Range<usize>],
+    from: usize,
+    len: usize,
+) -> Option<usize> {
+    let mut i = from;
+    while i < chars.len() {
+        if let Some(end) = annotation_end(chars, i, chars.len()) {
+            i = end;
+            continue;
+        }
+        if chars[i] == '`' {
+            let run = backtick_run(chars, i);
+            i = match closing_run(chars, byte_at, link_ranges, i + run, run) {
+                Some(close) => close + run,
+                None => i + run,
+            };
+            continue;
+        }
+        if let Some(range) = link_ranges.iter().find(|range| range.start == byte_at[i]) {
+            i = byte_at.partition_point(|offset| *offset < range.end);
+            continue;
+        }
+        if chars[i] == '*' {
+            let run = marker_len(chars, i);
+            if run == len && i > from && can_close(chars, i) {
+                return Some(i);
+            }
+            i += run;
+            continue;
+        }
+        i += 1;
     }
     None
 }
@@ -569,6 +648,15 @@ mod tests {
         );
     }
 
+    /// whether emphasis outlives `text`: a sentinel carrying no delimiter can
+    /// only be styled by a marker the text never closed.
+    fn styles_past_its_end(text: &str) -> bool {
+        match parse_inline(&format!("{text} z")).pop() {
+            Some(InlineElement::Styled { bold, italic, .. }) => bold || italic,
+            other => panic!("{text:?} swallowed the sentinel into {other:?}"),
+        }
+    }
+
     #[test]
     fn corpus_targets_match_the_core_scanner() {
         let alphabet = ['[', ']', '(', ')', '!', 'a', ' ', '*', '`', 'b', '\u{e9}'];
@@ -598,6 +686,10 @@ mod tests {
                 span_bearing += 1;
             }
             assert_eq!(reader_targets_of(elements), scanner, "{text:?}");
+            assert!(
+                !styles_past_its_end(&text),
+                "{text:?} left emphasis open at the end"
+            );
         }
         assert!(
             link_bearing > 100,
@@ -680,16 +772,146 @@ mod tests {
     }
 
     #[test]
-    fn unclosed_bold() {
-        let elems = parse_inline("before **unclosed");
+    fn unclosed_bold_is_literal_text() {
         assert_eq!(
-            elems[1],
-            InlineElement::Styled {
-                text: "unclosed".into(),
-                bold: true,
+            parse_inline("before **unclosed"),
+            vec![InlineElement::Styled {
+                text: "before **unclosed".into(),
+                bold: false,
                 italic: false,
                 code: false,
-            }
+            }]
+        );
+    }
+
+    #[test]
+    fn unclosed_italic_is_literal_text() {
+        assert_eq!(
+            parse_inline("before *unclosed"),
+            vec![InlineElement::Styled {
+                text: "before *unclosed".into(),
+                bold: false,
+                italic: false,
+                code: false,
+            }]
+        );
+    }
+
+    #[test]
+    fn an_asterisk_in_prose_is_literal_text() {
+        assert_eq!(
+            parse_inline("we shipped 3 * 4 configs"),
+            vec![InlineElement::Styled {
+                text: "we shipped 3 * 4 configs".into(),
+                bold: false,
+                italic: false,
+                code: false,
+            }]
+        );
+    }
+
+    #[test]
+    fn a_trailing_asterisk_is_literal_text() {
+        assert_eq!(
+            parse_inline("see the note marked *"),
+            vec![InlineElement::Styled {
+                text: "see the note marked *".into(),
+                bold: false,
+                italic: false,
+                code: false,
+            }]
+        );
+    }
+
+    #[test]
+    fn an_unmatched_asterisk_leaves_the_rest_of_the_line_alone() {
+        assert_eq!(
+            parse_inline("a * then *italic*"),
+            vec![
+                InlineElement::Styled {
+                    text: "a * then ".into(),
+                    bold: false,
+                    italic: false,
+                    code: false,
+                },
+                InlineElement::Styled {
+                    text: "italic".into(),
+                    bold: false,
+                    italic: true,
+                    code: false,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_marker_preceded_by_a_space_does_not_close() {
+        assert_eq!(
+            parse_inline("*a * b*"),
+            vec![InlineElement::Styled {
+                text: "a * b".into(),
+                bold: false,
+                italic: true,
+                code: false,
+            }]
+        );
+    }
+
+    #[test]
+    fn a_marker_inside_a_code_span_does_not_close_emphasis() {
+        assert_eq!(
+            parse_inline("*a `b* c`"),
+            vec![
+                InlineElement::Styled {
+                    text: "*a ".into(),
+                    bold: false,
+                    italic: false,
+                    code: false,
+                },
+                InlineElement::Styled {
+                    text: "b* c".into(),
+                    bold: false,
+                    italic: false,
+                    code: true,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_marker_inside_a_link_does_not_close_emphasis() {
+        assert_eq!(
+            parse_inline("*a [b*c](d)"),
+            vec![
+                InlineElement::Styled {
+                    text: "*a ".into(),
+                    bold: false,
+                    italic: false,
+                    code: false,
+                },
+                InlineElement::Link {
+                    label: "b*c".into(),
+                    target: "d".into(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_marker_inside_an_annotation_does_not_close_emphasis() {
+        assert_eq!(
+            parse_inline("*a {{b*c}}"),
+            vec![
+                InlineElement::Styled {
+                    text: "*a ".into(),
+                    bold: false,
+                    italic: false,
+                    code: false,
+                },
+                InlineElement::Annotation {
+                    text: "{{b*c}}".into(),
+                },
+            ]
         );
     }
 

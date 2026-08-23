@@ -19,6 +19,13 @@ all notable changes to this project are documented in this file.
   replaced by a bare timeout from the retry
 
 ### fixed
+- a lone `*` in prose no longer italicises the rest of the line. writing `we
+  shipped 3 * 4 configs`, ending a sentence with a footnote marker, or leaving a
+  `**` unclosed handed everything after it to emphasis. `**` and `*` now open
+  emphasis only when a marker of the same length closes it later on the line,
+  and a marker is read as an opener only when text follows it and as a closer
+  only when text precedes it, so an asterisk with a space on either side is
+  literal. affects both the `show` output and the interactive reader
 - a lone `` ` `` in prose no longer styles the rest of the line as code, and
   inline code can now contain a backtick. any paragraph that merely mentioned a
   single backtick lost everything after it to the code style, and there was no

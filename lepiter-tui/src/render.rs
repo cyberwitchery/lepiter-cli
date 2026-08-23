@@ -657,10 +657,9 @@ mod tests {
     #[test]
     fn inline_unclosed_bold_treated_as_text() {
         let mut links = Vec::new();
-        // unclosed ** — the parser just toggles bold on, rest is bold-styled
         let line = parse_inline_markdown("before **unclosed", &mut links);
-        assert_eq!(span_texts(&line), vec!["before ", "unclosed"]);
-        assert!(has_modifier(&line, 1, Modifier::BOLD));
+        assert_eq!(span_texts(&line), vec!["before **unclosed"]);
+        assert!(!has_modifier(&line, 0, Modifier::BOLD));
     }
 
     #[test]

@@ -33,8 +33,8 @@ pub enum InlineElement {
 
 /// parse inline markdown into a sequence of elements.
 ///
-/// handles `**bold**`, `*italic*`, `` `code` ``, `[text](url)`,
-/// `[[wiki-link]]`, and `{{annotation}}` syntax.
+/// handles `***bold italic***`, `**bold**`, `*italic*`, `` `code` ``,
+/// `[text](url)`, `[[wiki-link]]`, and `{{annotation}}` syntax.
 ///
 /// link syntax is whatever [`scan_inline_links`] accepts, and targets are
 /// reported as it reports them: trimmed, never empty. a link inside a
@@ -47,10 +47,11 @@ pub enum InlineElement {
 /// closer is literal text and opens nothing. content is taken verbatim: no
 /// leading or trailing space is stripped.
 ///
-/// `**` and `*` open emphasis only when a marker of the same length closes it
-/// later, outside any code span, link, or annotation; a marker with no such
-/// closer is literal text. a marker followed by whitespace cannot open and one
-/// preceded by whitespace cannot close, so a lone `*` in prose stays literal.
+/// `***`, `**` and `*` open bold-and-italic, bold, and italic, each only when a
+/// run of the same length closes it later, outside any code span, link, or
+/// annotation; a run with no such closer is literal text, as is any run of four
+/// or more asterisks. a run followed by whitespace cannot open and one preceded
+/// by whitespace cannot close, so a lone `*` in prose stays literal.
 pub fn parse_inline(text: &str) -> Vec<InlineElement> {
     let chars = text.chars().collect::<Vec<_>>();
     let byte_at = byte_offsets(&chars);
@@ -63,8 +64,7 @@ pub fn parse_inline(text: &str) -> Vec<InlineElement> {
     let mut i = 0usize;
     let mut out = Vec::new();
     let mut buf = String::new();
-    let mut bold = false;
-    let mut italic = false;
+    let mut emphasis = Emphasis::default();
     let mut code: Option<CodeSpan> = None;
 
     let flush = |out: &mut Vec<InlineElement>, buf: &mut String, bold, italic, code| {
@@ -79,6 +79,8 @@ pub fn parse_inline(text: &str) -> Vec<InlineElement> {
     };
 
     while i < chars.len() {
+        let (bold, italic) = emphasis.styles();
+
         // annotations: {{...}}
         let limit = code.map_or(chars.len(), |span| span.close_at);
         if let Some(end) = annotation_end(&chars, i, limit) {
@@ -89,27 +91,24 @@ pub fn parse_inline(text: &str) -> Vec<InlineElement> {
             continue;
         }
 
-        // emphasis: ** and *, each closed by a marker of the same length
+        // emphasis: runs of one to three asterisks, each closed by an equal run
         if code.is_none() && chars[i] == '*' {
-            let len = marker_len(&chars, i);
-            let open = if len == 2 { bold } else { italic };
+            let run = marker_run(&chars, i);
+            let open = emphasis.is_open(run);
             let delimits = if open {
                 can_close(&chars, i)
             } else {
-                can_open(&chars, i, len)
-                    && emphasis_closer(&chars, &byte_at, &link_ranges, i + len, len).is_some()
+                emphasis.is_marker(run)
+                    && can_open(&chars, i, run)
+                    && emphasis_closer(&chars, &byte_at, &link_ranges, i + run, run).is_some()
             };
             if delimits {
                 flush(&mut out, &mut buf, bold, italic, false);
-                if len == 2 {
-                    bold = !bold;
-                } else {
-                    italic = !italic;
-                }
+                emphasis.toggle(run);
             } else {
-                buf.extend(&chars[i..i + len]);
+                buf.extend(&chars[i..i + run]);
             }
-            i += len;
+            i += run;
             continue;
         }
 
@@ -168,6 +167,7 @@ pub fn parse_inline(text: &str) -> Vec<InlineElement> {
         i += 1;
     }
 
+    let (bold, italic) = emphasis.styles();
     flush(&mut out, &mut buf, bold, italic, code.is_some());
     out
 }
@@ -224,12 +224,33 @@ fn annotation_end(chars: &[char], start: usize, limit: usize) -> Option<usize> {
     None
 }
 
-/// length of the emphasis marker at `start`.
-fn marker_len(chars: &[char], start: usize) -> usize {
-    if chars.get(start + 1) == Some(&'*') {
-        2
-    } else {
-        1
+/// length of the asterisk run starting at `start`.
+fn marker_run(chars: &[char], start: usize) -> usize {
+    chars[start..].iter().take_while(|c| **c == '*').count()
+}
+
+/// which emphasis runs are open, indexed by run length minus one.
+#[derive(Default)]
+struct Emphasis([bool; 3]);
+
+impl Emphasis {
+    /// whether a run of `len` asterisks is an emphasis marker at all.
+    fn is_marker(&self, len: usize) -> bool {
+        (1..=self.0.len()).contains(&len)
+    }
+
+    fn is_open(&self, len: usize) -> bool {
+        self.is_marker(len) && self.0[len - 1]
+    }
+
+    fn toggle(&mut self, len: usize) {
+        self.0[len - 1] = !self.0[len - 1];
+    }
+
+    /// the bold and italic flags the open runs imply.
+    fn styles(&self) -> (bool, bool) {
+        let [italic, bold, both] = self.0;
+        (bold || both, italic || both)
     }
 }
 
@@ -243,7 +264,7 @@ fn can_close(chars: &[char], start: usize) -> bool {
     start > 0 && !chars[start - 1].is_whitespace()
 }
 
-/// start of the marker that closes an emphasis of `len` chars whose content
+/// start of the run that closes an emphasis of `len` asterisks whose content
 /// begins at `from`, skipping what a code span, link, or annotation consumes.
 fn emphasis_closer(
     chars: &[char],
@@ -271,7 +292,7 @@ fn emphasis_closer(
             continue;
         }
         if chars[i] == '*' {
-            let run = marker_len(chars, i);
+            let run = marker_run(chars, i);
             if run == len && i > from && can_close(chars, i) {
                 return Some(i);
             }
@@ -912,6 +933,208 @@ mod tests {
                     text: "{{b*c}}".into(),
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn a_three_run_opens_bold_and_italic_together() {
+        assert_eq!(
+            parse_inline("say ***loudly*** now"),
+            vec![
+                InlineElement::Styled {
+                    text: "say ".into(),
+                    bold: false,
+                    italic: false,
+                    code: false,
+                },
+                InlineElement::Styled {
+                    text: "loudly".into(),
+                    bold: true,
+                    italic: true,
+                    code: false,
+                },
+                InlineElement::Styled {
+                    text: " now".into(),
+                    bold: false,
+                    italic: false,
+                    code: false,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_three_run_does_not_borrow_a_later_bold_marker() {
+        assert_eq!(
+            parse_inline("***x*** and **y**"),
+            vec![
+                InlineElement::Styled {
+                    text: "x".into(),
+                    bold: true,
+                    italic: true,
+                    code: false,
+                },
+                InlineElement::Styled {
+                    text: " and ".into(),
+                    bold: false,
+                    italic: false,
+                    code: false,
+                },
+                InlineElement::Styled {
+                    text: "y".into(),
+                    bold: true,
+                    italic: false,
+                    code: false,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_three_run_nests_inside_bold() {
+        assert_eq!(
+            parse_inline("**a ***b*** c**"),
+            vec![
+                InlineElement::Styled {
+                    text: "a ".into(),
+                    bold: true,
+                    italic: false,
+                    code: false,
+                },
+                InlineElement::Styled {
+                    text: "b".into(),
+                    bold: true,
+                    italic: true,
+                    code: false,
+                },
+                InlineElement::Styled {
+                    text: " c".into(),
+                    bold: true,
+                    italic: false,
+                    code: false,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_three_run_closes_only_at_another_three_run() {
+        assert_eq!(
+            parse_inline("***a**"),
+            vec![InlineElement::Styled {
+                text: "***a**".into(),
+                bold: false,
+                italic: false,
+                code: false,
+            }]
+        );
+    }
+
+    #[test]
+    fn unclosed_bold_italic_is_literal_text() {
+        assert_eq!(
+            parse_inline("before ***unclosed"),
+            vec![InlineElement::Styled {
+                text: "before ***unclosed".into(),
+                bold: false,
+                italic: false,
+                code: false,
+            }]
+        );
+    }
+
+    #[test]
+    fn a_code_span_keeps_a_three_run_literal() {
+        assert_eq!(
+            parse_inline("see `***x***` here"),
+            vec![
+                InlineElement::Styled {
+                    text: "see ".into(),
+                    bold: false,
+                    italic: false,
+                    code: false,
+                },
+                InlineElement::Styled {
+                    text: "***x***".into(),
+                    bold: false,
+                    italic: false,
+                    code: true,
+                },
+                InlineElement::Styled {
+                    text: " here".into(),
+                    bold: false,
+                    italic: false,
+                    code: false,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_three_run_can_wrap_a_link() {
+        assert_eq!(
+            parse_inline("***see [a](b) now***"),
+            vec![
+                InlineElement::Styled {
+                    text: "see ".into(),
+                    bold: true,
+                    italic: true,
+                    code: false,
+                },
+                InlineElement::Link {
+                    label: "a".into(),
+                    target: "b".into(),
+                },
+                InlineElement::Styled {
+                    text: " now".into(),
+                    bold: true,
+                    italic: true,
+                    code: false,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_run_of_four_or_more_is_literal_text() {
+        assert_eq!(
+            parse_inline("****x**** and *****y*****"),
+            vec![InlineElement::Styled {
+                text: "****x**** and *****y*****".into(),
+                bold: false,
+                italic: false,
+                code: false,
+            }]
+        );
+    }
+
+    #[test]
+    fn corpus_of_asterisk_runs_never_leaves_emphasis_open() {
+        let alphabet = ['*', '*', '*', 'a', ' ', '`', '[', ']', '(', ')'];
+        let mut state = 0x1234_5678_9abc_def1_u64;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        let mut triple_bearing = 0usize;
+        for _ in 0..20_000 {
+            let len = 3 + (next() % 16) as usize;
+            let text = (0..len)
+                .map(|_| alphabet[(next() % alphabet.len() as u64) as usize])
+                .collect::<String>();
+            if text.contains("***") {
+                triple_bearing += 1;
+            }
+            assert!(
+                !styles_past_its_end(&text),
+                "{text:?} left emphasis open at the end"
+            );
+        }
+        assert!(
+            triple_bearing > 100,
+            "corpus grew too few three-runs: {triple_bearing}"
         );
     }
 

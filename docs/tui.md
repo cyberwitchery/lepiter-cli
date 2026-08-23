@@ -26,7 +26,7 @@
 ## rendering
 
 - markdown-like inline styling in text blocks:
-  - `**bold**`, `*italic*`, `` `inline code` ``, links
+  - `***bold italic***`, `**bold**`, `*italic*`, `` `inline code` ``, links
 - basic language-aware code highlighting for common snippet languages
 - control characters are sanitized for terminal safety
 - unknown snippet types can be rendered by external plugins (see `docs/plugins.md`)

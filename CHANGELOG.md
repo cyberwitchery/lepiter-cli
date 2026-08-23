@@ -19,6 +19,14 @@ all notable changes to this project are documented in this file.
   replaced by a bare timeout from the retry
 
 ### fixed
+- a run of three asterisks is now a marker in its own right: `***bold italic***`
+  opens bold and italic together and is closed only by another run of three, so
+  none of its asterisks survive into the line. mixing marker widths used to leak
+  them into the rendered text — `**a ***b*** c**` came out as a bold `a **`, a
+  bold-italic `b` and a plain ` c**`, `***a**` came out as a bold `*a`, and
+  `****x****` dropped its opening asterisks while keeping the closing four. a run
+  of four or more asterisks is literal text, as is any run with no matching
+  closer. affects both the `show` output and the interactive reader
 - a lone `*` in prose no longer italicises the rest of the line. writing `we
   shipped 3 * 4 configs`, ending a sentence with a footnote marker, or leaving a
   `**` unclosed handed everything after it to emphasis. `**` and `*` now open

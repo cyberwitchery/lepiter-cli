@@ -19,13 +19,23 @@ all notable changes to this project are documented in this file.
   replaced by a bare timeout from the retry
 
 ### fixed
+- a lone `` ` `` in prose no longer styles the rest of the line as code, and
+  inline code can now contain a backtick. any paragraph that merely mentioned a
+  single backtick lost everything after it to the code style, and there was no
+  way to write a code span holding one. a code span now opens on a run of
+  backticks and closes at the next run of the same length, so `` ``a ` b`` ``
+  reads as code containing a backtick, a run of two or more opens one span
+  rather than an empty one, and an opening run with no matching closer stays
+  literal text. content is taken verbatim, without CommonMark's stripping of a
+  single leading and trailing space. affects both the `show` output and the
+  interactive reader
 - an asterisk inside `` ` `` backticks is no longer eaten and no longer restyles
   the rest of the line. reading a page containing `` `**kwargs` `` or `` `a * b` ``
   showed the code with the asterisks deleted, and the emphasis it switched on
   carried past the closing backtick — the text after a `` `**kwargs` `` span was
   rendered bold to the end of the line, and a line mixing `` `a * b` `` with a
   real `*italic*` had the emphasis land on the wrong words. affects both the
-  `read` output and the interactive reader
+  `show` output and the interactive reader
 - a `[label](target)` link whose label contains balanced brackets is now
   recognised. `[a [b] c](t)` was previously not seen as a link at all, so its
   target was invisible to `check`'s broken-link report and to backlinks, and
@@ -35,7 +45,7 @@ all notable changes to this project are documented in this file.
   rewriter would rewrite the image source while leaving `href` untouched. the
   image source is now left alone and `href` is the target
 - the reader now opens the link target that `check`, backlinks and the export
-  and import rewriters resolve. reading a page, the `read` output and the
+  and import rewriters resolve. reading a page, the `show` output and the
   interactive reader located links with a grammar of their own, so on a linked
   image — `[![alt](img.png)](href)` — the reader highlighted and opened the
   image source while the rest of the tool resolved `href`. surrounding

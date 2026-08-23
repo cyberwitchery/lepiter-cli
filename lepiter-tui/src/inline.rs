@@ -9,6 +9,8 @@
 //! other caller resolves link targets through; this module parses only the
 //! styling that scanner does not describe.
 
+use std::ops::Range;
+
 use lepiter_core::{LinkKind, scan_inline_links};
 
 /// a parsed fragment of inline markdown.
@@ -39,16 +41,26 @@ pub enum InlineElement {
 /// `{{annotation}}` stays part of the annotation. emphasis markers inside a
 /// code span are literal text; links and annotations are still recognised
 /// there.
+///
+/// a code span opens on a run of n backticks and closes at the next run of
+/// exactly n, so a span can contain a shorter run. an opening run with no such
+/// closer is literal text and opens nothing. content is taken verbatim: no
+/// leading or trailing space is stripped.
 pub fn parse_inline(text: &str) -> Vec<InlineElement> {
     let chars = text.chars().collect::<Vec<_>>();
     let byte_at = byte_offsets(&chars);
-    let mut links = scan_inline_links(text).peekable();
+    let scanned = scan_inline_links(text).collect::<Vec<_>>();
+    let link_ranges = scanned
+        .iter()
+        .map(|link| link.range.clone())
+        .collect::<Vec<_>>();
+    let mut links = scanned.into_iter().peekable();
     let mut i = 0usize;
     let mut out = Vec::new();
     let mut buf = String::new();
     let mut bold = false;
     let mut italic = false;
-    let mut code = false;
+    let mut code: Option<CodeSpan> = None;
 
     let flush = |out: &mut Vec<InlineElement>, buf: &mut String, bold, italic, code| {
         if !buf.is_empty() {
@@ -64,15 +76,16 @@ pub fn parse_inline(text: &str) -> Vec<InlineElement> {
     while i < chars.len() {
         // annotations: {{...}}
         if i + 1 < chars.len() && chars[i] == '{' && chars[i + 1] == '{' {
+            let limit = code.map_or(chars.len(), |span| span.close_at);
             let mut j = i + 2;
-            while j + 1 < chars.len() {
+            while j + 1 < limit {
                 if chars[j] == '}' && chars[j + 1] == '}' {
                     break;
                 }
                 j += 1;
             }
-            if j + 1 < chars.len() && chars[j] == '}' && chars[j + 1] == '}' {
-                flush(&mut out, &mut buf, bold, italic, code);
+            if j + 1 < limit && chars[j] == '}' && chars[j + 1] == '}' {
+                flush(&mut out, &mut buf, bold, italic, code.is_some());
                 let annotation = chars[i..=j + 1].iter().collect::<String>();
                 out.push(InlineElement::Annotation { text: annotation });
                 i = j + 2;
@@ -81,27 +94,45 @@ pub fn parse_inline(text: &str) -> Vec<InlineElement> {
         }
 
         // bold toggle: **
-        if !code && i + 1 < chars.len() && chars[i] == '*' && chars[i + 1] == '*' {
-            flush(&mut out, &mut buf, bold, italic, code);
+        if code.is_none() && i + 1 < chars.len() && chars[i] == '*' && chars[i + 1] == '*' {
+            flush(&mut out, &mut buf, bold, italic, false);
             bold = !bold;
             i += 2;
             continue;
         }
 
         // italic toggle: *
-        if !code && chars[i] == '*' {
-            flush(&mut out, &mut buf, bold, italic, code);
+        if code.is_none() && chars[i] == '*' {
+            flush(&mut out, &mut buf, bold, italic, false);
             italic = !italic;
             i += 1;
             continue;
         }
 
-        // code toggle: `
+        // code spans: a run of n backticks closed by the next run of exactly n
         if chars[i] == '`' {
-            flush(&mut out, &mut buf, bold, italic, code);
-            code = !code;
-            i += 1;
-            continue;
+            if let Some(span) = code {
+                if i == span.close_at {
+                    flush(&mut out, &mut buf, bold, italic, true);
+                    code = None;
+                    i += span.close_len;
+                    continue;
+                }
+            } else {
+                let run = backtick_run(&chars, i);
+                match closing_run(&chars, &byte_at, &link_ranges, i + run, run) {
+                    Some(close_at) => {
+                        flush(&mut out, &mut buf, bold, italic, false);
+                        code = Some(CodeSpan {
+                            close_at,
+                            close_len: run,
+                        });
+                    }
+                    None => buf.extend(&chars[i..i + run]),
+                }
+                i += run;
+                continue;
+            }
         }
 
         // links: [[wiki]] or [text](url)
@@ -114,7 +145,7 @@ pub fn parse_inline(text: &str) -> Vec<InlineElement> {
                 links.next();
             }
             if let Some(link) = links.next_if(|link| link.range.start == byte_at[i]) {
-                flush(&mut out, &mut buf, bold, italic, code);
+                flush(&mut out, &mut buf, bold, italic, code.is_some());
                 out.push(match link.kind {
                     LinkKind::Wiki => InlineElement::WikiLink {
                         text: link.target.to_string(),
@@ -133,8 +164,44 @@ pub fn parse_inline(text: &str) -> Vec<InlineElement> {
         i += 1;
     }
 
-    flush(&mut out, &mut buf, bold, italic, code);
+    flush(&mut out, &mut buf, bold, italic, code.is_some());
     out
+}
+
+/// where an open code span ends, in char indices.
+#[derive(Clone, Copy)]
+struct CodeSpan {
+    close_at: usize,
+    close_len: usize,
+}
+
+/// length of the backtick run starting at `start`.
+fn backtick_run(chars: &[char], start: usize) -> usize {
+    chars[start..].iter().take_while(|c| **c == '`').count()
+}
+
+/// start of the first run of exactly `len` backticks at or after `from`, taking
+/// no run a scanner link covers.
+fn closing_run(
+    chars: &[char],
+    byte_at: &[usize],
+    link_ranges: &[Range<usize>],
+    from: usize,
+    len: usize,
+) -> Option<usize> {
+    let mut i = from;
+    while i < chars.len() {
+        if chars[i] != '`' {
+            i += 1;
+            continue;
+        }
+        let run = backtick_run(chars, i);
+        if run == len && !link_ranges.iter().any(|range| range.contains(&byte_at[i])) {
+            return Some(i);
+        }
+        i += run;
+    }
+    None
 }
 
 /// byte offset of each char, plus the end of the text.
@@ -400,7 +467,11 @@ mod tests {
     }
 
     fn reader_targets(text: &str) -> Vec<(LinkKind, String)> {
-        parse_inline(text)
+        reader_targets_of(parse_inline(text))
+    }
+
+    fn reader_targets_of(elements: Vec<InlineElement>) -> Vec<(LinkKind, String)> {
+        elements
             .into_iter()
             .filter_map(|element| match element {
                 InlineElement::Link { target, .. } => Some((LinkKind::Markdown, target)),
@@ -509,6 +580,7 @@ mod tests {
             state
         };
         let mut link_bearing = 0usize;
+        let mut span_bearing = 0usize;
         for _ in 0..20_000 {
             let len = 3 + (next() % 16) as usize;
             let text = (0..len)
@@ -518,11 +590,22 @@ mod tests {
             if !scanner.is_empty() {
                 link_bearing += 1;
             }
-            assert_eq!(reader_targets(&text), scanner, "{text:?}");
+            let elements = parse_inline(&text);
+            if elements
+                .iter()
+                .any(|element| matches!(element, InlineElement::Styled { code: true, .. }))
+            {
+                span_bearing += 1;
+            }
+            assert_eq!(reader_targets_of(elements), scanner, "{text:?}");
         }
         assert!(
             link_bearing > 100,
             "corpus grew too few links: {link_bearing}"
+        );
+        assert!(
+            span_bearing > 100,
+            "corpus grew too few code spans: {span_bearing}"
         );
     }
 
@@ -621,6 +704,257 @@ mod tests {
                 italic: false,
                 code: false,
             }]
+        );
+    }
+
+    fn code_spans(text: &str) -> Vec<String> {
+        parse_inline(text)
+            .into_iter()
+            .filter_map(|element| match element {
+                InlineElement::Styled {
+                    text, code: true, ..
+                } => Some(text),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn unmatched_backtick_is_literal_text() {
+        assert_eq!(
+            parse_inline("a lone ` in prose"),
+            vec![InlineElement::Styled {
+                text: "a lone ` in prose".into(),
+                bold: false,
+                italic: false,
+                code: false,
+            }]
+        );
+    }
+
+    #[test]
+    fn unmatched_backtick_leaves_the_rest_of_the_line_alone() {
+        assert_eq!(
+            parse_inline("a ` then *italic*"),
+            vec![
+                InlineElement::Styled {
+                    text: "a ` then ".into(),
+                    bold: false,
+                    italic: false,
+                    code: false,
+                },
+                InlineElement::Styled {
+                    text: "italic".into(),
+                    bold: false,
+                    italic: true,
+                    code: false,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn code_span_can_contain_a_shorter_run() {
+        assert_eq!(code_spans("``a ` b``"), vec!["a ` b"]);
+    }
+
+    #[test]
+    fn a_run_closes_only_at_a_run_of_the_same_length() {
+        assert_eq!(code_spans("a `b`` c` d"), vec!["b`` c"]);
+        assert_eq!(code_spans("a ``b` c"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_double_run_opens_one_span_not_two() {
+        assert_eq!(
+            parse_inline("``x`` y"),
+            vec![
+                InlineElement::Styled {
+                    text: "x".into(),
+                    bold: false,
+                    italic: false,
+                    code: true,
+                },
+                InlineElement::Styled {
+                    text: " y".into(),
+                    bold: false,
+                    italic: false,
+                    code: false,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn code_span_extents_agree_with_commonmark() {
+        // expected values from markdown-it-py 4.2.0, commonmark preset
+        let cases: [(&str, &[&str]); 13] = [
+            ("a ` b", &[]),
+            ("unmatched ` tail is prose", &[]),
+            ("a ``b` c", &[]),
+            ("``a ` b``", &["a ` b"]),
+            ("``x``", &["x"]),
+            ("```x```", &["x"]),
+            ("``a`b``", &["a`b"]),
+            ("`a``b`", &["a``b"]),
+            ("a `b`` c` d", &["b`` c"]),
+            ("`a` and `b`", &["a", "b"]),
+            ("`a\u{e9}b`", &["a\u{e9}b"]),
+            ("`a * b` and *italic*", &["a * b"]),
+            ("call `f(**kwargs)` now", &["f(**kwargs)"]),
+        ];
+        for (text, spans) in cases {
+            assert_eq!(code_spans(text), spans, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn code_span_content_is_not_space_stripped() {
+        assert_eq!(code_spans("` a `"), vec![" a "]);
+        assert_eq!(code_spans("`` ` ``"), vec![" ` "]);
+    }
+
+    #[test]
+    fn a_backtick_inside_a_link_is_not_a_delimiter() {
+        assert_eq!(
+            parse_inline("`[a`](b)"),
+            vec![
+                InlineElement::Styled {
+                    text: "`".into(),
+                    bold: false,
+                    italic: false,
+                    code: false,
+                },
+                InlineElement::Link {
+                    label: "a`".into(),
+                    target: "b".into(),
+                },
+            ]
+        );
+        assert_eq!(reader_targets("`[a`](b)"), scanner_targets("`[a`](b)"));
+    }
+
+    #[test]
+    fn a_span_holding_a_link_still_ends_at_its_closing_run() {
+        for text in ["`[a](b) {{note}}` tail", "`a * [b [c] d](t)` tail"] {
+            assert_eq!(
+                parse_inline(text).last(),
+                Some(&InlineElement::Styled {
+                    text: " tail".into(),
+                    bold: false,
+                    italic: false,
+                    code: false,
+                }),
+                "{text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_annotation_does_not_reach_past_the_closing_run() {
+        assert_eq!(
+            parse_inline("`a {{b`c}} d`"),
+            vec![
+                InlineElement::Styled {
+                    text: "a {{b".into(),
+                    bold: false,
+                    italic: false,
+                    code: true,
+                },
+                InlineElement::Styled {
+                    text: "c}} d`".into(),
+                    bold: false,
+                    italic: false,
+                    code: false,
+                },
+            ]
+        );
+    }
+
+    fn run_len(chars: &[char], start: usize) -> usize {
+        let mut n = 0;
+        while start + n < chars.len() && chars[start + n] == '`' {
+            n += 1;
+        }
+        n
+    }
+
+    /// per char: `None` where a delimiter is consumed, `Some(code)` otherwise.
+    fn expected_flags(chars: &[char]) -> Vec<Option<bool>> {
+        let mut flags = vec![Some(false); chars.len()];
+        let mut i = 0;
+        while i < chars.len() {
+            if chars[i] != '`' {
+                i += 1;
+                continue;
+            }
+            let run = run_len(chars, i);
+            let mut j = i + run;
+            let mut close = None;
+            while j < chars.len() {
+                if chars[j] != '`' {
+                    j += 1;
+                    continue;
+                }
+                let candidate = run_len(chars, j);
+                if candidate == run {
+                    close = Some(j);
+                    break;
+                }
+                j += candidate;
+            }
+            let Some(close) = close else {
+                i += run;
+                continue;
+            };
+            flags[i..i + run].fill(None);
+            flags[close..close + run].fill(None);
+            flags[i + run..close].fill(Some(true));
+            i = close + run;
+        }
+        flags
+    }
+
+    #[test]
+    fn corpus_keeps_every_character_a_delimiter_run_does_not_consume() {
+        let alphabet = ['`', 'a', 'b', ' ', '\u{e9}'];
+        let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        let mut span_bearing = 0usize;
+        for _ in 0..20_000 {
+            let len = 3 + (next() % 16) as usize;
+            let source = (0..len)
+                .map(|_| alphabet[(next() % alphabet.len() as u64) as usize])
+                .collect::<String>();
+            let chars = source.chars().collect::<Vec<_>>();
+            let flags = expected_flags(&chars);
+            if flags.contains(&Some(true)) {
+                span_bearing += 1;
+            }
+            let expected = chars
+                .iter()
+                .zip(&flags)
+                .filter_map(|(c, flag)| flag.map(|code| (*c, code)))
+                .collect::<Vec<_>>();
+            let actual = parse_inline(&source)
+                .into_iter()
+                .flat_map(|element| match element {
+                    InlineElement::Styled { text, code, .. } => {
+                        text.chars().map(|c| (c, code)).collect::<Vec<_>>()
+                    }
+                    other => panic!("{source:?} yielded {other:?}"),
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(actual, expected, "{source:?}");
+        }
+        assert!(
+            span_bearing > 100,
+            "corpus grew too few code spans: {span_bearing}"
         );
     }
 }

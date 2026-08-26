@@ -34,6 +34,14 @@ all notable changes to this project are documented in this file.
   replaced by a bare timeout from the retry
 
 ### fixed
+- `![alt](target)` is now read as an image. the reader used to leak the `!` as
+  literal text and show the rest as an ordinary link, so a picture written in a
+  text snippet came out as `!alt (attachments/x.png)`. the alt text is now what
+  is shown, styled apart from a link, and the target is listed and followable
+  exactly as a link's is — `enter` on it in the reader opens the attachment.
+  `[![alt](img.png)](page:x)` still resolves the outer target, `\![a](b)` is
+  still a link, and an image inside a `{{annotation}}` is still annotation text.
+  affects both the `show` output and the interactive reader
 - a run of three asterisks is now a marker in its own right: `***bold italic***`
   opens bold and italic together and is closed only by another run of three, so
   none of its asterisks survive into the line. mixing marker widths used to leak

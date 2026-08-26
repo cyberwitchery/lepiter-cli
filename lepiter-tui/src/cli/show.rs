@@ -119,7 +119,8 @@ fn collect_inline_links(text: &str, out: &mut Vec<(String, String)>) {
     use crate::inline;
     for elem in inline::parse_inline(text) {
         match elem {
-            inline::InlineElement::Link { label, target } => {
+            inline::InlineElement::Link { label, target }
+            | inline::InlineElement::Image { alt: label, target } => {
                 out.push((label, target));
             }
             inline::InlineElement::WikiLink { text } => {
@@ -155,6 +156,24 @@ mod tests {
         }];
         let links = collect_page_links(&nodes);
         assert_eq!(links, vec![("docs".into(), "https://docs.rs".into())]);
+    }
+
+    #[test]
+    fn collect_page_links_inline_image_in_paragraph() {
+        let nodes = vec![Node::Paragraph {
+            text: "see ![alt](attachments/x.png) here".into(),
+        }];
+        let links = collect_page_links(&nodes);
+        assert_eq!(links, vec![("alt".into(), "attachments/x.png".into())]);
+    }
+
+    #[test]
+    fn collect_page_links_linked_image_reports_the_outer_target() {
+        let nodes = vec![Node::Paragraph {
+            text: "[![alt](img.png)](page:t)".into(),
+        }];
+        let links = collect_page_links(&nodes);
+        assert_eq!(links, vec![("![alt](img.png)".into(), "page:t".into())]);
     }
 
     #[test]

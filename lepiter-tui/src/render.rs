@@ -223,7 +223,8 @@ pub fn render_node(
 ///
 /// When `links` is `Some`, link targets are tracked and numbered markers
 /// (`[1]`, `[2]`, …) are appended after each link.  When `None`, links are
-/// rendered as styled text without markers or tracking.
+/// rendered as styled text without markers or tracking.  An image is tracked
+/// and marked exactly as a link is.
 fn render_inline_to_spans(
     elements: Vec<InlineElement>,
     mut links: Option<&mut Vec<LinkTarget>>,
@@ -234,6 +235,9 @@ fn render_inline_to_spans(
     let link_style = Style::default()
         .fg(Color::LightBlue)
         .add_modifier(Modifier::UNDERLINED);
+    let image_style = Style::default()
+        .fg(Color::LightCyan)
+        .add_modifier(Modifier::ITALIC);
 
     let mut spans = Vec::new();
     for elem in elements {
@@ -270,6 +274,22 @@ fn render_inline_to_spans(
                     ));
                 } else {
                     spans.push(Span::styled(label, link_style));
+                }
+            }
+            InlineElement::Image { alt, target } => {
+                if let Some(links) = &mut links {
+                    links.push(LinkTarget {
+                        label: alt.clone(),
+                        target,
+                    });
+                    let idx = links.len();
+                    spans.push(Span::styled(alt, image_style));
+                    spans.push(Span::styled(
+                        format!("[{idx}]"),
+                        Style::default().fg(Color::Yellow),
+                    ));
+                } else {
+                    spans.push(Span::styled(alt, image_style));
                 }
             }
             InlineElement::WikiLink { text } => {
@@ -630,6 +650,36 @@ mod tests {
             "https://en.wikipedia.org/wiki/Ruby_(programming_language)"
         );
         assert_eq!(line.spans[3].content.as_ref(), " here");
+    }
+
+    #[test]
+    fn inline_image_is_styled_apart_from_a_link() {
+        let mut links = Vec::new();
+        let line = parse_inline_markdown("see ![alt](attachments/x.png) here", &mut links);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].label, "alt");
+        assert_eq!(links[0].target, "attachments/x.png");
+        assert_eq!(span_texts(&line), vec!["see ", "alt", "[1]", " here"]);
+        assert!(has_fg(&line, 1, Color::LightCyan));
+        assert!(has_modifier(&line, 1, Modifier::ITALIC));
+        assert!(!has_modifier(&line, 1, Modifier::UNDERLINED));
+    }
+
+    #[test]
+    fn inline_image_and_link_share_one_numbering() {
+        let mut links = Vec::new();
+        let line = parse_inline_markdown("![a](x.png) then [b](page:t)", &mut links);
+        assert_eq!(links.len(), 2);
+        assert_eq!(links[0].target, "x.png");
+        assert_eq!(links[1].target, "page:t");
+        assert_eq!(span_texts(&line), vec!["a", "[1]", " then ", "b", "[2]"]);
+    }
+
+    #[test]
+    fn annotations_render_an_image_without_a_marker() {
+        let line = parse_inline_annotations("see ![alt](x.png) here");
+        assert_eq!(span_texts(&line), vec!["see ", "alt", " here"]);
+        assert!(has_fg(&line, 1, Color::LightCyan));
     }
 
     #[test]

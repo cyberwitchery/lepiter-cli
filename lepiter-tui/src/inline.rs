@@ -52,6 +52,12 @@ pub enum InlineElement {
 /// annotation; a run with no such closer is literal text, as is any run of four
 /// or more asterisks. a run followed by whitespace cannot open and one preceded
 /// by whitespace cannot close, so a lone `*` in prose stays literal.
+///
+/// outside a code span, a backslash before an ascii punctuation character makes
+/// that character literal and is itself dropped; before anything else, and at
+/// the end of the text, a backslash is ordinary prose. inside a code span both
+/// characters are kept. link labels and targets are reported as the scanner
+/// slices them, so an escape inside one keeps its backslash.
 pub fn parse_inline(text: &str) -> Vec<InlineElement> {
     let chars = text.chars().collect::<Vec<_>>();
     let byte_at = byte_offsets(&chars);
@@ -80,6 +86,15 @@ pub fn parse_inline(text: &str) -> Vec<InlineElement> {
 
     while i < chars.len() {
         let (bold, italic) = emphasis.styles();
+
+        // backslash escapes, inert inside a code span
+        if code.is_none()
+            && let Some(escaped) = escaped_char(&chars, i)
+        {
+            buf.push(escaped);
+            i += 2;
+            continue;
+        }
 
         // annotations: {{...}}
         let limit = code.map_or(chars.len(), |span| span.close_at);
@@ -224,6 +239,17 @@ fn annotation_end(chars: &[char], start: usize, limit: usize) -> Option<usize> {
     None
 }
 
+/// the character a backslash escape at `start` makes literal, if it is one.
+fn escaped_char(chars: &[char], start: usize) -> Option<char> {
+    if chars[start] != '\\' {
+        return None;
+    }
+    chars
+        .get(start + 1)
+        .copied()
+        .filter(char::is_ascii_punctuation)
+}
+
 /// length of the asterisk run starting at `start`.
 fn marker_run(chars: &[char], start: usize) -> usize {
     chars[start..].iter().take_while(|c| **c == '*').count()
@@ -275,6 +301,10 @@ fn emphasis_closer(
 ) -> Option<usize> {
     let mut i = from;
     while i < chars.len() {
+        if escaped_char(chars, i).is_some() {
+            i += 2;
+            continue;
+        }
         if let Some(end) = annotation_end(chars, i, chars.len()) {
             i = end;
             continue;
@@ -678,9 +708,177 @@ mod tests {
         }
     }
 
+    /// every character the reader would show, with all markup flattened away.
+    fn visible_text(text: &str) -> String {
+        parse_inline(text)
+            .into_iter()
+            .map(|element| match element {
+                InlineElement::Styled { text, .. } | InlineElement::Annotation { text } => text,
+                InlineElement::Link { label, .. } => label,
+                InlineElement::WikiLink { text } => format!("[[{text}]]"),
+            })
+            .collect()
+    }
+
+    fn plain(text: &str) -> Vec<InlineElement> {
+        vec![InlineElement::Styled {
+            text: text.into(),
+            bold: false,
+            italic: false,
+            code: false,
+        }]
+    }
+
+    #[test]
+    fn escaped_punctuation_is_literal_and_loses_its_backslash() {
+        assert_eq!(parse_inline(r"\*not emphasis\*"), plain("*not emphasis*"));
+        assert_eq!(parse_inline(r"\[not a link](x)"), plain("[not a link](x)"));
+        assert_eq!(parse_inline(r"\[\[wiki\]\]"), plain("[[wiki]]"));
+        assert_eq!(parse_inline(r"\[[wiki]]"), plain("[[wiki]]"));
+        assert_eq!(parse_inline(r"\{{gtView}}"), plain("{{gtView}}"));
+        assert_eq!(parse_inline(r"\`not code`"), plain("`not code`"));
+        assert!(reader_targets(r"\[not a link](x)").is_empty());
+    }
+
+    #[test]
+    fn a_backslash_before_anything_else_is_ordinary_prose() {
+        for text in [
+            r"C:\Users\foo",
+            r"\n and \d",
+            r"a \ b",
+            "\\\u{e9} and \\\u{2603}",
+            "tail\\",
+            "\\",
+        ] {
+            assert_eq!(parse_inline(text), plain(text), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn a_backslash_run_pairs_off_left_to_right() {
+        assert_eq!(
+            parse_inline(r"\\*emphasis*"),
+            vec![
+                InlineElement::Styled {
+                    text: "\\".into(),
+                    bold: false,
+                    italic: false,
+                    code: false,
+                },
+                InlineElement::Styled {
+                    text: "emphasis".into(),
+                    bold: false,
+                    italic: true,
+                    code: false,
+                },
+            ]
+        );
+        assert_eq!(
+            parse_inline(r"\\\*not emphasis\*"),
+            plain(r"\*not emphasis*")
+        );
+        assert_eq!(reader_targets(r"\\[a](b)"), scanner_targets(r"\\[a](b)"));
+    }
+
+    #[test]
+    fn escapes_are_inert_inside_a_code_span() {
+        assert_eq!(code_spans(r"`\*`"), vec![r"\*"]);
+        assert_eq!(code_spans(r"``\[\` ``"), vec![r"\[\` "]);
+        assert_eq!(code_spans(r"`a\`b`"), vec![r"a\"]);
+        assert_eq!(parse_inline(r"`\*`").len(), 1);
+    }
+
+    #[test]
+    fn an_escaped_marker_neither_opens_nor_closes_emphasis() {
+        assert_eq!(
+            parse_inline(r"*foo\*bar*"),
+            vec![InlineElement::Styled {
+                text: "foo*bar".into(),
+                bold: false,
+                italic: true,
+                code: false,
+            }]
+        );
+        assert_eq!(
+            parse_inline(r"*\**"),
+            vec![InlineElement::Styled {
+                text: "*".into(),
+                bold: false,
+                italic: true,
+                code: false,
+            }]
+        );
+        assert_eq!(parse_inline(r"\*a\*"), plain("*a*"));
+    }
+
+    #[test]
+    fn an_escaped_brace_opens_no_annotation() {
+        assert_eq!(
+            parse_inline(r"\{{a}} {{b}}"),
+            vec![
+                InlineElement::Styled {
+                    text: "{{a}} ".into(),
+                    bold: false,
+                    italic: false,
+                    code: false,
+                },
+                InlineElement::Annotation {
+                    text: "{{b}}".into(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn an_annotation_and_a_link_keep_their_escapes() {
+        assert_eq!(
+            parse_inline(r"{{a\}}"),
+            vec![InlineElement::Annotation {
+                text: r"{{a\}}".into(),
+            }]
+        );
+        assert_eq!(
+            parse_inline(r"[a\](b)](c)"),
+            vec![InlineElement::Link {
+                label: r"a\](b)".into(),
+                target: "c".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn escapes_agree_with_commonmark() {
+        // expected values from markdown-it-py 4.2.0, commonmark preset
+        let cases: [(&str, &str); 18] = [
+            (r"\*not emphasis\*", "*not emphasis*"),
+            (r"\\*emphasis*", r"\emphasis"),
+            (r"\\\*not emphasis\*", r"\*not emphasis*"),
+            (r"\[not a link](x)", "[not a link](x)"),
+            (r"\!\[a](b)", "![a](b)"),
+            (r"\[\[wiki\]\]", "[[wiki]]"),
+            (r"\_not em\_", "_not em_"),
+            (r"\-\#\;", "-#;"),
+            (r"a\\b", r"a\b"),
+            (r"C:\Users\foo", r"C:\Users\foo"),
+            (r"\n and \d", r"\n and \d"),
+            (r"a \ b", r"a \ b"),
+            ("tail\\", "tail\\"),
+            ("\\\u{e9}", "\\\u{e9}"),
+            (r"*foo\*bar*", "foo*bar"),
+            (r"*\**", "*"),
+            (r"\`not code`", "`not code`"),
+            (r"`a\`b`", r"a\b`"),
+        ];
+        for (text, visible) in cases {
+            assert_eq!(visible_text(text), visible, "{text:?}");
+        }
+    }
+
     #[test]
     fn corpus_targets_match_the_core_scanner() {
-        let alphabet = ['[', ']', '(', ')', '!', 'a', ' ', '*', '`', 'b', '\u{e9}'];
+        let alphabet = [
+            '[', ']', '(', ')', '!', 'a', ' ', '*', '`', 'b', '\u{e9}', '\\',
+        ];
         let mut state = 0x2545_f491_4f6c_dd1d_u64;
         let mut next = || {
             state ^= state << 13;
@@ -690,11 +888,16 @@ mod tests {
         };
         let mut link_bearing = 0usize;
         let mut span_bearing = 0usize;
-        for _ in 0..20_000 {
+        let mut escape_bearing = 0usize;
+        for _ in 0..40_000 {
             let len = 3 + (next() % 16) as usize;
             let text = (0..len)
                 .map(|_| alphabet[(next() % alphabet.len() as u64) as usize])
                 .collect::<String>();
+            let chars = text.chars().collect::<Vec<_>>();
+            if (0..chars.len()).any(|i| escaped_char(&chars, i).is_some()) {
+                escape_bearing += 1;
+            }
             let scanner = scanner_targets(&text);
             if !scanner.is_empty() {
                 link_bearing += 1;
@@ -719,6 +922,10 @@ mod tests {
         assert!(
             span_bearing > 100,
             "corpus grew too few code spans: {span_bearing}"
+        );
+        assert!(
+            escape_bearing > 1_000,
+            "corpus grew too few escapes: {escape_bearing}"
         );
     }
 
@@ -1324,11 +1531,17 @@ mod tests {
         n
     }
 
-    /// per char: `None` where a delimiter is consumed, `Some(code)` otherwise.
+    /// per char: `None` where a delimiter or escape is consumed, `Some(code)`
+    /// otherwise.
     fn expected_flags(chars: &[char]) -> Vec<Option<bool>> {
         let mut flags = vec![Some(false); chars.len()];
         let mut i = 0;
         while i < chars.len() {
+            if chars[i] == '\\' && chars.get(i + 1).is_some_and(char::is_ascii_punctuation) {
+                flags[i] = None;
+                i += 2;
+                continue;
+            }
             if chars[i] != '`' {
                 i += 1;
                 continue;
@@ -1361,8 +1574,8 @@ mod tests {
     }
 
     #[test]
-    fn corpus_keeps_every_character_a_delimiter_run_does_not_consume() {
-        let alphabet = ['`', 'a', 'b', ' ', '\u{e9}'];
+    fn corpus_keeps_every_character_a_delimiter_or_escape_does_not_consume() {
+        let alphabet = ['`', 'a', 'b', ' ', '\u{e9}', '\\', '-'];
         let mut state = 0x9e37_79b9_7f4a_7c15_u64;
         let mut next = || {
             state ^= state << 13;

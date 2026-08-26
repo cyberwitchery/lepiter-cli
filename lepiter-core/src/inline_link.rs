@@ -46,7 +46,11 @@ pub struct InlineLink<'a> {
 /// position. A label may nest an image, and the outer target is the one
 /// reported; a label nesting a link of its own is not a label at all, so the
 /// nested link is reported instead — a link inside an image's alt text is part
-/// of the image, so it does not count. Backslash escapes are not interpreted.
+/// of the image, so it does not count.
+///
+/// A `[`, `]`, `(` or `)` preceded by an odd number of backslashes is literal
+/// text and delimits nothing. Labels and targets are reported as raw slices, so
+/// an escape inside one is still spelled with its backslash.
 pub fn scan_inline_links(text: &str) -> InlineLinks<'_> {
     InlineLinks {
         text,
@@ -82,6 +86,7 @@ impl<'a> Iterator for InlineLinks<'a> {
             if i + 1 < bytes.len()
                 && bytes[i] == b'['
                 && bytes[i + 1] == b'['
+                && !is_escaped(bytes, i)
                 && let Some(end) = find_closing_double_bracket(bytes, i + 2)
             {
                 let target = self.text[i + 2..end].trim();
@@ -97,6 +102,7 @@ impl<'a> Iterator for InlineLinks<'a> {
             }
             // [label](target)
             if bytes[i] == b'['
+                && !is_escaped(bytes, i)
                 && let Some(label_end) = find_balanced_close_bracket(bytes, i + 1)
                 && label_end + 1 < bytes.len()
                 && bytes[label_end + 1] == b'('
@@ -151,10 +157,21 @@ pub fn rewrite_inline_links(
     out
 }
 
+/// Whether the byte at `at` is preceded by an odd number of backslashes.
+fn is_escaped(bytes: &[u8], at: usize) -> bool {
+    bytes[..at]
+        .iter()
+        .rev()
+        .take_while(|&&b| b == b'\\')
+        .count()
+        % 2
+        == 1
+}
+
 fn find_closing_double_bracket(bytes: &[u8], start: usize) -> Option<usize> {
     let mut i = start;
     while i + 1 < bytes.len() {
-        if bytes[i] == b']' && bytes[i + 1] == b']' {
+        if bytes[i] == b']' && bytes[i + 1] == b']' && !is_escaped(bytes, i) {
             return Some(i);
         }
         i += 1;
@@ -165,11 +182,13 @@ fn find_closing_double_bracket(bytes: &[u8], start: usize) -> Option<usize> {
 fn find_balanced_close_bracket(bytes: &[u8], start: usize) -> Option<usize> {
     let mut depth = 0usize;
     for (i, &byte) in bytes.iter().enumerate().skip(start) {
+        if !matches!(byte, b'[' | b']') || is_escaped(bytes, i) {
+            continue;
+        }
         match byte {
             b'[' => depth += 1,
             b']' if depth == 0 => return Some(i),
-            b']' => depth -= 1,
-            _ => {}
+            _ => depth -= 1,
         }
     }
     None
@@ -177,22 +196,26 @@ fn find_balanced_close_bracket(bytes: &[u8], start: usize) -> Option<usize> {
 
 /// Reports whether `label` contains a link other than an image.
 fn nests_a_link(label: &str) -> bool {
+    let bytes = label.as_bytes();
     label.contains('[')
         && scan_shallow(label).any(|link| {
             link.kind != LinkKind::Markdown
                 || link.range.start == 0
-                || label.as_bytes()[link.range.start - 1] != b'!'
+                || bytes[link.range.start - 1] != b'!'
+                || is_escaped(bytes, link.range.start - 1)
         })
 }
 
 fn find_balanced_close_paren(bytes: &[u8], start: usize) -> Option<usize> {
     let mut depth = 0usize;
     for (i, &byte) in bytes.iter().enumerate().skip(start) {
+        if !matches!(byte, b'(' | b')') || is_escaped(bytes, i) {
+            continue;
+        }
         match byte {
             b'(' => depth += 1,
             b')' if depth == 0 => return Some(i),
-            b')' => depth -= 1,
-            _ => {}
+            _ => depth -= 1,
         }
     }
     None
@@ -232,6 +255,80 @@ mod tests {
             &"a [label](page:abc) b"[link.range.clone()],
             "[label](page:abc)"
         );
+    }
+
+    #[test]
+    fn an_escaped_bracket_opens_no_link() {
+        assert!(scan(r"\[not a link](x)").is_empty());
+        assert!(scan(r"\[\[not a wiki]]").is_empty());
+        assert!(scan(r"\[[not a wiki]]").is_empty());
+        assert!(scan(r"\!\[a](b)").is_empty());
+    }
+
+    #[test]
+    fn an_escaped_delimiter_does_not_close_a_link() {
+        let links = scan(r"[a\](b)](c)");
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].label, r"a\](b)");
+        assert_eq!(links[0].target, "c");
+
+        let links = scan(r"[a](b\)c)");
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].target, r"b\)c");
+
+        let links = scan(r"[a](b\(c\)d)");
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].target, r"b\(c\)d");
+    }
+
+    #[test]
+    fn an_escaped_close_does_not_end_a_wiki_link() {
+        let links = scan(r"[[a\]]b]]");
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].kind, LinkKind::Wiki);
+        assert_eq!(links[0].target, r"a\]]b");
+    }
+
+    #[test]
+    fn a_doubled_backslash_leaves_the_delimiter_live() {
+        let links = scan(r"\\[a](b)");
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].target, "b");
+        assert_eq!(links[0].range, 2..8);
+
+        let links = scan(r"[a](b\\)");
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].target, r"b\\");
+    }
+
+    #[test]
+    fn an_escaped_bang_leaves_a_nested_link_nesting() {
+        let links = scan(r"[\![a](b)](c)");
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].target, "b");
+
+        let links = scan(r"[![a](b)](c)");
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].target, "c");
+    }
+
+    #[test]
+    fn a_backslash_before_ordinary_text_delimits_nothing() {
+        let links = scan(r"C:\Users\foo [a](b)");
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].target, "b");
+
+        let links = scan("[a](b) tail\\");
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].target, "b");
+    }
+
+    #[test]
+    fn rewriting_leaves_an_escaped_link_verbatim() {
+        let out = rewrite_inline_links(r"\[a](b) and [c](d)", |_, target| {
+            Some(format!("{target}!"))
+        });
+        assert_eq!(out, r"\[a](b) and [c](d!)");
     }
 
     #[test]

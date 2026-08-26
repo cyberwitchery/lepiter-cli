@@ -56,7 +56,8 @@ pub enum InlineElement {
 /// outside a code span, a backslash before an ascii punctuation character makes
 /// that character literal and is itself dropped; before anything else, and at
 /// the end of the text, a backslash is ordinary prose. inside a code span both
-/// characters are kept. link labels and targets are reported as the scanner
+/// characters are kept. a markdown link's label follows the same rule; targets,
+/// wiki-link text and `{{annotation}}` bodies are reported as the scanner
 /// slices them, so an escape inside one keeps its backslash.
 pub fn parse_inline(text: &str) -> Vec<InlineElement> {
     let chars = text.chars().collect::<Vec<_>>();
@@ -169,7 +170,7 @@ pub fn parse_inline(text: &str) -> Vec<InlineElement> {
                         text: link.target.to_string(),
                     },
                     LinkKind::Markdown => InlineElement::Link {
-                        label: link.label.to_string(),
+                        label: unescape(link.label),
                         target: link.target.to_string(),
                     },
                 });
@@ -248,6 +249,29 @@ fn escaped_char(chars: &[char], start: usize) -> Option<char> {
         .get(start + 1)
         .copied()
         .filter(char::is_ascii_punctuation)
+}
+
+/// `text` with its escapes resolved, by the rule the prose walk applies.
+fn unescape(text: &str) -> String {
+    if !text.contains('\\') {
+        return text.to_string();
+    }
+    let chars = text.chars().collect::<Vec<_>>();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < chars.len() {
+        match escaped_char(&chars, i) {
+            Some(escaped) => {
+                out.push(escaped);
+                i += 2;
+            }
+            None => {
+                out.push(chars[i]);
+                i += 1;
+            }
+        }
+    }
+    out
 }
 
 /// length of the asterisk run starting at `start`.
@@ -830,7 +854,7 @@ mod tests {
     }
 
     #[test]
-    fn an_annotation_and_a_link_keep_their_escapes() {
+    fn an_annotation_a_target_and_wiki_text_keep_their_escapes() {
         assert_eq!(
             parse_inline(r"{{a\}}"),
             vec![InlineElement::Annotation {
@@ -838,12 +862,69 @@ mod tests {
             }]
         );
         assert_eq!(
+            parse_inline(r"[a](b\*c)"),
+            vec![InlineElement::Link {
+                label: "a".into(),
+                target: r"b\*c".into(),
+            }]
+        );
+        assert_eq!(
+            parse_inline(r"[[a\*b]]"),
+            vec![InlineElement::WikiLink {
+                text: r"a\*b".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_link_label_resolves_its_escapes() {
+        assert_eq!(
+            parse_inline(r"[a\*b](page:t)"),
+            vec![InlineElement::Link {
+                label: "a*b".into(),
+                target: "page:t".into(),
+            }]
+        );
+        assert_eq!(
             parse_inline(r"[a\](b)](c)"),
             vec![InlineElement::Link {
-                label: r"a\](b)".into(),
+                label: "a](b)".into(),
                 target: "c".into(),
             }]
         );
+        assert_eq!(
+            parse_inline(r"[a\\b](c)"),
+            vec![InlineElement::Link {
+                label: r"a\b".into(),
+                target: "c".into(),
+            }]
+        );
+        assert_eq!(
+            parse_inline(r"[a\\\*b](c)"),
+            vec![InlineElement::Link {
+                label: r"a\*b".into(),
+                target: "c".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_label_keeps_a_backslash_before_anything_else() {
+        for label in [r"C:\Users\foo", r"\n and \d", r"a \ b", "\\\u{e9}"] {
+            assert_eq!(
+                parse_inline(&format!("[{label}](page:t)")),
+                vec![InlineElement::Link {
+                    label: label.into(),
+                    target: "page:t".into(),
+                }],
+                "{label:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_label_and_the_prose_beside_it_show_the_same_escape() {
+        assert_eq!(visible_text(r"[a\*b](page:t) vs a\*b"), "a*b vs a*b");
     }
 
     #[test]

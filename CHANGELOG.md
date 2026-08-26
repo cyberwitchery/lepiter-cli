@@ -14,8 +14,10 @@ all notable changes to this project are documented in this file.
   digit, whitespace, a non-ascii character, or the end of the line — is still
   ordinary prose, so windows paths and `\n` in a sentence read exactly as
   before, and a backslash inside a code span stays literal, as does one inside a
-  `{{annotation}}` or a link's label or target. affects both the `show` output
-  and the interactive reader
+  `{{annotation}}`, a link's target or a `[[wiki link]]`. a markdown link's
+  label is display text and follows the same rule as prose, so `[a\*b](x)` and
+  the `a\*b` beside it both render `a*b`. affects both the `show` output and the
+  interactive reader
 
 ### changed
 - when a render plugin crashes, exits, times out, or answers with an unreadable

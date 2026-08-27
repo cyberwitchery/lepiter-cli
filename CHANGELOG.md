@@ -4,6 +4,21 @@ all notable changes to this project are documented in this file.
 
 ## Unreleased
 
+### added
+- backslash escapes in page prose, so markup can be told to stop: `\*` `` \` ``
+  `\[` `\]` `\(` `\)` `\{` `\}` and the rest of ascii punctuation now render as
+  the bare character with no backslash shown. writing `\*not emphasis\*` used to
+  italicise the phrase *and* leave both backslashes in the line, and
+  `\[not a link](x)` still became a link; a code span was the only way to write a
+  literal asterisk or bracket. a backslash before anything else — a letter, a
+  digit, whitespace, a non-ascii character, or the end of the line — is still
+  ordinary prose, so windows paths and `\n` in a sentence read exactly as
+  before, and a backslash inside a code span stays literal, as does one inside a
+  `{{annotation}}`, a link's target or a `[[wiki link]]`. a markdown link's
+  label is display text and follows the same rule as prose, so `[a\*b](x)` and
+  the `a\*b` beside it both render `a*b`. affects both the `show` output and the
+  interactive reader
+
 ### changed
 - when a render plugin crashes, exits, times out, or answers with an unreadable
   line, the reader now shows the tail of what that plugin wrote to its own

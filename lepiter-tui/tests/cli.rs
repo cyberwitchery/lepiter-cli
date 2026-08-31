@@ -814,6 +814,41 @@ mod show {
     }
 
     #[test]
+    fn open_links_lists_an_images_target() {
+        let root = write_text_snippet_kb(
+            "show-image-links",
+            "image-links-page",
+            "Image Links",
+            &["see ![diagram](attachments/x.png) and [docs](https://docs.rs)"],
+        );
+        std::fs::create_dir_all(root.join("attachments")).unwrap();
+        std::fs::write(root.join("attachments").join("x.png"), b"png").unwrap();
+
+        let out = run(&[
+            "show",
+            "--open-links",
+            "--id",
+            "image-links-page",
+            &root.display().to_string(),
+        ]);
+        assert!(out.status.success());
+        let text = stdout(&out);
+        let listed = text
+            .lines()
+            .filter(|line| line.starts_with("  ["))
+            .collect::<Vec<_>>();
+        assert_eq!(listed.len(), 2, "{text}");
+        assert!(
+            listed[0].starts_with("  [1] diagram -> attachment:"),
+            "{text}"
+        );
+        assert!(!listed[0].contains("(missing)"), "{text}");
+        assert_eq!(listed[1], "  [2] docs -> external:https://docs.rs");
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn missing_value_fails() {
         let out = run(&["show"]);
         assert!(!out.status.success());

@@ -25,6 +25,8 @@ pub enum InlineElement {
     },
     /// `[label](target)` url link.
     Link { label: String, target: String },
+    /// `![alt](target)` image.
+    Image { alt: String, target: String },
     /// `[[text]]` wiki-style link.
     WikiLink { text: String },
     /// `{{annotation}}` — includes the surrounding braces.
@@ -34,13 +36,18 @@ pub enum InlineElement {
 /// parse inline markdown into a sequence of elements.
 ///
 /// handles `***bold italic***`, `**bold**`, `*italic*`, `` `code` ``,
-/// `[text](url)`, `[[wiki-link]]`, and `{{annotation}}` syntax.
+/// `[text](url)`, `![alt](target)`, `[[wiki-link]]`, and `{{annotation}}`
+/// syntax.
 ///
 /// link syntax is whatever [`scan_inline_links`] accepts, and targets are
 /// reported as it reports them: trimmed, never empty. a link inside a
 /// `{{annotation}}` stays part of the annotation. emphasis markers inside a
 /// code span are literal text; links and annotations are still recognised
 /// there.
+///
+/// an image is a `[label](target)` link marked by a leading `!`, so every link
+/// rule applies to it; the `!` is literal text when an odd run of backslashes
+/// precedes it or when a `[[wiki-link]]` follows.
 ///
 /// a code span opens on a run of n backticks and closes at the next run of
 /// exactly n, so a span can contain a shorter run. an opening run with no such
@@ -56,9 +63,9 @@ pub enum InlineElement {
 /// outside a code span, a backslash before an ascii punctuation character makes
 /// that character literal and is itself dropped; before anything else, and at
 /// the end of the text, a backslash is ordinary prose. inside a code span both
-/// characters are kept. a markdown link's label follows the same rule; targets,
-/// wiki-link text and `{{annotation}}` bodies are reported as the scanner
-/// slices them, so an escape inside one keeps its backslash.
+/// characters are kept. a markdown link's label and an image's alt follow the
+/// same rule; targets, wiki-link text and `{{annotation}}` bodies are reported
+/// as the scanner slices them, so an escape inside one keeps its backslash.
 pub fn parse_inline(text: &str) -> Vec<InlineElement> {
     let chars = text.chars().collect::<Vec<_>>();
     let byte_at = byte_offsets(&chars);
@@ -154,27 +161,37 @@ pub fn parse_inline(text: &str) -> Vec<InlineElement> {
             }
         }
 
-        // links: [[wiki]] or [text](url)
-        if chars[i] == '[' {
+        // links: [[wiki]] or [text](url), and ![alt](target) images
+        let marked = chars[i] == '!' && chars.get(i + 1) == Some(&'[') && !is_escaped(&chars, i);
+        if chars[i] == '[' || marked {
+            let start = if marked { i + 1 } else { i };
             // an annotation can consume a link, so drop any the walk has passed.
             while links
                 .peek()
-                .is_some_and(|link| link.range.start < byte_at[i])
+                .is_some_and(|link| link.range.start < byte_at[start])
             {
                 links.next();
             }
-            if let Some(link) = links.next_if(|link| link.range.start == byte_at[i]) {
+            if let Some(link) = links.next_if(|link| link.range.start == byte_at[start]) {
+                let image = marked && link.kind == LinkKind::Markdown;
+                if marked && !image {
+                    buf.push('!');
+                }
                 flush(&mut out, &mut buf, bold, italic, code.is_some());
                 out.push(match link.kind {
                     LinkKind::Wiki => InlineElement::WikiLink {
                         text: link.target.to_string(),
+                    },
+                    LinkKind::Markdown if image => InlineElement::Image {
+                        alt: unescape(link.label),
+                        target: link.target.to_string(),
                     },
                     LinkKind::Markdown => InlineElement::Link {
                         label: unescape(link.label),
                         target: link.target.to_string(),
                     },
                 });
-                i += text[link.range].chars().count();
+                i = start + text[link.range].chars().count();
                 continue;
             }
         }
@@ -272,6 +289,12 @@ fn unescape(text: &str) -> String {
         }
     }
     out
+}
+
+/// whether an odd run of backslashes precedes `start`.
+fn is_escaped(chars: &[char], start: usize) -> bool {
+    let run = chars[..start].iter().rev().take_while(|c| **c == '\\');
+    run.count() % 2 == 1
 }
 
 /// length of the asterisk run starting at `start`.
@@ -561,6 +584,302 @@ mod tests {
     }
 
     #[test]
+    fn an_image_is_its_own_element() {
+        assert_eq!(
+            parse_inline("![alt text](attachments/x.png)"),
+            vec![InlineElement::Image {
+                alt: "alt text".into(),
+                target: "attachments/x.png".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn an_image_consumes_its_bang() {
+        assert_eq!(
+            parse_inline("here is ![alt](x.png) inline"),
+            vec![
+                InlineElement::Styled {
+                    text: "here is ".into(),
+                    bold: false,
+                    italic: false,
+                    code: false,
+                },
+                InlineElement::Image {
+                    alt: "alt".into(),
+                    target: "x.png".into(),
+                },
+                InlineElement::Styled {
+                    text: " inline".into(),
+                    bold: false,
+                    italic: false,
+                    code: false,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn an_images_alt_keeps_brackets_and_emphasis_markers() {
+        assert_eq!(
+            parse_inline("![a [b] *c*](t)"),
+            vec![InlineElement::Image {
+                alt: "a [b] *c*".into(),
+                target: "t".into(),
+            }]
+        );
+    }
+
+    /// an alt is display text, so it resolves escapes exactly as a link's
+    /// label does — see `a_link_label_resolves_its_escapes`.
+    #[test]
+    fn an_images_alt_resolves_its_escapes() {
+        assert_eq!(
+            parse_inline(r"![a\*b](t)"),
+            vec![InlineElement::Image {
+                alt: "a*b".into(),
+                target: "t".into(),
+            }]
+        );
+        assert_eq!(
+            parse_inline(r"![a\](b)](c)"),
+            vec![InlineElement::Image {
+                alt: "a](b)".into(),
+                target: "c".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn an_image_target_keeps_balanced_parens() {
+        assert_eq!(
+            parse_inline("![x](a(b)c)"),
+            vec![InlineElement::Image {
+                alt: "x".into(),
+                target: "a(b)c".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn an_image_target_is_trimmed() {
+        assert_eq!(
+            parse_inline("![x](  t  )"),
+            vec![InlineElement::Image {
+                alt: "x".into(),
+                target: "t".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_linked_image_keeps_the_outer_target() {
+        let text = "[![alt](img.png)](page:t)";
+        assert_eq!(
+            parse_inline(text),
+            vec![InlineElement::Link {
+                label: "![alt](img.png)".into(),
+                target: "page:t".into(),
+            }]
+        );
+        assert_eq!(reader_targets(text), scanner_targets(text));
+    }
+
+    #[test]
+    fn an_escaped_bang_leaves_a_link() {
+        assert_eq!(
+            parse_inline("\\![a](b.png)"),
+            vec![
+                InlineElement::Styled {
+                    text: "!".into(),
+                    bold: false,
+                    italic: false,
+                    code: false,
+                },
+                InlineElement::Link {
+                    label: "a".into(),
+                    target: "b.png".into(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_backslash_run_pairs_off_before_a_bang() {
+        assert_eq!(
+            parse_inline("\\\\![a](b.png)"),
+            vec![
+                InlineElement::Styled {
+                    text: "\\".into(),
+                    bold: false,
+                    italic: false,
+                    code: false,
+                },
+                InlineElement::Image {
+                    alt: "a".into(),
+                    target: "b.png".into(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_bang_before_a_wiki_link_is_literal() {
+        assert_eq!(
+            parse_inline("![[Page]]"),
+            vec![
+                InlineElement::Styled {
+                    text: "!".into(),
+                    bold: false,
+                    italic: false,
+                    code: false,
+                },
+                InlineElement::WikiLink {
+                    text: "Page".into(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn an_unbalanced_image_is_literal_text() {
+        assert_eq!(
+            parse_inline("![a](b"),
+            vec![InlineElement::Styled {
+                text: "![a](b".into(),
+                bold: false,
+                italic: false,
+                code: false,
+            }]
+        );
+    }
+
+    #[test]
+    fn an_image_with_an_empty_target_is_literal_text() {
+        assert_eq!(
+            parse_inline("![a]()"),
+            vec![InlineElement::Styled {
+                text: "![a]()".into(),
+                bold: false,
+                italic: false,
+                code: false,
+            }]
+        );
+    }
+
+    #[test]
+    fn an_image_inside_an_annotation_stays_annotation_text() {
+        assert_eq!(
+            parse_inline("{{note ![a](b.png) here}}"),
+            vec![InlineElement::Annotation {
+                text: "{{note ![a](b.png) here}}".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_code_span_yields_an_image_as_it_yields_a_link() {
+        assert_eq!(
+            parse_inline("`![a](b.png)`"),
+            vec![InlineElement::Image {
+                alt: "a".into(),
+                target: "b.png".into(),
+            }]
+        );
+        assert_eq!(
+            reader_targets("`![a](b.png)`"),
+            reader_targets("`[a](b.png)`")
+        );
+    }
+
+    #[test]
+    fn emphasis_reaches_across_an_image() {
+        assert_eq!(
+            parse_inline("*a ![b](c.png) d*"),
+            vec![
+                InlineElement::Styled {
+                    text: "a ".into(),
+                    bold: false,
+                    italic: true,
+                    code: false,
+                },
+                InlineElement::Image {
+                    alt: "b".into(),
+                    target: "c.png".into(),
+                },
+                InlineElement::Styled {
+                    text: " d".into(),
+                    bold: false,
+                    italic: true,
+                    code: false,
+                },
+            ]
+        );
+    }
+
+    fn images(text: &str) -> Vec<(String, String)> {
+        parse_inline(text)
+            .into_iter()
+            .filter_map(|element| match element {
+                InlineElement::Image { alt, target } => Some((alt, target)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn images_agree_with_commonmark() {
+        // expected values from markdown-it-py 4.2.0, commonmark preset
+        let cases: [(&str, &[(&str, &str)]); 16] = [
+            ("![alt](x.png)", &[("alt", "x.png")]),
+            ("here is ![a](b) inline", &[("a", "b")]),
+            ("a![b](c)", &[("b", "c")]),
+            ("!![a](b)", &[("a", "b")]),
+            ("![a](b) and ![c](d)", &[("a", "b"), ("c", "d")]),
+            ("![a](b", &[]),
+            ("![[Page]]", &[]),
+            ("![x](a(b)c)", &[("x", "a(b)c")]),
+            ("![x](  t  )", &[("x", "t")]),
+            ("*a ![b](c) d*", &[("b", "c")]),
+            ("\\![a](b)", &[]),
+            ("\\\\![a](b)", &[("a", "b")]),
+            ("![](x.png)", &[("", "x.png")]),
+            ("! [a](b)", &[]),
+            ("![a] (b)", &[]),
+            ("![a [b] c](t)", &[("a [b] c", "t")]),
+        ];
+        for (text, expected) in cases {
+            let expected = expected
+                .iter()
+                .map(|(alt, target)| ((*alt).to_string(), (*target).to_string()))
+                .collect::<Vec<_>>();
+            assert_eq!(images(text), expected, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn an_image_after_an_annotation_containing_one_is_still_an_image() {
+        assert_eq!(
+            parse_inline("{{note ![a](b.png)}} then ![c](d.png)"),
+            vec![
+                InlineElement::Annotation {
+                    text: "{{note ![a](b.png)}}".into(),
+                },
+                InlineElement::Styled {
+                    text: " then ".into(),
+                    bold: false,
+                    italic: false,
+                    code: false,
+                },
+                InlineElement::Image {
+                    alt: "c".into(),
+                    target: "d.png".into(),
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn unbalanced_target_is_not_a_link() {
         assert_eq!(
             parse_inline("[x](a(b)"),
@@ -628,7 +947,9 @@ mod tests {
         elements
             .into_iter()
             .filter_map(|element| match element {
-                InlineElement::Link { target, .. } => Some((LinkKind::Markdown, target)),
+                InlineElement::Link { target, .. } | InlineElement::Image { target, .. } => {
+                    Some((LinkKind::Markdown, target))
+                }
                 InlineElement::WikiLink { text } => Some((LinkKind::Wiki, text)),
                 _ => None,
             })
@@ -739,6 +1060,7 @@ mod tests {
             .map(|element| match element {
                 InlineElement::Styled { text, .. } | InlineElement::Annotation { text } => text,
                 InlineElement::Link { label, .. } => label,
+                InlineElement::Image { alt, .. } => alt,
                 InlineElement::WikiLink { text } => format!("[[{text}]]"),
             })
             .collect()

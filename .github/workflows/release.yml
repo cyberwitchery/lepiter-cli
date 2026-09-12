@@ -123,27 +123,31 @@ jobs:
           # pinned: an unpinned bump changed what counts as a component and broke this gate
           tool: cargo-cyclonedx@0.5.9,sbom-diff@0.8.0
 
+      # one invocation covers every workspace member, and names each file after
+      # the crate it describes. an --override-filename here would give both
+      # members the same name and one would overwrite the other on collection.
       - name: generate sbom
         if: matrix.publish_crates
         run: |
-          for manifest in "$GITHUB_WORKSPACE"/lepiter-core/Cargo.toml "$GITHUB_WORKSPACE"/lepiter-tui/Cargo.toml; do
-            crate="$(basename "$(dirname "$manifest")")"
-            (cd /tmp && cargo cyclonedx --manifest-path "$manifest" \
-              --format json \
-              --override-filename "sbom-${{ github.ref_name }}-${crate}.cdx" \
-              --all-features \
-              --target all)
-          done
+          set -euo pipefail
+          cargo cyclonedx --manifest-path "$GITHUB_WORKSPACE/Cargo.toml" \
+            --format json \
+            --all-features \
+            --target all
 
       - name: collect sbom files
         if: matrix.publish_crates
         run: |
           set -euo pipefail
           mkdir -p /tmp/lepiter-cli-sbom
-          find /tmp -maxdepth 1 -type f -name "sbom-${{ github.ref_name }}-*.cdx.json" \
-            -exec mv {} /tmp/lepiter-cli-sbom/ \;
-          find "$GITHUB_WORKSPACE" -type f -name "sbom-${{ github.ref_name }}-*.cdx.json" \
-            -exec mv {} /tmp/lepiter-cli-sbom/ \;
+          # each generated file is named for its crate; tag it and keep that name.
+          # the approved baselines under sbom/ are inputs, never collected.
+          find "$GITHUB_WORKSPACE" -type f -name '*.cdx.json' \
+            -not -path "$GITHUB_WORKSPACE/sbom/*" -print0 |
+            while IFS= read -r -d '' f; do
+              crate="$(basename "$f" .cdx.json)"
+              mv "$f" "/tmp/lepiter-cli-sbom/sbom-${{ github.ref_name }}-${crate}.cdx.json"
+            done
 
       - name: upload sbom
         if: matrix.publish_crates
@@ -158,7 +162,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for crate in lepiter-core lepiter-tui; do
+          for crate in lepiter-core lepiter-cli; do
             current="/tmp/lepiter-cli-sbom/sbom-${{ github.ref_name }}-${crate}.cdx.json"
             approved="sbom/${crate}.cdx.json"
             if [ ! -f "$current" ]; then

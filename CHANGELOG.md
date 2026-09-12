@@ -34,6 +34,16 @@ all notable changes to this project are documented in this file.
   replaced by a bare timeout from the retry
 
 ### fixed
+- the release workflow's supply-chain gate now checks the `lepiter-cli` binary,
+  which it had never checked. `cargo cyclonedx` writes one sbom per workspace
+  member, so the old `--override-filename` gave both members the same name and
+  the collection step's `mv` destroyed one of them; both surviving files were
+  rooted at `lepiter-core`, and `--fail-on added-components` compared that crate
+  against itself while `ratatui`, `crossterm` and the other 170-odd dependencies
+  the binary alone pulls in went ungated. each sbom is now named for the crate it
+  describes, and the approved baseline for the binary is recorded for the first
+  time in `sbom/lepiter-cli.cdx.json` (`sbom/lepiter-tui.cdx.json` named a
+  directory, not a crate, and is gone)
 - `![alt](target)` is now read as an image. the reader used to leak the `!` as
   literal text and show the rest as an ordinary link, so a picture written in a
   text snippet came out as `!alt (attachments/x.png)`. the alt text is now what

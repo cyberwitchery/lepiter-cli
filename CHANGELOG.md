@@ -2,7 +2,7 @@
 
 all notable changes to this project are documented in this file.
 
-## Unreleased
+## 0.12.0 - 2026-09-12
 
 ### added
 - backslash escapes in page prose, so markup can be told to stop: `\*` `` \` ``

@@ -6,7 +6,7 @@ on:
       - "v*"
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -37,17 +37,18 @@ jobs:
             publish_crates: false
     steps:
       - name: checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
       - name: set up rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
 
       - name: cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           cache-targets: true
 
@@ -77,7 +78,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          archive_base="lepiter-cli-${{ github.ref_name }}-${{ matrix.target }}"
+          archive_base="lepiter-cli-${GITHUB_REF_NAME}-${{ matrix.target }}"
           stage_dir="${RUNNER_TEMP}/dist/${archive_base}"
           mkdir -p "${stage_dir}"
           cp "target/${{ matrix.target }}/release/lepiter-cli${{ matrix.bin_ext }}" "${stage_dir}/"
@@ -88,7 +89,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $archiveBase = "lepiter-cli-${{ github.ref_name }}-${{ matrix.target }}"
+          $archiveBase = "lepiter-cli-$env:GITHUB_REF_NAME-${{ matrix.target }}"
           $distDir = Join-Path $env:RUNNER_TEMP "dist"
           $stageDir = Join-Path $distDir $archiveBase
           New-Item -ItemType Directory -Path $stageDir -Force | Out-Null
@@ -98,7 +99,7 @@ jobs:
           Compress-Archive -Path (Join-Path $stageDir "*") -DestinationPath (Join-Path $distDir "$archiveBase.zip") -Force
 
       - name: upload packaged binaries artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: dist-${{ matrix.target }}
           path: |
@@ -118,7 +119,7 @@ jobs:
 
       - name: install sbom tools
         if: matrix.publish_crates
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
         with:
           # pinned: an unpinned bump changed what counts as a component and broke this gate
           tool: cargo-cyclonedx@0.5.9,sbom-diff@0.8.0
@@ -146,12 +147,12 @@ jobs:
             -not -path "$GITHUB_WORKSPACE/sbom/*" -print0 |
             while IFS= read -r -d '' f; do
               crate="$(basename "$f" .cdx.json)"
-              mv "$f" "/tmp/lepiter-cli-sbom/sbom-${{ github.ref_name }}-${crate}.cdx.json"
+              mv "$f" "/tmp/lepiter-cli-sbom/sbom-${GITHUB_REF_NAME}-${crate}.cdx.json"
             done
 
       - name: upload sbom
         if: matrix.publish_crates
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sbom-${{ github.ref_name }}
           path: "/tmp/lepiter-cli-sbom/sbom-${{ github.ref_name }}-*.cdx.json"
@@ -163,7 +164,7 @@ jobs:
         run: |
           set -euo pipefail
           for crate in lepiter-core lepiter-cli; do
-            current="/tmp/lepiter-cli-sbom/sbom-${{ github.ref_name }}-${crate}.cdx.json"
+            current="/tmp/lepiter-cli-sbom/sbom-${GITHUB_REF_NAME}-${crate}.cdx.json"
             approved="sbom/${crate}.cdx.json"
             if [ ! -f "$current" ]; then
               echo "current sbom missing for ${crate}, skipping diff"
@@ -196,7 +197,7 @@ jobs:
       contents: write
     steps:
       - name: checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: prepare release notes from changelog
         shell: bash
@@ -216,21 +217,21 @@ jobs:
           fi
 
       - name: download packaged binaries
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: dist-*
           path: ${{ runner.temp }}/dist
           merge-multiple: true
 
       - name: download sbom
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         continue-on-error: true
         with:
           name: sbom-${{ github.ref_name }}
           path: ${{ runner.temp }}/sbom
 
       - name: create or update github release
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           body_path: ${{ runner.temp }}/release-notes.md
           files: |

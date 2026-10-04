@@ -5,16 +5,30 @@ on:
     tags:
       - "v*"
 
-permissions:
-  contents: read
+permissions: {}
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  sbom:
+    name: sbom
+    uses: cyberwitchery/.github/.github/workflows/sbom.yml@d8cdf87f9048c369e1ab49281da13e7e72a782fb # main
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    with:
+      mode: release
+
   build:
     name: release ${{ matrix.target }}
+    needs: sbom
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     strategy:
       fail-fast: false
       matrix:
@@ -46,11 +60,6 @@ jobs:
         with:
           toolchain: stable
           targets: ${{ matrix.target }}
-
-      - name: cache cargo
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          cache-targets: true
 
       - name: build release binary
         run: cargo build --release --target ${{ matrix.target }} -p lepiter-cli
@@ -98,6 +107,11 @@ jobs:
           Copy-Item "LICENSE" $stageDir
           Compress-Archive -Path (Join-Path $stageDir "*") -DestinationPath (Join-Path $distDir "$archiveBase.zip") -Force
 
+      - name: attest packaged binaries
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: ${{ runner.temp }}/dist/*.${{ runner.os == 'Windows' && 'zip' || 'tar.gz' }}
+
       - name: upload packaged binaries artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -116,66 +130,6 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --workspace --no-deps
-
-      - name: install sbom tools
-        if: matrix.publish_crates
-        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
-        with:
-          # pinned: an unpinned bump changed what counts as a component and broke this gate
-          tool: cargo-cyclonedx@0.5.9,sbom-diff@0.8.0
-
-      # one invocation covers every workspace member, and names each file after
-      # the crate it describes. an --override-filename here would give both
-      # members the same name and one would overwrite the other on collection.
-      - name: generate sbom
-        if: matrix.publish_crates
-        run: |
-          set -euo pipefail
-          cargo cyclonedx --manifest-path "$GITHUB_WORKSPACE/Cargo.toml" \
-            --format json \
-            --all-features \
-            --target all
-
-      - name: collect sbom files
-        if: matrix.publish_crates
-        run: |
-          set -euo pipefail
-          mkdir -p /tmp/lepiter-cli-sbom
-          # each generated file is named for its crate; tag it and keep that name.
-          # the approved baselines under sbom/ are inputs, never collected.
-          find "$GITHUB_WORKSPACE" -type f -name '*.cdx.json' \
-            -not -path "$GITHUB_WORKSPACE/sbom/*" -print0 |
-            while IFS= read -r -d '' f; do
-              crate="$(basename "$f" .cdx.json)"
-              mv "$f" "/tmp/lepiter-cli-sbom/sbom-${GITHUB_REF_NAME}-${crate}.cdx.json"
-            done
-
-      - name: upload sbom
-        if: matrix.publish_crates
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: sbom-${{ github.ref_name }}
-          path: "/tmp/lepiter-cli-sbom/sbom-${{ github.ref_name }}-*.cdx.json"
-          if-no-files-found: error
-
-      - name: diff against approved sbom
-        if: matrix.publish_crates
-        shell: bash
-        run: |
-          set -euo pipefail
-          for crate in lepiter-core lepiter-cli; do
-            current="/tmp/lepiter-cli-sbom/sbom-${GITHUB_REF_NAME}-${crate}.cdx.json"
-            approved="sbom/${crate}.cdx.json"
-            if [ ! -f "$current" ]; then
-              echo "current sbom missing for ${crate}, skipping diff"
-              continue
-            fi
-            if [ ! -f "$approved" ]; then
-              echo "approved sbom missing for ${crate}, skipping diff"
-              continue
-            fi
-            sbom-diff "$approved" "$current" --fail-on added-components
-          done
 
       - name: publish lepiter-core
         if: matrix.publish_crates
@@ -225,10 +179,9 @@ jobs:
 
       - name: download sbom
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        continue-on-error: true
         with:
-          name: sbom-${{ github.ref_name }}
-          path: ${{ runner.temp }}/sbom
+          name: release-evidence
+          path: ${{ runner.temp }}/evidence
 
       - name: create or update github release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
@@ -237,4 +190,4 @@ jobs:
           files: |
             ${{ runner.temp }}/dist/*.tar.gz
             ${{ runner.temp }}/dist/*.zip
-            ${{ runner.temp }}/sbom/*.cdx.json
+            ${{ runner.temp }}/evidence/release/*.cdx.json

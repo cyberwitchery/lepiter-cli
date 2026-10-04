@@ -140,16 +140,23 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
-      - name: Install unsafe-budget
-        run: cargo install unsafe-budget
-
       - name: Check unsafe budget
-        run: cargo unsafe-budget check --workspace-only
+        uses: cyberwitchery/unsafe-budget@d10776ba7fe8043f31b19ec40bcff26b4da6b94e # v0.5.1
+        with:
+          mode: check
+          version: v0.5.1
+          args: --workspace-only
+
+  sbom:
+    name: SBOM
+    uses: cyberwitchery/.github/.github/workflows/sbom.yml@d8cdf87f9048c369e1ab49281da13e7e72a782fb # main
+    with:
+      mode: report
 
   success:
     name: Success
     if: always()
-    needs: [lint, docs, snippet-matrix, tests-and-coverage, deny, unsafe-gate]
+    needs: [lint, docs, snippet-matrix, tests-and-coverage, deny, unsafe-gate, sbom]
     runs-on: ubuntu-latest
     steps:
       - name: Check results

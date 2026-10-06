@@ -2,6 +2,41 @@
 
 all notable changes to this project are documented in this file.
 
+## Unreleased
+
+### changed
+- re-importing a markdown export written by 0.12.0 or earlier can change some
+  link snippets, since `import` now reads them with the page's link grammar
+  (backslash escapes, balanced brackets, `[[…]]` first). a backslash before
+  punctuation in a url is read as an escape, so `\\server\share\file.txt`,
+  `..\..\docs\a.md` and `C:\Users\foo\.config\x.json` each lose one, and a url
+  loses any whitespace at either end. a label with an unbalanced bracket, a
+  leading `[` that pairs into `[[…]]` or a trailing backslash, or a url with an
+  unbalanced `(`, comes back as a text snippet, and a text snippet that is
+  exactly one link whose url balances its parentheses comes back as a link
+
+### fixed
+- a link snippet now survives `export` and `import`, unless its text or url
+  holds a newline, or its url holds a carriage return and starts or ends with
+  whitespace. `export` wrote `[text](url)` as it came, so a `[` or `]` in the
+  text, or a space, a tab or an unbalanced parenthesis in the url, gave a line
+  no markdown reader takes for that link, and `import` turned the snippet into
+  text or cut its url short. brackets and backslashes in the text are now
+  escaped, and a url that can't be written bare, such as one with a space or
+  an unbalanced parenthesis, is written as `<url>`. `<url>` can't hold a line
+  ending, so a url with one is written bare unless it starts or ends with
+  whitespace, with a leading `<` and unbalanced parentheses backslash-escaped.
+  a backslash in a url that comes before punctuation or ends it is doubled
+  (`C:\Users\foo\.config` is written `C:\Users\foo\\.config`); any other url
+  is written exactly as before. `import` reads the line with the same link
+  grammar as the rest of the page, so a link whose url balances its
+  parentheses, like `https://en.wikipedia.org/wiki/Foo_(bar)`, comes back as a
+  link snippet instead of text
+- `[label](<target>)` is now read as a link to `target`, with any spaces and
+  parentheses the brackets hold. it used to keep the brackets as part of the
+  target, or was no link at all when they held an unbalanced parenthesis.
+  affects both the `show` output and the interactive reader
+
 ## 0.12.0 - 2026-09-12
 
 ### added

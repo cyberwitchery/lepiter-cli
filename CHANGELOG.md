@@ -2,6 +2,24 @@
 
 all notable changes to this project are documented in this file.
 
+## Unreleased
+
+### fixed
+- a link snippet now survives `export` and `import` whatever its text and url
+  hold. `export` wrote `[text](url)` as it came, so a `[` or `]` in the text, or
+  a space, a tab or an unbalanced parenthesis in the url, gave a line no
+  markdown reader takes for that link, and `import` turned the snippet into
+  text or cut its url short. brackets and backslashes in the text are now
+  escaped and such a url is written as `<url>`; an ordinary url is written
+  exactly as before. `import` reads the line with the same link grammar as the
+  rest of the page, so a link whose url balances its parentheses, like
+  `https://en.wikipedia.org/wiki/Foo_(bar)`, comes back as a link snippet
+  instead of text
+- `[label](<target>)` is now read as a link to `target`, with any spaces and
+  parentheses the brackets hold. it used to keep the brackets as part of the
+  target, or was no link at all when they held an unbalanced parenthesis.
+  affects both the `show` output and the interactive reader
+
 ## 0.12.0 - 2026-09-12
 
 ### added

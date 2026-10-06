@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result, bail};
 use chrono::DateTime;
 use lepiter_core::{
-    LinkKind, is_standalone_link, language_to_snippet_type, rewrite_inline_links,
+    LinkKind, language_to_snippet_type, parse_standalone_link, rewrite_inline_links,
     unescape_block_start,
 };
 use serde_json::json;
@@ -371,8 +371,7 @@ fn parse_markdown_body(body: &str, slug_to_id: &HashMap<String, String>) -> Vec<
             }
 
             // standalone link line: [text](url) with nothing else on the line
-            if is_standalone_link(only) {
-                let (text, url) = extract_standalone_link(only);
+            if let Some((text, url)) = parse_standalone_link(only) {
                 let url = rewrite_link_target_to_internal(&url, slug_to_id);
                 snippets.push(Snippet::Link { text, url });
                 continue;
@@ -502,14 +501,6 @@ fn try_parse_rewrite_block(lang: &str, all_lines: &[&str]) -> Option<Snippet> {
         scope,
         is_method_pattern,
     })
-}
-
-fn extract_standalone_link(line: &str) -> (String, String) {
-    let trimmed = line.trim();
-    let bracket_end = trimmed.find("](").unwrap();
-    let text = trimmed[1..bracket_end].to_string();
-    let url = trimmed[bracket_end + 2..trimmed.len() - 1].to_string();
-    (text, url)
 }
 
 fn rewrite_link_target_to_internal(target: &str, slug_to_id: &HashMap<String, String>) -> String {
@@ -651,6 +642,71 @@ fn build_page_json(fm: &Frontmatter, snippets: &[Snippet]) -> serde_json::Value 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lepiter_core::{BlockEscaping, Node, is_standalone_link, render_nodes_to_text_with};
+
+    const NASTY_LINKS: &[(&str, &str)] = &[
+        ("plain", "https://example.com/path?q=1#frag"),
+        ("Foo", "https://en.wikipedia.org/wiki/Foo_(bar)"),
+        ("nested", "a(b(c)d)e"),
+        ("spaces", "my notes/first draft.md"),
+        ("open", "https://example.com/a(b"),
+        ("close", "https://example.com/a)b"),
+        ("both", "a b)c(d"),
+        ("angles", "https://example.com/?q=<a>&r=b>c"),
+        ("leading angle", "<https://example.com>"),
+        ("windows", r"C:\Users\foo"),
+        ("escapes", r"a\*b\(c\"),
+        ("tab", "a\tb"),
+        ("blank", ""),
+        ("padded", " x "),
+        ("nbsp before", "\u{a0}x"),
+        ("nbsp after", "x\u{a0}"),
+        ("[draft] notes", "u"),
+        ("a ] b [ c", "u"),
+        ("x](y", "u"),
+        ("[[wiki]]", "u"),
+        (r"back\slash\", "u"),
+        (r"\[not\]", "u"),
+        ("日本語 ✓", "https://例え.jp/パス (1)"),
+    ];
+
+    fn export(node: Node) -> String {
+        render_nodes_to_text_with(&[node], &mut |_, _| None, BlockEscaping::Escape)
+    }
+
+    #[test]
+    fn a_link_snippet_survives_export_and_import() {
+        for &(text, url) in NASTY_LINKS {
+            let markdown = export(Node::Link {
+                text: text.to_string(),
+                url: url.to_string(),
+            });
+            let snippets = parse_markdown_body(&markdown, &HashMap::new());
+            assert!(
+                matches!(&snippets[..], [Snippet::Link { text: t, url: u }] if t == text && u == url),
+                "{text:?} {url:?} exported as {markdown:?} imported as {snippets:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_text_snippet_spelling_a_link_survives_export_and_import() {
+        for &(text, url) in NASTY_LINKS {
+            let line = export(Node::Link {
+                text: text.to_string(),
+                url: url.to_string(),
+            });
+            let line = line.trim_end();
+            let markdown = export(Node::Text {
+                text: line.to_string(),
+            });
+            let snippets = parse_markdown_body(&markdown, &HashMap::new());
+            assert!(
+                matches!(&snippets[..], [Snippet::Text(t)] if t == line),
+                "{line:?} exported as {markdown:?} imported as {snippets:?}"
+            );
+        }
+    }
 
     #[test]
     fn parse_frontmatter_basic() {

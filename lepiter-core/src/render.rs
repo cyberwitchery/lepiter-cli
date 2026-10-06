@@ -1,4 +1,6 @@
-use crate::inline_link::{LinkKind, rewrite_inline_links};
+use crate::inline_link::{
+    LinkKind, escape, push_link, rewrite_inline_links, unescape, whole_line_link,
+};
 use crate::model::{Node, Page};
 
 /// whether a render escapes block-looking line starts.
@@ -111,7 +113,8 @@ fn render_nodes_into(
             }
             Node::Link { text, url } => {
                 let rewritten = rewrite(LinkKind::Markdown, url).unwrap_or_else(|| url.clone());
-                out.push_str(&format!("[{text}]({rewritten})\n\n"));
+                push_link(out, &escape(text, &['[', ']']), &escape(&rewritten, &[]));
+                out.push_str("\n\n");
             }
             Node::Quote { text } => {
                 let text = rewrite_inline_links(text, &mut *rewrite);
@@ -226,15 +229,13 @@ fn starts_block(line: &str) -> bool {
 /// the markdown `import` reads such a line back as a link snippet, but only
 /// where it is a whole snippet on its own.
 pub fn is_standalone_link(line: &str) -> bool {
-    let trimmed = line.trim();
-    if !trimmed.starts_with('[') {
-        return false;
-    }
-    let Some(bracket_end) = trimmed.find("](") else {
-        return false;
-    };
-    let after = &trimmed[bracket_end + 2..];
-    after.ends_with(')') && !after[..after.len() - 1].contains(')')
+    whole_line_link(line).is_some()
+}
+
+/// the text and url of the [`Node::Link`] that `line` renders, if it is a standalone link.
+pub fn parse_standalone_link(line: &str) -> Option<(String, String)> {
+    let link = whole_line_link(line)?;
+    Some((unescape(link.label), unescape(link.target)))
 }
 
 /// Checks whether the rendered text of a page contains `needle`
@@ -595,6 +596,71 @@ mod tests {
             url: "https://example.com".to_string(),
         }]);
         assert_eq!(text, "[label](https://example.com)\n\n");
+    }
+
+    #[test]
+    fn link_node_escapes_what_would_break_the_link() {
+        let text = render_escaped(&[Node::Link {
+            text: "a ] b".to_string(),
+            url: "my file.md".to_string(),
+        }]);
+        assert_eq!(text, "[a \\] b](<my file.md>)\n\n");
+    }
+
+    #[test]
+    fn link_node_brackets_a_url_with_a_control_character() {
+        let text = render_escaped(&[Node::Link {
+            text: "tab".to_string(),
+            url: "a\tb".to_string(),
+        }]);
+        assert_eq!(text, "[tab](<a\tb>)\n\n");
+    }
+
+    #[test]
+    fn link_node_keeps_an_ordinary_url_bare() {
+        for url in [
+            "https://en.wikipedia.org/wiki/Foo_(bar)",
+            "https://example.com/?q=<a>",
+            r"C:\Users\foo",
+        ] {
+            let text = render_escaped(&[Node::Link {
+                text: "x".to_string(),
+                url: url.to_string(),
+            }]);
+            assert_eq!(text, format!("[x]({url})\n\n"));
+        }
+    }
+
+    #[test]
+    fn text_node_that_is_only_a_paren_url_link_is_escaped() {
+        let text = render_escaped(&[Node::Text {
+            text: "[x](https://en.wikipedia.org/wiki/Foo_(bar))".to_string(),
+        }]);
+        assert_eq!(text, "\\[x](https://en.wikipedia.org/wiki/Foo_(bar))\n\n");
+    }
+
+    #[test]
+    fn standalone_link_follows_the_scanner() {
+        for line in [
+            "[x](https://en.wikipedia.org/wiki/Foo_(bar))",
+            "[a [b] c](u)",
+            "[a](<b c>)",
+            "[a]()",
+        ] {
+            assert!(is_standalone_link(line), "{line:?}");
+        }
+        for line in ["[a](b)(c)", "[[wiki]]", "[a [b](c) d](e)", "[a](<b)"] {
+            assert!(!is_standalone_link(line), "{line:?}");
+        }
+    }
+
+    #[test]
+    fn parse_standalone_link_undoes_the_link_escapes() {
+        assert_eq!(
+            parse_standalone_link(r"[x\](y](<a b\>>)"),
+            Some(("x](y".to_string(), "a b>".to_string()))
+        );
+        assert_eq!(parse_standalone_link("x [a](b)"), None);
     }
 
     #[test]

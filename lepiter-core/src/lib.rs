@@ -59,7 +59,8 @@ pub use parse::{
 };
 pub use render::{
     BlockEscaping, escape_block_start, is_standalone_link, normalize_text, page_content_contains,
-    render_nodes_to_text, render_nodes_to_text_with, render_page_to_text, unescape_block_start,
+    parse_standalone_link, render_nodes_to_text, render_nodes_to_text_with, render_page_to_text,
+    unescape_block_start,
 };
 pub use util::extract_link_targets;
 

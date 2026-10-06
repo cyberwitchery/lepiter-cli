@@ -27,7 +27,8 @@ pub struct InlineLink<'a> {
     /// between `[` and its matching `]`; for [`LinkKind::Wiki`] it equals
     /// `target`.
     pub label: &'a str,
-    /// The link target, trimmed of surrounding whitespace. Never empty.
+    /// The link target, exactly as written between `<` and `>` when it is
+    /// bracketed and trimmed of surrounding whitespace otherwise. Never blank.
     pub target: &'a str,
     /// Byte range of the whole construct within the source text.
     pub range: Range<usize>,
@@ -48,14 +49,18 @@ pub struct InlineLink<'a> {
 /// nested link is reported instead — a link inside an image's alt text is part
 /// of the image, so it does not count.
 ///
-/// A `[`, `]`, `(` or `)` preceded by an odd number of backslashes is literal
-/// text and delimits nothing. Labels and targets are reported as raw slices, so
-/// an escape inside one is still spelled with its backslash.
+/// A `<target>` may hold spaces and any parentheses, but no line break or
+/// unescaped `<` or `>`; a target opening with `<` that does not close so is no link.
+///
+/// A `[`, `]`, `(`, `)`, `<` or `>` preceded by an odd number of backslashes is
+/// literal text and delimits nothing. Labels and targets are reported as raw
+/// slices, so an escape inside one is still spelled with its backslash.
 pub fn scan_inline_links(text: &str) -> InlineLinks<'_> {
     InlineLinks {
         text,
         i: 0,
         guard_nesting: true,
+        keep_blank: false,
     }
 }
 
@@ -65,7 +70,21 @@ fn scan_shallow(text: &str) -> InlineLinks<'_> {
         text,
         i: 0,
         guard_nesting: false,
+        keep_blank: false,
     }
+}
+
+/// The one `[label](target)` link that is all of the trimmed `line`, blank target allowed.
+pub(crate) fn whole_line_link(line: &str) -> Option<InlineLink<'_>> {
+    let line = line.trim();
+    let link = InlineLinks {
+        text: line,
+        i: 0,
+        guard_nesting: true,
+        keep_blank: true,
+    }
+    .next()?;
+    (link.kind == LinkKind::Markdown && link.range == (0..line.len())).then_some(link)
 }
 
 /// Iterator returned by [`scan_inline_links`].
@@ -73,6 +92,7 @@ pub struct InlineLinks<'a> {
     text: &'a str,
     i: usize,
     guard_nesting: bool,
+    keep_blank: bool,
 }
 
 impl<'a> Iterator for InlineLinks<'a> {
@@ -106,19 +126,17 @@ impl<'a> Iterator for InlineLinks<'a> {
                 && let Some(label_end) = find_balanced_close_bracket(bytes, i + 1)
                 && label_end + 1 < bytes.len()
                 && bytes[label_end + 1] == b'('
-                && let Some(target_end) = find_balanced_close_paren(bytes, label_end + 2)
+                && let Some((target, target_end)) = find_destination(self.text, label_end + 2)
+                && (self.keep_blank || !target.trim().is_empty())
                 && (!self.guard_nesting || !nests_a_link(&self.text[i + 1..label_end]))
             {
-                let target = self.text[label_end + 2..target_end].trim();
-                if !target.is_empty() {
-                    self.i = target_end + 1;
-                    return Some(InlineLink {
-                        kind: LinkKind::Markdown,
-                        label: &self.text[i + 1..label_end],
-                        target,
-                        range: i..target_end + 1,
-                    });
-                }
+                self.i = target_end + 1;
+                return Some(InlineLink {
+                    kind: LinkKind::Markdown,
+                    label: &self.text[i + 1..label_end],
+                    target,
+                    range: i..target_end + 1,
+                });
             }
             self.i += 1;
         }
@@ -142,18 +160,86 @@ pub fn rewrite_inline_links(
     for link in scan_inline_links(text) {
         out.push_str(&text[cursor..link.range.start]);
         match rewrite(link.kind, link.target) {
-            Some(new_target) => {
-                out.push('[');
-                out.push_str(link.label);
-                out.push_str("](");
-                out.push_str(&new_target);
-                out.push(')');
-            }
+            Some(new_target) => push_link(&mut out, link.label, &new_target),
             None => out.push_str(&text[link.range.clone()]),
         }
         cursor = link.range.end;
     }
     out.push_str(&text[cursor..]);
+    out
+}
+
+/// Writes `[label](target)`, bracketing a target that would not read back bare.
+pub(crate) fn push_link(out: &mut String, label: &str, target: &str) {
+    out.push('[');
+    out.push_str(label);
+    out.push_str("](");
+    if needs_angle_brackets(target) {
+        let bytes = target.as_bytes();
+        out.push('<');
+        for (i, c) in target.char_indices() {
+            if matches!(c, '<' | '>') && !is_escaped(bytes, i) {
+                out.push('\\');
+            }
+            out.push(c);
+        }
+        out.push('>');
+    } else {
+        out.push_str(target);
+    }
+    out.push(')');
+}
+
+fn needs_angle_brackets(target: &str) -> bool {
+    target.starts_with('<')
+        || target.starts_with(char::is_whitespace)
+        || target.ends_with(char::is_whitespace)
+        || target.contains(|c: char| c == ' ' || c.is_ascii_control())
+        || !parens_balance(target.as_bytes())
+}
+
+fn parens_balance(bytes: &[u8]) -> bool {
+    let mut depth = 0usize;
+    for (i, &byte) in bytes.iter().enumerate() {
+        if !matches!(byte, b'(' | b')') || is_escaped(bytes, i) {
+            continue;
+        }
+        match byte {
+            b'(' => depth += 1,
+            _ if depth == 0 => return false,
+            _ => depth -= 1,
+        }
+    }
+    depth == 0
+}
+
+/// Backslash-escapes each of `special`, and each backslash that would escape what follows it.
+pub(crate) fn escape(text: &str, special: &[char]) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        let escapes_next = c == '\\' && chars.peek().is_none_or(char::is_ascii_punctuation);
+        if escapes_next || special.contains(&c) {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Drops each backslash that escapes ASCII punctuation.
+pub(crate) fn unescape(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut chars = raw.chars().peekable();
+    while let Some(c) = chars.next() {
+        match chars.peek() {
+            Some(&next) if c == '\\' && next.is_ascii_punctuation() => {
+                out.push(next);
+                chars.next();
+            }
+            _ => out.push(c),
+        }
+    }
     out
 }
 
@@ -204,6 +290,32 @@ fn nests_a_link(label: &str) -> bool {
                 || bytes[link.range.start - 1] != b'!'
                 || is_escaped(bytes, link.range.start - 1)
         })
+}
+
+/// The target of the link whose `(` precedes `start`, and the index of its closing `)`.
+fn find_destination(text: &str, start: usize) -> Option<(&str, usize)> {
+    let bytes = text.as_bytes();
+    let open = text.len() - text[start..].trim_start().len();
+    if bytes.get(open) != Some(&b'<') {
+        let end = find_balanced_close_paren(bytes, start)?;
+        return Some((text[start..end].trim(), end));
+    }
+    let close = find_angle_close(bytes, open + 1)?;
+    let end = text.len() - text[close + 1..].trim_start().len();
+    (bytes.get(end) == Some(&b')')).then(|| (&text[open + 1..close], end))
+}
+
+fn find_angle_close(bytes: &[u8], start: usize) -> Option<usize> {
+    for (i, &byte) in bytes.iter().enumerate().skip(start) {
+        match byte {
+            b'\n' | b'\r' => return None,
+            b'<' | b'>' if is_escaped(bytes, i) => {}
+            b'<' => return None,
+            b'>' => return Some(i),
+            _ => {}
+        }
+    }
+    None
 }
 
 fn find_balanced_close_paren(bytes: &[u8], start: usize) -> Option<usize> {
@@ -600,6 +712,91 @@ mod tests {
             vec!["https://en.wikipedia.org/wiki/Ruby_(programming_language)"]
         );
         assert_eq!(out, "see [Ruby](page:abc) here");
+    }
+
+    #[test]
+    fn an_angle_bracket_target_is_reported_without_its_brackets() {
+        let text = "[a](<my file (1).md>) b";
+        let links = scan(text);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].label, "a");
+        assert_eq!(links[0].target, "my file (1).md");
+        assert_eq!(&text[links[0].range.clone()], "[a](<my file (1).md>)");
+    }
+
+    #[test]
+    fn an_angle_bracket_target_may_hold_unbalanced_parens() {
+        assert_eq!(scan("[a](<x(y>)")[0].target, "x(y");
+        assert_eq!(scan("[a](<x)y>)")[0].target, "x)y");
+    }
+
+    #[test]
+    fn an_angle_bracket_target_keeps_inner_whitespace_and_escapes() {
+        assert_eq!(scan("[a]( < x > )")[0].target, " x ");
+        assert_eq!(scan(r"[a](<\<x\>>)")[0].target, r"\<x\>");
+    }
+
+    #[test]
+    fn an_angle_bracket_target_that_does_not_close_cleanly_yields_no_link() {
+        for text in [
+            "[a](<b)",
+            "[a](<b<c>)",
+            "[a](<b\nc>)",
+            "[a](<b> c)",
+            "[a](<b>c)",
+            "[a](<>)",
+            "[a](< >)",
+        ] {
+            assert!(scan(text).is_empty(), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn a_bare_target_may_hold_angle_brackets_after_its_start() {
+        assert_eq!(scan("[a](x<y>)")[0].target, "x<y>");
+    }
+
+    #[test]
+    fn rewrite_brackets_a_target_that_cannot_be_written_bare() {
+        for (new_target, written) in [
+            ("my file.md", "[a](<my file.md>)"),
+            ("x(y", "[a](<x(y>)"),
+            ("x)y", "[a](<x)y>)"),
+            ("<x>", r"[a](<\<x\>>)"),
+            ("Foo_(bar)", "[a](Foo_(bar))"),
+            (r"x\(y", r"[a](x\(y)"),
+            (r"x y\<z", r"[a](<x y\<z>)"),
+        ] {
+            let out = rewrite_inline_links("[a](b)", |_, _| Some(new_target.to_string()));
+            assert_eq!(out, written);
+            assert_eq!(unescape(scan(&out)[0].target), unescape(new_target));
+        }
+    }
+
+    #[test]
+    fn rewrite_sees_an_angle_bracket_target_unbracketed() {
+        let mut seen = Vec::new();
+        let out = rewrite_inline_links("[a](<b c>) [d](<e f>)", |_, target| {
+            seen.push(target.to_string());
+            (target == "b c").then(|| "page:x".to_string())
+        });
+        assert_eq!(seen, ["b c", "e f"]);
+        assert_eq!(out, "[a](page:x) [d](<e f>)");
+    }
+
+    #[test]
+    fn whole_line_link_is_one_markdown_link_spanning_the_trimmed_line() {
+        assert_eq!(whole_line_link("  [a](b)  ").map(|l| l.target), Some("b"));
+        assert_eq!(whole_line_link("[a]()").map(|l| l.target), Some(""));
+        for line in [
+            "[a](b) c",
+            "c [a](b)",
+            "[a](b)(c)",
+            "[[a]]",
+            "[a [b](c) d](e)",
+        ] {
+            assert!(whole_line_link(line).is_none(), "{line:?}");
+        }
     }
 
     #[test]

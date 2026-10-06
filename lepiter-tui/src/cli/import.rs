@@ -659,6 +659,8 @@ mod tests {
         ("tab", "a\tb"),
         ("carriage return", "a\rb"),
         ("carriage return and space", "a b\rc"),
+        ("carriage return and paren", "a(\rb"),
+        ("carriage return and leading angle", "<a\rb"),
         ("blank", ""),
         ("padded", " x "),
         ("nbsp before", "\u{a0}x"),
@@ -706,6 +708,21 @@ mod tests {
             assert!(
                 matches!(&snippets[..], [Snippet::Text(t)] if t == line),
                 "{line:?} exported as {markdown:?} imported as {snippets:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_url_with_a_line_ending_and_whitespace_at_an_edge_comes_back_as_text() {
+        for url in [" a\rb", "a\rb ", "\rab", "ab\r", "a\rb\u{a0}"] {
+            let markdown = export(Node::Link {
+                text: "x".to_string(),
+                url: url.to_string(),
+            });
+            let snippets = parse_markdown_body(&markdown, &HashMap::new());
+            assert!(
+                matches!(&snippets[..], [Snippet::Text(_)]),
+                "{url:?} exported as {markdown:?} imported as {snippets:?}"
             );
         }
     }

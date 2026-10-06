@@ -169,35 +169,45 @@ pub fn rewrite_inline_links(
     out
 }
 
-/// Writes `[label](target)`, bracketing a target that would not read back bare.
+/// Writes `[label](target)`, bracketing or escaping a target that would not read back bare.
 pub(crate) fn push_link(out: &mut String, label: &str, target: &str) {
     out.push('[');
     out.push_str(label);
     out.push_str("](");
     if needs_angle_brackets(target) {
-        let bytes = target.as_bytes();
         out.push('<');
-        for (i, c) in target.char_indices() {
-            if matches!(c, '<' | '>') && !is_escaped(bytes, i) {
-                out.push('\\');
-            }
-            out.push(c);
-        }
+        push_escaped(out, target, |_, c| matches!(c, '<' | '>'));
         out.push('>');
+    } else if target.contains(['\r', '\n']) {
+        let balanced = parens_balance(target.as_bytes());
+        push_escaped(out, target, |i, c| {
+            (i == 0 && c == '<') || (!balanced && matches!(c, '(' | ')'))
+        });
     } else {
         out.push_str(target);
     }
     out.push(')');
 }
 
+/// Pushes `text`, backslash-escaping each unescaped char at `i` for which `special(i, c)` holds.
+fn push_escaped(out: &mut String, text: &str, special: impl Fn(usize, char) -> bool) {
+    let bytes = text.as_bytes();
+    for (i, c) in text.char_indices() {
+        if special(i, c) && !is_escaped(bytes, i) {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+}
+
 fn needs_angle_brackets(target: &str) -> bool {
-    target.starts_with('<')
-        || target.starts_with(char::is_whitespace)
+    target.starts_with(char::is_whitespace)
         || target.ends_with(char::is_whitespace)
         // `<…>` can't hold a line ending
-        || (target.contains(|c: char| c == ' ' || c.is_ascii_control())
-            && !target.contains(['\r', '\n']))
-        || !parens_balance(target.as_bytes())
+        || (!target.contains(['\r', '\n'])
+            && (target.starts_with('<')
+                || target.contains(|c: char| c == ' ' || c.is_ascii_control())
+                || !parens_balance(target.as_bytes())))
 }
 
 fn parens_balance(bytes: &[u8]) -> bool {
@@ -771,6 +781,10 @@ mod tests {
             (r"x y\<z", r"[a](<x y\<z>)"),
             ("x y\rz", "[a](x y\rz)"),
             ("x\ny", "[a](x\ny)"),
+            ("x(\ry", "[a](x\\(\ry)"),
+            ("<x\ry", "[a](\\<x\ry)"),
+            ("(x)\r<y>", "[a]((x)\r<y>)"),
+            ("x\\((\ry", "[a](x\\(\\(\ry)"),
         ] {
             let out = rewrite_inline_links("[a](b)", |_, _| Some(new_target.to_string()));
             assert_eq!(out, written);

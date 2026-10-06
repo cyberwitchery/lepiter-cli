@@ -657,6 +657,8 @@ mod tests {
         ("windows", r"C:\Users\foo"),
         ("escapes", r"a\*b\(c\"),
         ("tab", "a\tb"),
+        ("carriage return", "a\rb"),
+        ("carriage return and space", "a b\rc"),
         ("blank", ""),
         ("padded", " x "),
         ("nbsp before", "\u{a0}x"),

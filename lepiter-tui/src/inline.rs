@@ -40,10 +40,10 @@ pub enum InlineElement {
 /// syntax.
 ///
 /// link syntax is whatever [`scan_inline_links`] accepts, and targets are
-/// reported as it reports them: trimmed, never empty. a link inside a
-/// `{{annotation}}` stays part of the annotation. emphasis markers inside a
-/// code span are literal text; links and annotations are still recognised
-/// there.
+/// reported as it reports them: never blank, and trimmed unless written as
+/// `<target>`. a link inside a `{{annotation}}` stays part of the annotation.
+/// emphasis markers inside a code span are literal text; links and annotations
+/// are still recognised there.
 ///
 /// an image is a `[label](target)` link marked by a leading `!`, so every link
 /// rule applies to it; the `!` is literal text when an odd run of backslashes

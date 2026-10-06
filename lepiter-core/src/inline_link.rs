@@ -194,7 +194,9 @@ fn needs_angle_brackets(target: &str) -> bool {
     target.starts_with('<')
         || target.starts_with(char::is_whitespace)
         || target.ends_with(char::is_whitespace)
-        || target.contains(|c: char| c == ' ' || c.is_ascii_control())
+        // `<…>` can't hold a line ending
+        || (target.contains(|c: char| c == ' ' || c.is_ascii_control())
+            && !target.contains(['\r', '\n']))
         || !parens_balance(target.as_bytes())
 }
 
@@ -742,6 +744,7 @@ mod tests {
             "[a](<b)",
             "[a](<b<c>)",
             "[a](<b\nc>)",
+            "[a](<b\rc>)",
             "[a](<b> c)",
             "[a](<b>c)",
             "[a](<>)",
@@ -766,6 +769,8 @@ mod tests {
             ("Foo_(bar)", "[a](Foo_(bar))"),
             (r"x\(y", r"[a](x\(y)"),
             (r"x y\<z", r"[a](<x y\<z>)"),
+            ("x y\rz", "[a](x y\rz)"),
+            ("x\ny", "[a](x\ny)"),
         ] {
             let out = rewrite_inline_links("[a](b)", |_, _| Some(new_target.to_string()));
             assert_eq!(out, written);

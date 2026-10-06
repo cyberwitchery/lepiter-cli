@@ -4,6 +4,16 @@ all notable changes to this project are documented in this file.
 
 ## Unreleased
 
+### changed
+- re-importing a markdown export written by 0.12.0 or earlier can change some
+  link snippets, since `import` now reads them with the page's link grammar
+  (backslash escapes, balanced brackets, `[[…]]` first). a backslash before
+  punctuation in a url is read as an escape, so `\\server\share\file.txt`,
+  `..\..\docs\a.md` and `C:\Users\foo\.config\x.json` each lose one. a label
+  with an odd bracket or a trailing backslash, or a url with an unbalanced `(`,
+  comes back as a text snippet, and a text snippet that is exactly one link
+  whose url balances its parentheses comes back as a link
+
 ### fixed
 - a link snippet now survives `export` and `import` whatever its text and url
   hold. `export` wrote `[text](url)` as it came, so a `[` or `]` in the text, or

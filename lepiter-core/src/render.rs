@@ -113,7 +113,12 @@ fn render_nodes_into(
             }
             Node::Link { text, url } => {
                 let rewritten = rewrite(LinkKind::Markdown, url).unwrap_or_else(|| url.clone());
-                push_link(out, &escape(text, &['[', ']']), &escape(&rewritten, &[]));
+                match escaping {
+                    BlockEscaping::Escape => {
+                        push_link(out, &escape(text, &['[', ']']), &escape(&rewritten, &[]))
+                    }
+                    BlockEscaping::Verbatim => out.push_str(&format!("[{text}]({rewritten})")),
+                }
                 out.push_str("\n\n");
             }
             Node::Quote { text } => {
@@ -629,6 +634,15 @@ mod tests {
             }]);
             assert_eq!(text, format!("[x]({url})\n\n"));
         }
+    }
+
+    #[test]
+    fn verbatim_link_node_is_written_as_the_content_has_it() {
+        let text = render_nodes_to_text(&[Node::Link {
+            text: "a ] b".to_string(),
+            url: r"my file\.md".to_string(),
+        }]);
+        assert_eq!(text, "[a ] b](my file\\.md)\n\n");
     }
 
     #[test]

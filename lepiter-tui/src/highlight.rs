@@ -318,8 +318,8 @@ fn tokenize_line<'a>(
 
         if syntax.heredocs
             && (i == 0 || bytes[i - 1] != b'<')
-            && !in_arithmetic(&bytes[..i])
             && let Some((end, word)) = heredoc_opener(&line[i..])
+            && !in_arithmetic(&bytes[..i])
         {
             i += end;
             tokens.push(CodeToken::StringLit(&line[start..i]));
@@ -848,6 +848,8 @@ mod tests {
             ("cat <<EOF. | sort", "EOF."),
             ("cat <<'A B' > out", "A B"),
             ("x=$(cat <<EOF)", "EOF"),
+            ("cat <<EOF|sort", "EOF"),
+            ("cat <<EOF\t> out", "EOF"),
         ] {
             let lines = block(&[open, "it's", word, "ls"], "shellcommand");
             assert_eq!(lines[1], vec![CodeToken::StringLit("it's")], "{open}");
@@ -894,6 +896,18 @@ mod tests {
             "/* c */ /a/",
             "return /a/",
             "typeof /a/",
+            "x instanceof /a/",
+            "x in /a/",
+            "for (x of /a/)",
+            "new /a/",
+            "delete /a/",
+            "void /a/",
+            "throw /a/",
+            "case /a/:",
+            "do /a/",
+            "else /a/",
+            "yield /a/",
+            "await /a/",
         ] {
             let tokens = &block(&[line], "javascript")[0];
             assert!(strings(tokens).iter().all(|s| *s == "/a/"), "{line}");

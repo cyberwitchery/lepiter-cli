@@ -42,7 +42,8 @@ all notable changes to this project are documented in this file.
   as a whole, not just its first line. in smalltalk, yaml and shell
   single-quoted strings a backslash is a plain character, so `'C:\'` no
   longer runs to the end of the line, and smalltalk and yaml read `''` as a
-  quote
+  quote. a javascript regex literal is coloured as a string, so a backtick or
+  `/*` inside one no longer starts a template or a comment
 
 ## 0.12.0 - 2026-09-12
 

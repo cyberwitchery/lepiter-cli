@@ -32,6 +32,8 @@ struct LanguageSyntax {
     char_escape: Option<u8>,
     /// `<<WORD` opens a heredoc: the lines up to the one holding `WORD` are a string.
     heredocs: bool,
+    /// a `/` where an operand is expected opens a regex literal, e.g. javascript `/[/*]/g`.
+    regex_literals: bool,
     /// language keywords rendered distinctly.
     keywords: &'static [&'static str],
 }
@@ -75,6 +77,7 @@ static DEFAULT_SYNTAX: LanguageSyntax = LanguageSyntax {
     strings: &[escaped(b'"'), escaped(b'\'')],
     char_escape: None,
     heredocs: false,
+    regex_literals: false,
     keywords: &[],
 };
 
@@ -90,6 +93,7 @@ static SMALLTALK_SYNTAX: LanguageSyntax = LanguageSyntax {
     }],
     char_escape: Some(b'$'),
     heredocs: false,
+    regex_literals: false,
     keywords: &["self", "super", "true", "false", "nil", "thisContext"],
 };
 
@@ -108,6 +112,7 @@ static PYTHON_SYNTAX: LanguageSyntax = LanguageSyntax {
     ],
     char_escape: None,
     heredocs: false,
+    regex_literals: false,
     keywords: &[
         "def", "class", "return", "if", "elif", "else", "for", "while", "in", "try", "except",
         "with", "as", "import", "from", "pass", "break", "continue", "True", "False", "None",
@@ -127,6 +132,7 @@ static JAVASCRIPT_SYNTAX: LanguageSyntax = LanguageSyntax {
     ],
     char_escape: None,
     heredocs: false,
+    regex_literals: true,
     keywords: &[
         "function",
         "return",
@@ -167,6 +173,7 @@ static SHELL_SYNTAX: LanguageSyntax = LanguageSyntax {
     ],
     char_escape: Some(b'\\'),
     heredocs: true,
+    regex_literals: false,
     keywords: &[
         "if", "then", "fi", "for", "in", "do", "done", "case", "esac", "while", "function", "echo",
         "exit",
@@ -179,6 +186,7 @@ static JSON_SYNTAX: LanguageSyntax = LanguageSyntax {
     strings: &[escaped(b'"')],
     char_escape: None,
     heredocs: false,
+    regex_literals: false,
     keywords: &["true", "false", "null"],
 };
 
@@ -194,6 +202,7 @@ static YAML_SYNTAX: LanguageSyntax = LanguageSyntax {
     ],
     char_escape: None,
     heredocs: false,
+    regex_literals: false,
     keywords: &["true", "false", "null"],
 };
 
@@ -301,8 +310,15 @@ fn tokenize_line<'a>(
             continue;
         }
 
+        if syntax.regex_literals && b == b'/' && regex_allowed(&tokens) {
+            i = regex_end(bytes, i);
+            tokens.push(CodeToken::StringLit(&line[start..i]));
+            continue;
+        }
+
         if syntax.heredocs
             && (i == 0 || bytes[i - 1] != b'<')
+            && !in_arithmetic(&bytes[..i])
             && let Some((end, word)) = heredoc_opener(&line[i..])
         {
             i += end;
@@ -362,6 +378,67 @@ fn tokenize_line<'a>(
     tokens
 }
 
+/// words after which an expression starts, so a `/` opens a regex.
+const REGEX_AFTER_WORDS: &[&str] = &[
+    "return",
+    "typeof",
+    "instanceof",
+    "in",
+    "of",
+    "new",
+    "delete",
+    "void",
+    "throw",
+    "case",
+    "do",
+    "else",
+    "yield",
+    "await",
+];
+
+/// whether a `/` after `tokens` opens a regex rather than dividing.
+fn regex_allowed(tokens: &[CodeToken<'_>]) -> bool {
+    match tokens
+        .iter()
+        .rev()
+        .find(|t| !matches!(t, CodeToken::Punct(c) if c.is_whitespace()))
+    {
+        None | Some(CodeToken::Comment(_)) => true,
+        Some(CodeToken::Punct(c)) => !(matches!(c, ')' | ']' | '$') || c.is_alphanumeric()),
+        Some(CodeToken::Keyword(word) | CodeToken::Ident(word)) => REGEX_AFTER_WORDS.contains(word),
+        Some(CodeToken::StringLit(_) | CodeToken::Number(_)) => false,
+    }
+}
+
+/// the end of the regex opening at `i`: past its closing `/` and flags, else the end of the line.
+fn regex_end(bytes: &[u8], i: usize) -> usize {
+    let mut class = false;
+    let mut j = i + 1;
+    while j < bytes.len() {
+        match bytes[j] {
+            b'\\' => j += 1,
+            b'[' => class = true,
+            b']' => class = false,
+            b'/' if !class => {
+                j += 1;
+                while j < bytes.len() && bytes[j].is_ascii_alphabetic() {
+                    j += 1;
+                }
+                return j;
+            }
+            _ => {}
+        }
+        j += 1;
+    }
+    bytes.len()
+}
+
+/// whether `before` leaves a `((` arithmetic expression open, where `<<` is a shift.
+fn in_arithmetic(before: &[u8]) -> bool {
+    let pairs = |pair: &[u8]| before.windows(2).filter(|w| *w == pair).count();
+    pairs(b"((") > pairs(b"))")
+}
+
 /// parses a heredoc opener such as `<<EOF`, `<<-'EOF'` or `<< "EOF"` at the
 /// start of `text`, returning its length and terminating word.
 fn heredoc_opener(text: &str) -> Option<(usize, &str)> {
@@ -373,17 +450,17 @@ fn heredoc_opener(text: &str) -> Option<(usize, &str)> {
     let rest = rest.strip_prefix('\\').unwrap_or(rest);
     let quote = rest.chars().next().filter(|c| matches!(c, '\'' | '"'));
     let rest = &rest[quote.map_or(0, char::len_utf8)..];
-    let len = rest
-        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-        .unwrap_or(rest.len());
+    let len = match quote {
+        Some(q) => rest.find(q)?,
+        None => rest
+            .find([' ', '\t', '|', '&', ';', '(', ')', '<', '>'])
+            .unwrap_or(rest.len()),
+    };
     let word = &rest[..len];
     if !word.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_') {
         return None;
     }
-    let after = match quote {
-        Some(q) => rest[len..].strip_prefix(q)?,
-        None => &rest[len..],
-    };
+    let after = &rest[len + quote.map_or(0, char::len_utf8)..];
     Some((text.len() - after.len(), word))
 }
 
@@ -746,10 +823,115 @@ mod tests {
 
     #[test]
     fn shell_here_string_and_shift_are_not_heredocs() {
-        let lines = block(&["cat <<<word", "y=$((1 << 2))", "ls"], "shellcommand");
-        assert!(strings(&lines[0]).is_empty());
-        assert!(strings(&lines[1]).is_empty());
-        assert_eq!(lines[2], vec![CodeToken::Ident("ls")]);
+        for line in [
+            "cat <<<word",
+            "y=$((1 << 2))",
+            "mask=$(( (1 << bits) - 1 ))",
+            "bit=$((1<<n))",
+        ] {
+            let lines = block(&[line, "ls"], "shellcommand");
+            assert!(strings(&lines[0]).is_empty(), "{line}");
+            assert_eq!(lines[1], vec![CodeToken::Ident("ls")], "{line}");
+        }
+    }
+
+    #[test]
+    fn shell_heredoc_opens_after_a_closed_arithmetic_expression() {
+        let lines = block(&["(( n )) && cat <<EOF", "ls", "EOF"], "shellcommand");
+        assert_eq!(lines[1], vec![CodeToken::StringLit("ls")]);
+    }
+
+    #[test]
+    fn shell_heredoc_word_runs_to_a_blank_or_metacharacter() {
+        for (open, word) in [
+            ("cat <<END-OF-TEXT", "END-OF-TEXT"),
+            ("cat <<EOF. | sort", "EOF."),
+            ("cat <<'A B' > out", "A B"),
+            ("x=$(cat <<EOF)", "EOF"),
+        ] {
+            let lines = block(&[open, "it's", word, "ls"], "shellcommand");
+            assert_eq!(lines[1], vec![CodeToken::StringLit("it's")], "{open}");
+            assert_eq!(lines[3], vec![CodeToken::Ident("ls")], "{open}");
+        }
+    }
+
+    #[test]
+    fn javascript_regex_literal_does_not_leak_into_the_next_lines() {
+        for (line, regex) in [
+            (
+                "const EMAIL = /^[a-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\\.[a-z0-9!#$%&'*+/=?^_`{|}~-]+)*@example\\.com$/i;",
+                "/^[a-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\\.[a-z0-9!#$%&'*+/=?^_`{|}~-]+)*@example\\.com$/i",
+            ),
+            (
+                r"allowed = !ch || /[[{(,;:?/*=+\-~!|&%^<>]/.test(ch);",
+                r"/[[{(,;:?/*=+\-~!|&%^<>]/",
+            ),
+            (r#"s = s.replace(/\/*$/, "");"#, r"/\/*$/"),
+        ] {
+            let lines = block(
+                &[line, "const retries = 3; // a comment", "return retries;"],
+                "javascript",
+            );
+            assert_eq!(strings(&lines[0])[0], regex);
+            assert!(comments(&lines[0]).is_empty(), "{line}");
+            assert_eq!(comments(&lines[1]), vec!["// a comment"], "{line}");
+            assert_eq!(lines[2][0], CodeToken::Keyword("return"), "{line}");
+        }
+    }
+
+    #[test]
+    fn javascript_regex_follows_an_operator_keyword_or_line_start() {
+        for line in [
+            "/a/.test(s)",
+            "  /a/.test(s)",
+            "x = /a/",
+            "f(/a/, /a/)",
+            "[/a/]",
+            "{ k: /a/ }",
+            "!/a/ && /a/ || /a/",
+            "c ? /a/ : /a/",
+            "} /a/; /a/",
+            "/* c */ /a/",
+            "return /a/",
+            "typeof /a/",
+        ] {
+            let tokens = &block(&[line], "javascript")[0];
+            assert!(strings(tokens).iter().all(|s| *s == "/a/"), "{line}");
+            assert_eq!(strings(tokens).len(), line.matches("/a/").count(), "{line}");
+        }
+    }
+
+    #[test]
+    fn javascript_division_is_not_a_regex() {
+        for line in [
+            "a / b / c",
+            "x = y / 2 // c",
+            "arr[i] / n / 2",
+            "f(x) / g(y) / 2",
+            "1 / 2 / 3",
+            "$ / 2 / 3",
+            "\u{3c0} / 2 / 3",
+        ] {
+            let tokens = &block(&[line], "javascript")[0];
+            assert!(strings(tokens).is_empty(), "{line}");
+        }
+        let tokens = &block(&["x = y / 2 // c"], "javascript")[0];
+        assert_eq!(comments(tokens), vec!["// c"]);
+    }
+
+    #[test]
+    fn unterminated_javascript_regex_ends_at_end_of_line() {
+        let lines = block(&["x = /a`b\\", "y"], "javascript");
+        assert_eq!(strings(&lines[0]), vec!["/a`b\\"]);
+        assert_eq!(lines[1], vec![CodeToken::Ident("y")]);
+    }
+
+    #[test]
+    fn only_javascript_lexes_regex_literals() {
+        for language in ["python", "shellcommand", "pharo", "yaml", "markdown"] {
+            let tokens = &block(&["ls >/dev/null"], language)[0];
+            assert!(strings(tokens).is_empty(), "{language}");
+        }
     }
 
     #[test]

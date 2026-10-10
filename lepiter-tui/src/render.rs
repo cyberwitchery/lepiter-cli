@@ -844,6 +844,13 @@ mod tests {
         assert!(!has_fg(x, 0, Color::DarkGray));
     }
 
+    #[test]
+    fn code_block_strips_terminal_control_bytes() {
+        let mut out = Vec::new();
+        render_code_block(Some("python"), "x = '\x1b[2J' # \x07", &mut out);
+        assert_eq!(span_texts(&out[1]).concat(), "x = '[2J' #  ");
+    }
+
     // --- highlight_selected_link_markers ---
 
     #[test]

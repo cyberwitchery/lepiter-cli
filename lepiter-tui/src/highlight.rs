@@ -1,12 +1,12 @@
 //! shared code-highlighting tokenizer used by both the tui renderer
 //! (ratatui spans) and the cli pretty-printer (ansi escape codes).
 
-/// a single token produced by the code-line tokenizer.
+/// a single token produced by the code tokenizer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CodeToken<'a> {
-    /// rest-of-line comment (includes the comment marker).
+    /// comment, or the part of one that falls on this line.
     Comment(&'a str),
-    /// string literal including its quotes.
+    /// string literal, or the part of one that falls on this line.
     StringLit(&'a str),
     /// numeric literal (digits and dots).
     Number(&'a str),
@@ -18,28 +18,66 @@ pub enum CodeToken<'a> {
     Punct(char),
 }
 
-/// per-language lexing rules that drive [`tokenize_code_line`].
+/// per-language lexing rules that drive [`tokenize_code_block`].
 ///
 /// single source of truth for comment/string/keyword syntax.
 struct LanguageSyntax {
     /// rest-of-line comment markers, e.g. `#` or `//`.
     line_comments: &'static [&'static str],
-    /// paired block-comment delimiters, e.g. `("/*", "*/")`.
-    block_comment: Option<(&'static str, &'static str)>,
-    /// characters that open and close a string literal.
-    string_delims: &'static [char],
-    /// paired single-character comment delimiters, e.g. smalltalk `"…"`.
-    comment_delims: &'static [(char, char)],
+    /// paired comment delimiters, e.g. `("/*", "*/")` or smalltalk `("\"", "\"")`.
+    block_comments: &'static [(&'static str, &'static str)],
+    /// how a string opened by each quote character is lexed.
+    strings: &'static [StringDelim],
+    /// prefix that quotes the one character after it, e.g. smalltalk `$'`.
+    char_escape: Option<u8>,
+    /// `<<WORD` opens a heredoc: the lines up to the one holding `WORD` are a string.
+    heredocs: bool,
+    /// a `/` where an operand is expected opens a regex literal, e.g. javascript `/[/*]/g`.
+    regex_literals: bool,
     /// language keywords rendered distinctly.
     keywords: &'static [&'static str],
+}
+
+#[derive(Debug)]
+struct StringDelim {
+    quote: u8,
+    /// a backslash escapes the next character, line break included.
+    backslash: bool,
+    /// a doubled quote is a literal quote, e.g. smalltalk `'it''s'`.
+    doubled: bool,
+    /// the string may run past the end of its line.
+    multiline: bool,
+    /// three quotes open a string that runs to the next three, across lines.
+    triple: bool,
+}
+
+/// a single-line string in which a backslash escapes.
+const fn escaped(quote: u8) -> StringDelim {
+    StringDelim {
+        quote,
+        backslash: true,
+        doubled: false,
+        multiline: false,
+        triple: false,
+    }
+}
+
+/// a single-line string in which a backslash is an ordinary character.
+const fn verbatim(quote: u8) -> StringDelim {
+    StringDelim {
+        backslash: false,
+        ..escaped(quote)
+    }
 }
 
 /// languages with no known syntax: both quote styles are strings.
 static DEFAULT_SYNTAX: LanguageSyntax = LanguageSyntax {
     line_comments: &[],
-    block_comment: None,
-    string_delims: &['"', '\''],
-    comment_delims: &[],
+    block_comments: &[],
+    strings: &[escaped(b'"'), escaped(b'\'')],
+    char_escape: None,
+    heredocs: false,
+    regex_literals: false,
     keywords: &[],
 };
 
@@ -47,17 +85,34 @@ static DEFAULT_SYNTAX: LanguageSyntax = LanguageSyntax {
 /// the inverse of most languages.
 static SMALLTALK_SYNTAX: LanguageSyntax = LanguageSyntax {
     line_comments: &[],
-    block_comment: None,
-    string_delims: &['\''],
-    comment_delims: &[('"', '"')],
+    block_comments: &[("\"", "\"")],
+    strings: &[StringDelim {
+        doubled: true,
+        multiline: true,
+        ..verbatim(b'\'')
+    }],
+    char_escape: Some(b'$'),
+    heredocs: false,
+    regex_literals: false,
     keywords: &["self", "super", "true", "false", "nil", "thisContext"],
 };
 
 static PYTHON_SYNTAX: LanguageSyntax = LanguageSyntax {
     line_comments: &["#"],
-    block_comment: None,
-    string_delims: &['"', '\''],
-    comment_delims: &[],
+    block_comments: &[],
+    strings: &[
+        StringDelim {
+            triple: true,
+            ..escaped(b'"')
+        },
+        StringDelim {
+            triple: true,
+            ..escaped(b'\'')
+        },
+    ],
+    char_escape: None,
+    heredocs: false,
+    regex_literals: false,
     keywords: &[
         "def", "class", "return", "if", "elif", "else", "for", "while", "in", "try", "except",
         "with", "as", "import", "from", "pass", "break", "continue", "True", "False", "None",
@@ -66,9 +121,18 @@ static PYTHON_SYNTAX: LanguageSyntax = LanguageSyntax {
 
 static JAVASCRIPT_SYNTAX: LanguageSyntax = LanguageSyntax {
     line_comments: &["//"],
-    block_comment: Some(("/*", "*/")),
-    string_delims: &['"', '\''],
-    comment_delims: &[],
+    block_comments: &[("/*", "*/")],
+    strings: &[
+        escaped(b'"'),
+        escaped(b'\''),
+        StringDelim {
+            multiline: true,
+            ..escaped(b'`')
+        },
+    ],
+    char_escape: None,
+    heredocs: false,
+    regex_literals: true,
     keywords: &[
         "function",
         "return",
@@ -96,9 +160,20 @@ static JAVASCRIPT_SYNTAX: LanguageSyntax = LanguageSyntax {
 
 static SHELL_SYNTAX: LanguageSyntax = LanguageSyntax {
     line_comments: &["#"],
-    block_comment: None,
-    string_delims: &['"', '\''],
-    comment_delims: &[],
+    block_comments: &[],
+    strings: &[
+        StringDelim {
+            multiline: true,
+            ..escaped(b'"')
+        },
+        StringDelim {
+            multiline: true,
+            ..verbatim(b'\'')
+        },
+    ],
+    char_escape: Some(b'\\'),
+    heredocs: true,
+    regex_literals: false,
     keywords: &[
         "if", "then", "fi", "for", "in", "do", "done", "case", "esac", "while", "function", "echo",
         "exit",
@@ -107,17 +182,27 @@ static SHELL_SYNTAX: LanguageSyntax = LanguageSyntax {
 
 static JSON_SYNTAX: LanguageSyntax = LanguageSyntax {
     line_comments: &[],
-    block_comment: None,
-    string_delims: &['"'],
-    comment_delims: &[],
+    block_comments: &[],
+    strings: &[escaped(b'"')],
+    char_escape: None,
+    heredocs: false,
+    regex_literals: false,
     keywords: &["true", "false", "null"],
 };
 
 static YAML_SYNTAX: LanguageSyntax = LanguageSyntax {
     line_comments: &["#"],
-    block_comment: None,
-    string_delims: &['"', '\''],
-    comment_delims: &[],
+    block_comments: &[],
+    strings: &[
+        escaped(b'"'),
+        StringDelim {
+            doubled: true,
+            ..verbatim(b'\'')
+        },
+    ],
+    char_escape: None,
+    heredocs: false,
+    regex_literals: false,
     keywords: &["true", "false", "null"],
 };
 
@@ -136,101 +221,128 @@ fn syntax_for_language(language: Option<&str>) -> &'static LanguageSyntax {
     }
 }
 
-/// tokenise a single source line into [`CodeToken`]s.
+/// what the lexer is inside of where one line ends and the next begins.
+#[derive(Debug, Clone, Copy)]
+enum LexState<'a> {
+    Code,
+    /// a block comment, ended by the delimiter held here.
+    Comment(&'static str),
+    String {
+        delim: &'static StringDelim,
+        triple: bool,
+    },
+    /// a heredoc body, ended by a line holding just this word.
+    Heredoc(&'a str),
+}
+
+/// tokenise the lines of one code block into [`CodeToken`]s, one `Vec` per
+/// line. a comment or string still open at the end of a line carries on into
+/// the next, and nothing carries past the last line.
 ///
 /// `language` selects a [`LanguageSyntax`] table that controls comment, string
 /// and keyword lexing.
 ///
-/// tokens borrow directly from `line` — no per-token `String` is allocated.
+/// tokens borrow directly from the lines — no per-token `String` is allocated.
 /// every delimiter in the syntax table is ascii, which is single-byte in
-/// utf-8, so byte-level scanning is safe and only ever slices `line` at char
-/// boundaries.  only the `Punct` fallback decodes a full `char` (for
-/// multi-byte non-ascii punctuation).
-pub fn tokenize_code_line<'a>(line: &'a str, language: Option<&str>) -> Vec<CodeToken<'a>> {
+/// utf-8, so byte-level scanning is safe and only ever slices a line at char
+/// boundaries.
+pub fn tokenize_code_block<'a>(
+    lines: impl IntoIterator<Item = &'a str>,
+    language: Option<&str>,
+) -> Vec<Vec<CodeToken<'a>>> {
     let syntax = syntax_for_language(language);
+    let mut state = LexState::Code;
+    lines
+        .into_iter()
+        .map(|line| tokenize_line(line, syntax, &mut state))
+        .collect()
+}
+
+fn tokenize_line<'a>(
+    line: &'a str,
+    syntax: &'static LanguageSyntax,
+    state: &mut LexState<'a>,
+) -> Vec<CodeToken<'a>> {
     let bytes = line.as_bytes();
     let mut tokens = Vec::new();
+    let mut heredoc = None;
+    let mut start = 0;
     let mut i = 0;
 
-    while i < bytes.len() {
+    loop {
+        if !matches!(state, LexState::Code) {
+            let (end, next) = scan(*state, bytes, i);
+            if end > start {
+                let text = &line[start..end];
+                tokens.push(match state {
+                    LexState::String { .. } | LexState::Heredoc(_) => CodeToken::StringLit(text),
+                    _ => CodeToken::Comment(text),
+                });
+            }
+            *state = next;
+            i = end;
+        }
+        if i >= bytes.len() {
+            break;
+        }
+        start = i;
+        let rest = &bytes[i..];
         let b = bytes[i];
 
         // rest-of-line comments (e.g. `#`, `//`)
         if syntax
             .line_comments
             .iter()
-            .any(|m| bytes[i..].starts_with(m.as_bytes()))
+            .any(|m| rest.starts_with(m.as_bytes()))
         {
             tokens.push(CodeToken::Comment(&line[i..]));
-            return tokens;
+            break;
         }
 
-        // block comments (e.g. `/* … */`), scoped to this line
-        if let Some((open, close)) = syntax.block_comment
-            && bytes[i..].starts_with(open.as_bytes())
+        // block comments (e.g. `/* … */`)
+        if let Some(&(open, close)) = syntax
+            .block_comments
+            .iter()
+            .find(|(open, _)| rest.starts_with(open.as_bytes()))
         {
-            let start = i;
+            *state = LexState::Comment(close);
             i += open.len();
-            while i < bytes.len() && !bytes[i..].starts_with(close.as_bytes()) {
-                i += 1;
-            }
-            if i < bytes.len() {
-                i += close.len();
-            }
-            tokens.push(CodeToken::Comment(&line[start..i]));
             continue;
         }
 
-        // character-delimited comments and strings share an ascii-only guard so
-        // multi-byte lead bytes never match a delimiter.
-        if b.is_ascii() {
-            let cur = b as char;
+        if syntax.regex_literals && b == b'/' && regex_allowed(&tokens) {
+            i = regex_end(bytes, i);
+            tokens.push(CodeToken::StringLit(&line[start..i]));
+            continue;
+        }
 
-            // paired single-char comments (e.g. smalltalk `"…"`)
-            if let Some(&(_, close)) = syntax.comment_delims.iter().find(|(open, _)| *open == cur) {
-                let start = i;
-                i += 1;
-                while i < bytes.len() && bytes[i] != close as u8 {
-                    i += 1;
-                }
-                if i < bytes.len() {
-                    i += 1;
-                }
-                tokens.push(CodeToken::Comment(&line[start..i]));
-                continue;
-            }
+        if syntax.heredocs
+            && (i == 0 || bytes[i - 1] != b'<')
+            && let Some((end, word)) = heredoc_opener(&line[i..])
+            && !in_arithmetic(&bytes[..i])
+        {
+            i += end;
+            tokens.push(CodeToken::StringLit(&line[start..i]));
+            heredoc = Some(word);
+            continue;
+        }
 
-            // string literals
-            if syntax.string_delims.contains(&cur) {
-                let quote = b;
-                let start = i;
-                i += 1;
-                let mut escaped = false;
-                while i < bytes.len() {
-                    if escaped {
-                        escaped = false;
-                        i += 1;
-                        continue;
-                    }
-                    if bytes[i] == b'\\' {
-                        escaped = true;
-                        i += 1;
-                        continue;
-                    }
-                    if bytes[i] == quote {
-                        i += 1;
-                        break;
-                    }
-                    i += 1;
-                }
-                tokens.push(CodeToken::StringLit(&line[start..i]));
-                continue;
-            }
+        if syntax.char_escape == Some(b) {
+            i += 1 + line[i + 1..].chars().next().map_or(0, char::len_utf8);
+            tokens.push(CodeToken::StringLit(&line[start..i]));
+            continue;
+        }
+
+        // string literals
+        if let Some(delim) = syntax.strings.iter().find(|d| d.quote == b) {
+            let triple = delim.triple && rest.starts_with(&[b; 3]);
+            *state = LexState::String { delim, triple };
+            i += if triple { 3 } else { 1 };
+            continue;
         }
 
         // numeric literals
         if b.is_ascii_digit() {
-            let start = i;
             i += 1;
             while i < bytes.len() && (bytes[i].is_ascii_digit() || bytes[i] == b'.') {
                 i += 1;
@@ -241,7 +353,6 @@ pub fn tokenize_code_line<'a>(line: &'a str, language: Option<&str>) -> Vec<Code
 
         // identifiers and keywords
         if b.is_ascii_alphabetic() || b == b'_' {
-            let start = i;
             i += 1;
             while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
                 i += 1;
@@ -261,12 +372,151 @@ pub fn tokenize_code_line<'a>(line: &'a str, language: Option<&str>) -> Vec<Code
         i += ch.len_utf8();
     }
 
+    if let Some(word) = heredoc {
+        *state = LexState::Heredoc(word);
+    }
     tokens
+}
+
+/// words after which an expression starts, so a `/` opens a regex.
+const REGEX_AFTER_WORDS: &[&str] = &[
+    "return",
+    "typeof",
+    "instanceof",
+    "in",
+    "of",
+    "new",
+    "delete",
+    "void",
+    "throw",
+    "case",
+    "do",
+    "else",
+    "yield",
+    "await",
+];
+
+/// whether a `/` after `tokens` opens a regex rather than dividing.
+fn regex_allowed(tokens: &[CodeToken<'_>]) -> bool {
+    match tokens
+        .iter()
+        .rev()
+        .find(|t| !matches!(t, CodeToken::Punct(c) if c.is_whitespace()))
+    {
+        None | Some(CodeToken::Comment(_)) => true,
+        Some(CodeToken::Punct(c)) => !(matches!(c, ')' | ']' | '$') || c.is_alphanumeric()),
+        Some(CodeToken::Keyword(word) | CodeToken::Ident(word)) => REGEX_AFTER_WORDS.contains(word),
+        Some(CodeToken::StringLit(_) | CodeToken::Number(_)) => false,
+    }
+}
+
+/// the end of the regex opening at `i`: past its closing `/` and flags, else the end of the line.
+fn regex_end(bytes: &[u8], i: usize) -> usize {
+    let mut class = false;
+    let mut j = i + 1;
+    while j < bytes.len() {
+        match bytes[j] {
+            b'\\' => j += 1,
+            b'[' => class = true,
+            b']' => class = false,
+            b'/' if !class => {
+                j += 1;
+                while j < bytes.len() && bytes[j].is_ascii_alphabetic() {
+                    j += 1;
+                }
+                return j;
+            }
+            _ => {}
+        }
+        j += 1;
+    }
+    bytes.len()
+}
+
+/// whether `before` leaves a `((` arithmetic expression open, where `<<` is a shift.
+fn in_arithmetic(before: &[u8]) -> bool {
+    let pairs = |pair: &[u8]| before.windows(2).filter(|w| *w == pair).count();
+    pairs(b"((") > pairs(b"))")
+}
+
+/// parses a heredoc opener such as `<<EOF`, `<<-'EOF'` or `<< "EOF"` at the
+/// start of `text`, returning its length and terminating word.
+fn heredoc_opener(text: &str) -> Option<(usize, &str)> {
+    let rest = text.strip_prefix("<<")?;
+    let rest = rest
+        .strip_prefix('-')
+        .unwrap_or(rest)
+        .trim_start_matches(' ');
+    let rest = rest.strip_prefix('\\').unwrap_or(rest);
+    let quote = rest.chars().next().filter(|c| matches!(c, '\'' | '"'));
+    let rest = &rest[quote.map_or(0, char::len_utf8)..];
+    let len = match quote {
+        Some(q) => rest.find(q)?,
+        None => rest
+            .find([' ', '\t', '|', '&', ';', '(', ')', '<', '>'])
+            .unwrap_or(rest.len()),
+    };
+    let word = &rest[..len];
+    if !word.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_') {
+        return None;
+    }
+    let after = &rest[len + quote.map_or(0, char::len_utf8)..];
+    Some((text.len() - after.len(), word))
+}
+
+/// scans from `i` to the end of the comment or string `state` is inside,
+/// returning where it stops and the state after it.
+fn scan<'a>(state: LexState<'a>, bytes: &[u8], mut i: usize) -> (usize, LexState<'a>) {
+    match state {
+        LexState::Code => (i, state),
+        LexState::Heredoc(word) if bytes.trim_ascii() == word.as_bytes() => {
+            (bytes.len(), LexState::Code)
+        }
+        LexState::Heredoc(_) => (bytes.len(), state),
+        LexState::Comment(close) => match bytes[i..]
+            .windows(close.len())
+            .position(|w| w == close.as_bytes())
+        {
+            Some(at) => (i + at + close.len(), LexState::Code),
+            None => (bytes.len(), state),
+        },
+        LexState::String { delim, triple } => {
+            let q = delim.quote;
+            while i < bytes.len() {
+                if delim.backslash && bytes[i] == b'\\' {
+                    if i + 1 == bytes.len() {
+                        return (bytes.len(), state);
+                    }
+                    i += 2;
+                } else if bytes[i] != q {
+                    i += 1;
+                } else if triple {
+                    if bytes[i..].starts_with(&[q; 3]) {
+                        return (i + 3, LexState::Code);
+                    }
+                    i += 1;
+                } else if delim.doubled && bytes.get(i + 1) == Some(&q) {
+                    i += 2;
+                } else {
+                    return (i + 1, LexState::Code);
+                }
+            }
+            if delim.multiline || triple {
+                (i, state)
+            } else {
+                (i, LexState::Code)
+            }
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn tokenize_code_line<'a>(line: &'a str, language: Option<&str>) -> Vec<CodeToken<'a>> {
+        tokenize_code_block([line], language).remove(0)
+    }
 
     #[test]
     fn backslash_escape_in_string() {
@@ -420,5 +670,297 @@ mod tests {
         let tokens = tokenize_code_line(r#"x = "hi""#, Some("python"));
         assert_eq!(strings(&tokens), vec![r#""hi""#]);
         assert!(comments(&tokens).is_empty());
+    }
+
+    fn block<'a>(lines: &[&'a str], language: &str) -> Vec<Vec<CodeToken<'a>>> {
+        tokenize_code_block(lines.iter().copied(), Some(language))
+    }
+
+    #[test]
+    fn smalltalk_comment_spans_lines() {
+        let lines = block(&["x := 1. \"a", "it's here", "done\" y"], "pharo");
+        assert_eq!(comments(&lines[0]), vec!["\"a"]);
+        assert_eq!(lines[1], vec![CodeToken::Comment("it's here")]);
+        assert_eq!(comments(&lines[2]), vec!["done\""]);
+        assert_eq!(lines[2].last(), Some(&CodeToken::Ident("y")));
+    }
+
+    #[test]
+    fn javascript_block_comment_spans_lines() {
+        let lines = block(&["/*", " * it's \"ok\"", " */ return x"], "javascript");
+        assert_eq!(lines[0], vec![CodeToken::Comment("/*")]);
+        assert_eq!(lines[1], vec![CodeToken::Comment(" * it's \"ok\"")]);
+        assert_eq!(comments(&lines[2]), vec![" */"]);
+        assert!(lines[2].contains(&CodeToken::Keyword("return")));
+    }
+
+    #[test]
+    fn python_docstring_spans_lines() {
+        for q in ["\"\"\"", "'''"] {
+            let open = format!("    {q}Doc.");
+            let close = format!("    {q}");
+            let lines = block(
+                &[&open, "    for x in it's", &close, "    return 1"],
+                "python",
+            );
+            assert_eq!(strings(&lines[0]), vec![&open[4..]]);
+            assert_eq!(lines[1], vec![CodeToken::StringLit("    for x in it's")]);
+            assert_eq!(lines[2], vec![CodeToken::StringLit(&close[..])]);
+            assert_eq!(lines[3][4], CodeToken::Keyword("return"));
+        }
+    }
+
+    #[test]
+    fn python_empty_string_is_not_a_docstring() {
+        let lines = block(&["x = \"\" if y", "z"], "python");
+        assert_eq!(strings(&lines[0]), vec!["\"\""]);
+        assert!(lines[0].contains(&CodeToken::Keyword("if")));
+        assert_eq!(lines[1], vec![CodeToken::Ident("z")]);
+    }
+
+    #[test]
+    fn triple_quoted_string_needs_three_quotes_to_close() {
+        let lines = block(&[r#""""a "" \""" b"#, r#"c""" d"#], "python");
+        assert_eq!(lines[0], vec![CodeToken::StringLit(r#""""a "" \""" b"#)]);
+        assert_eq!(strings(&lines[1]), vec![r#"c""""#]);
+        assert_eq!(lines[1].last(), Some(&CodeToken::Ident("d")));
+    }
+
+    #[test]
+    fn smalltalk_doubled_quote_is_an_escape() {
+        let lines = block(&["x := 'it''s' , y"], "pharo");
+        assert_eq!(strings(&lines[0]), vec!["'it''s'"]);
+        assert_eq!(lines[0].last(), Some(&CodeToken::Ident("y")));
+    }
+
+    #[test]
+    fn yaml_doubled_quote_is_an_escape() {
+        let tokens = &block(&["a: 'it''s' # c"], "yaml")[0];
+        assert_eq!(strings(tokens), vec!["'it''s'"]);
+        assert_eq!(comments(tokens), vec!["# c"]);
+    }
+
+    #[test]
+    fn backslash_is_literal_in_smalltalk_shell_and_yaml_single_quotes() {
+        for (language, line) in [
+            ("pharo", r"p := 'C:\' , name"),
+            ("shellcommand", r"echo 'C:\' name"),
+            ("yaml", r"p: 'C:\' # name"),
+        ] {
+            let tokens = &block(&[line], language)[0];
+            assert_eq!(strings(tokens), vec![r"'C:\'"], "{language}");
+            assert!(
+                tokens.contains(&CodeToken::Ident("name")) || comments(tokens) == vec!["# name"],
+                "{language}"
+            );
+        }
+    }
+
+    #[test]
+    fn smalltalk_character_literals_do_not_open_a_comment_or_string() {
+        let lines = block(&["a := $\". b := $'. c := $é.", "d"], "pharo");
+        assert_eq!(strings(&lines[0]), vec!["$\"", "$'", "$é"]);
+        assert!(comments(&lines[0]).is_empty());
+        assert_eq!(lines[1], vec![CodeToken::Ident("d")]);
+    }
+
+    #[test]
+    fn shell_backslash_quotes_the_next_character() {
+        let lines = block(&[r"echo don\'t # c", "ls"], "shellcommand");
+        assert_eq!(strings(&lines[0]), vec![r"\'"]);
+        assert_eq!(comments(&lines[0]), vec!["# c"]);
+        assert_eq!(lines[1], vec![CodeToken::Ident("ls")]);
+    }
+
+    #[test]
+    fn multiline_strings_span_lines() {
+        for (language, open, close) in [
+            ("pharo", "x := 'a", "b' , c"),
+            ("shellcommand", "x='a", "b' c"),
+            ("shellcommand", "x=\"a", "b\" c"),
+            ("javascript", "x = `a", "b` + c"),
+        ] {
+            let lines = block(&[open, "for if", close], language);
+            assert_eq!(lines[1], vec![CodeToken::StringLit("for if")], "{language}");
+            assert_eq!(lines[2].last(), Some(&CodeToken::Ident("c")), "{language}");
+        }
+    }
+
+    #[test]
+    fn single_line_string_ends_at_end_of_line() {
+        for (language, open) in [
+            ("python", "x = \"open"),
+            ("python", "x = 'open"),
+            ("javascript", "x = 'open"),
+            ("json", "\"open"),
+            ("yaml", "a: 'open"),
+            ("markdown", "x = \"open"),
+        ] {
+            let lines = block(&[open, "y"], language);
+            assert_eq!(lines[1], vec![CodeToken::Ident("y")], "{language}");
+        }
+    }
+
+    #[test]
+    fn escaped_line_break_continues_a_single_line_string() {
+        let lines = block(&[r#"s = "a \"#, r#"if" + t"#], "python");
+        assert_eq!(lines[1][0], CodeToken::StringLit(r#"if""#));
+        assert_eq!(lines[1].last(), Some(&CodeToken::Ident("t")));
+    }
+
+    #[test]
+    fn shell_heredoc_body_is_a_string() {
+        let lines = block(
+            &["cat <<-'EOF' > out # c", "it's $x", "  EOF", "ls"],
+            "shellcommand",
+        );
+        assert_eq!(strings(&lines[0]), vec!["<<-'EOF'"]);
+        assert_eq!(comments(&lines[0]), vec!["# c"]);
+        assert_eq!(lines[1], vec![CodeToken::StringLit("it's $x")]);
+        assert_eq!(lines[2], vec![CodeToken::StringLit("  EOF")]);
+        assert_eq!(lines[3], vec![CodeToken::Ident("ls")]);
+    }
+
+    #[test]
+    fn shell_here_string_and_shift_are_not_heredocs() {
+        for line in [
+            "cat <<<word",
+            "y=$((1 << 2))",
+            "mask=$(( (1 << bits) - 1 ))",
+            "bit=$((1<<n))",
+        ] {
+            let lines = block(&[line, "ls"], "shellcommand");
+            assert!(strings(&lines[0]).is_empty(), "{line}");
+            assert_eq!(lines[1], vec![CodeToken::Ident("ls")], "{line}");
+        }
+    }
+
+    #[test]
+    fn shell_heredoc_opens_after_a_closed_arithmetic_expression() {
+        let lines = block(&["(( n )) && cat <<EOF", "ls", "EOF"], "shellcommand");
+        assert_eq!(lines[1], vec![CodeToken::StringLit("ls")]);
+    }
+
+    #[test]
+    fn shell_heredoc_word_runs_to_a_blank_or_metacharacter() {
+        for (open, word) in [
+            ("cat <<END-OF-TEXT", "END-OF-TEXT"),
+            ("cat <<EOF. | sort", "EOF."),
+            ("cat <<'A B' > out", "A B"),
+            ("x=$(cat <<EOF)", "EOF"),
+            ("cat <<EOF|sort", "EOF"),
+            ("cat <<EOF\t> out", "EOF"),
+        ] {
+            let lines = block(&[open, "it's", word, "ls"], "shellcommand");
+            assert_eq!(lines[1], vec![CodeToken::StringLit("it's")], "{open}");
+            assert_eq!(lines[3], vec![CodeToken::Ident("ls")], "{open}");
+        }
+    }
+
+    #[test]
+    fn javascript_regex_literal_does_not_leak_into_the_next_lines() {
+        for (line, regex) in [
+            (
+                "const EMAIL = /^[a-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\\.[a-z0-9!#$%&'*+/=?^_`{|}~-]+)*@example\\.com$/i;",
+                "/^[a-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\\.[a-z0-9!#$%&'*+/=?^_`{|}~-]+)*@example\\.com$/i",
+            ),
+            (
+                r"allowed = !ch || /[[{(,;:?/*=+\-~!|&%^<>]/.test(ch);",
+                r"/[[{(,;:?/*=+\-~!|&%^<>]/",
+            ),
+            (r#"s = s.replace(/\/*$/, "");"#, r"/\/*$/"),
+        ] {
+            let lines = block(
+                &[line, "const retries = 3; // a comment", "return retries;"],
+                "javascript",
+            );
+            assert_eq!(strings(&lines[0])[0], regex);
+            assert!(comments(&lines[0]).is_empty(), "{line}");
+            assert_eq!(comments(&lines[1]), vec!["// a comment"], "{line}");
+            assert_eq!(lines[2][0], CodeToken::Keyword("return"), "{line}");
+        }
+    }
+
+    #[test]
+    fn javascript_regex_follows_an_operator_keyword_or_line_start() {
+        for line in [
+            "/a/.test(s)",
+            "  /a/.test(s)",
+            "x = /a/",
+            "f(/a/, /a/)",
+            "[/a/]",
+            "{ k: /a/ }",
+            "!/a/ && /a/ || /a/",
+            "c ? /a/ : /a/",
+            "} /a/; /a/",
+            "/* c */ /a/",
+            "return /a/",
+            "typeof /a/",
+            "x instanceof /a/",
+            "x in /a/",
+            "for (x of /a/)",
+            "new /a/",
+            "delete /a/",
+            "void /a/",
+            "throw /a/",
+            "case /a/:",
+            "do /a/",
+            "else /a/",
+            "yield /a/",
+            "await /a/",
+        ] {
+            let tokens = &block(&[line], "javascript")[0];
+            assert!(strings(tokens).iter().all(|s| *s == "/a/"), "{line}");
+            assert_eq!(strings(tokens).len(), line.matches("/a/").count(), "{line}");
+        }
+    }
+
+    #[test]
+    fn javascript_division_is_not_a_regex() {
+        for line in [
+            "a / b / c",
+            "x = y / 2 // c",
+            "arr[i] / n / 2",
+            "f(x) / g(y) / 2",
+            "1 / 2 / 3",
+            "$ / 2 / 3",
+            "\u{3c0} / 2 / 3",
+        ] {
+            let tokens = &block(&[line], "javascript")[0];
+            assert!(strings(tokens).is_empty(), "{line}");
+        }
+        let tokens = &block(&["x = y / 2 // c"], "javascript")[0];
+        assert_eq!(comments(tokens), vec!["// c"]);
+    }
+
+    #[test]
+    fn unterminated_javascript_regex_ends_at_end_of_line() {
+        let lines = block(&["x = /a`b\\", "y"], "javascript");
+        assert_eq!(strings(&lines[0]), vec!["/a`b\\"]);
+        assert_eq!(lines[1], vec![CodeToken::Ident("y")]);
+    }
+
+    #[test]
+    fn only_javascript_lexes_regex_literals() {
+        for language in ["python", "shellcommand", "pharo", "yaml", "markdown"] {
+            let tokens = &block(&["ls >/dev/null"], language)[0];
+            assert!(strings(tokens).is_empty(), "{language}");
+        }
+    }
+
+    #[test]
+    fn open_comment_or_string_does_not_leak_into_the_next_block() {
+        for (language, open) in [
+            ("javascript", "/* open"),
+            ("pharo", "\"open"),
+            ("python", "\"\"\"open"),
+            ("shellcommand", "cat <<EOF"),
+        ] {
+            assert_ne!(
+                block(&[open, "x"], language)[1],
+                vec![CodeToken::Ident("x")]
+            );
+            assert_eq!(block(&["x"], language)[0], vec![CodeToken::Ident("x")]);
+        }
     }
 }

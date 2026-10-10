@@ -1,4 +1,4 @@
-use crate::highlight::{CodeToken, tokenize_code_line};
+use crate::highlight::{CodeToken, tokenize_code_block};
 use crate::inline;
 use lepiter_core::{Page, render_page_to_text};
 
@@ -55,10 +55,12 @@ fn render_markdown_with_ansi(markdown: &str) -> String {
     let mut out = String::new();
     let mut in_code = false;
     let mut language: Option<String> = None;
+    let mut code_lines = Vec::new();
 
     for line in markdown.lines() {
         if let Some(rest) = line.strip_prefix("```") {
             if in_code {
+                push_code_block_ansi(&mut out, &mut code_lines, language.as_deref());
                 out.push_str(&ansi("90", "```"));
                 out.push('\n');
                 in_code = false;
@@ -77,8 +79,7 @@ fn render_markdown_with_ansi(markdown: &str) -> String {
         }
 
         if in_code {
-            out.push_str(&highlight_code_line_ansi(line, language.as_deref()));
-            out.push('\n');
+            code_lines.push(line);
             continue;
         }
 
@@ -96,6 +97,7 @@ fn render_markdown_with_ansi(markdown: &str) -> String {
         }
         out.push('\n');
     }
+    push_code_block_ansi(&mut out, &mut code_lines, language.as_deref());
 
     out
 }
@@ -152,18 +154,41 @@ fn ansi(style: &str, text: &str) -> String {
     format!("\x1b[{style}m{text}\x1b[0m")
 }
 
-fn highlight_code_line_ansi(line: &str, language: Option<&str>) -> String {
-    let tokens = tokenize_code_line(line, language);
-    let mut out = String::new();
-    for tok in tokens {
-        match tok {
-            CodeToken::Comment(s) => out.push_str(&ansi("90", s)),
-            CodeToken::StringLit(s) => out.push_str(&ansi("32", s)),
-            CodeToken::Number(s) => out.push_str(&ansi("33", s)),
-            CodeToken::Keyword(s) => out.push_str(&ansi("1;35", s)),
-            CodeToken::Ident(s) => out.push_str(s),
-            CodeToken::Punct(c) => out.push(c),
+fn push_code_block_ansi(out: &mut String, lines: &mut Vec<&str>, language: Option<&str>) {
+    for tokens in tokenize_code_block(lines.drain(..), language) {
+        for tok in tokens {
+            match tok {
+                CodeToken::Comment(s) => out.push_str(&ansi("90", s)),
+                CodeToken::StringLit(s) => out.push_str(&ansi("32", s)),
+                CodeToken::Number(s) => out.push_str(&ansi("33", s)),
+                CodeToken::Keyword(s) => out.push_str(&ansi("1;35", s)),
+                CodeToken::Ident(s) => out.push_str(s),
+                CodeToken::Punct(c) => out.push(c),
+            }
         }
+        out.push('\n');
     }
-    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn code_block_comment_spans_lines() {
+        let out = render_markdown_with_ansi("```javascript\n/*\nit's \"ok\"\n*/ x\n```");
+        assert!(out.contains("\n\x1b[90mit's \"ok\"\x1b[0m\n"), "{out:?}");
+    }
+
+    #[test]
+    fn code_block_state_does_not_leak_into_the_next_block() {
+        let out = render_markdown_with_ansi("```javascript\n/* open\n```\n```javascript\nx\n```");
+        assert!(out.contains("\nx\n"), "{out:?}");
+    }
+
+    #[test]
+    fn unclosed_code_fence_is_still_highlighted() {
+        let out = render_markdown_with_ansi("```python\nx = 1 # c");
+        assert!(out.contains("\x1b[90m# c\x1b[0m"), "{out:?}");
+    }
 }

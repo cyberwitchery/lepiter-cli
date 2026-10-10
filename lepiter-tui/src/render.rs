@@ -5,7 +5,7 @@ use lepiter_core::{Node, Page, PageId, normalize_text};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use crate::highlight::{CodeToken, tokenize_code_line};
+use crate::highlight::{CodeToken, tokenize_code_block};
 use crate::inline::{InlineElement, parse_inline};
 use crate::plugins::{PluginManager, PluginRender};
 use crate::util::lower_byte_to_raw_byte;
@@ -331,8 +331,12 @@ pub fn render_code_block(language: Option<&str>, code: &str, out: &mut Vec<Line<
         format!("```{title}"),
         Style::default().fg(Color::DarkGray),
     )));
-    for line in normalize_text(code).lines() {
-        out.push(highlight_code_line(&sanitize_for_terminal(line), language));
+    let lines: Vec<String> = normalize_text(code)
+        .lines()
+        .map(sanitize_for_terminal)
+        .collect();
+    for tokens in tokenize_code_block(lines.iter().map(String::as_str), language) {
+        out.push(highlight_code_tokens(tokens));
     }
     out.push(Line::from(Span::styled(
         "```".to_string(),
@@ -341,8 +345,7 @@ pub fn render_code_block(language: Option<&str>, code: &str, out: &mut Vec<Line<
     out.push(Line::raw(""));
 }
 
-pub fn highlight_code_line(line: &str, language: Option<&str>) -> Line<'static> {
-    let tokens = tokenize_code_line(line, language);
+fn highlight_code_tokens(tokens: Vec<CodeToken<'_>>) -> Line<'static> {
     let spans: Vec<Span<'static>> = tokens
         .into_iter()
         .map(|tok| match tok {
@@ -822,6 +825,30 @@ mod tests {
             sanitize_for_terminal("\x1bhello\tworld\x02"),
             "hello    world "
         );
+    }
+
+    #[test]
+    fn code_block_comment_spans_lines() {
+        let mut out = Vec::new();
+        render_code_block(Some("pharo"), "x := 1. \"a\nit's here\ndone\" y", &mut out);
+        assert_eq!(span_texts(&out[2]), vec!["it's here"]);
+        assert!(has_fg(&out[2], 0, Color::DarkGray));
+    }
+
+    #[test]
+    fn code_block_state_does_not_leak_into_the_next_block() {
+        let mut out = Vec::new();
+        render_code_block(Some("javascript"), "/* open", &mut out);
+        render_code_block(Some("javascript"), "x", &mut out);
+        let x = out.iter().find(|l| span_texts(l) == vec!["x"]).unwrap();
+        assert!(!has_fg(x, 0, Color::DarkGray));
+    }
+
+    #[test]
+    fn code_block_strips_terminal_control_bytes() {
+        let mut out = Vec::new();
+        render_code_block(Some("python"), "x = '\x1b[2J' # \x07", &mut out);
+        assert_eq!(span_texts(&out[1]).concat(), "x = '[2J' #  ");
     }
 
     // --- highlight_selected_link_markers ---

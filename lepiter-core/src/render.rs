@@ -202,6 +202,29 @@ fn fence_for(content: &str) -> String {
     "`".repeat((longest + 1).max(3))
 }
 
+/// backtick count and info string of an opening code fence.
+pub fn open_fence(line: &str) -> Option<(usize, &str)> {
+    let ticks = line.chars().take_while(|c| *c == '`').count();
+    if ticks < 3 {
+        return None;
+    }
+    let info = line[ticks..].trim();
+    if info.contains('`') {
+        return None;
+    }
+    Some((ticks, info))
+}
+
+/// whether `line` closes a fence opened with `open_len` backticks.
+pub fn closes_fence(line: &str, open_len: usize) -> bool {
+    let rest = line.trim_start_matches(' ');
+    if line.len() - rest.len() > 3 {
+        return false;
+    }
+    let ticks = rest.chars().take_while(|c| *c == '`').count();
+    ticks >= open_len && rest[ticks..].trim().is_empty()
+}
+
 /// prefixes `line` with a backslash if a line-oriented markdown reader would
 /// take it for the start of a block.
 pub fn escape_block_start(line: &str) -> String {
@@ -430,6 +453,23 @@ mod tests {
             text,
             "````python\ndoc = '''\n```\nnested\n```\n'''\n````\n\n"
         );
+    }
+
+    #[test]
+    fn no_content_line_closes_the_fence_written_around_it() {
+        for ticks in 1..=5 {
+            let run = "`".repeat(ticks);
+            let code = format!("{run}\n   {run}\n{run} x");
+            let fence = fence_for(&code);
+            let opener = format!("{fence}python");
+            let (len, info) = open_fence(&opener).unwrap();
+            assert_eq!(info, "python");
+            assert!(closes_fence(&fence, len));
+            assert!(
+                code.lines().all(|line| !closes_fence(line, len)),
+                "{code:?}"
+            );
+        }
     }
 
     #[test]

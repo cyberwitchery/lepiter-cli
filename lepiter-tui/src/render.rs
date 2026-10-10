@@ -59,30 +59,38 @@ pub fn render_node(
                     .fg(Color::Blue)
                     .add_modifier(Modifier::BOLD),
             };
-            out.push(Line::from(Span::styled(
+            out.extend(split_at_newlines(Line::from(Span::styled(
                 format!(
                     "{} {}",
                     "#".repeat((*level).max(1) as usize),
                     sanitize_for_terminal(text)
                 ),
                 style,
-            )));
+            ))));
             out.push(Line::raw(""));
         }
         Node::Paragraph { text } | Node::Text { text } => {
-            out.push(parse_inline_markdown(&sanitize_for_terminal(text), links));
+            out.extend(split_at_newlines(parse_inline_markdown(
+                &sanitize_for_terminal(text),
+                links,
+            )));
             out.push(Line::raw(""));
         }
         Node::Quote { text } => {
-            out.push(Line::from(vec![
-                Span::styled("> ", Style::default().fg(Color::DarkGray)),
-                Span::styled(
-                    sanitize_for_terminal(text),
-                    Style::default()
-                        .fg(Color::Gray)
-                        .add_modifier(Modifier::ITALIC),
-                ),
-            ]));
+            let marker_style = Style::default().fg(Color::DarkGray);
+            let text_style = Style::default()
+                .fg(Color::Gray)
+                .add_modifier(Modifier::ITALIC);
+            for line in sanitize_for_terminal(text).split('\n') {
+                out.push(if line.is_empty() {
+                    Line::from(Span::styled(">", marker_style))
+                } else {
+                    Line::from(vec![
+                        Span::styled("> ", marker_style),
+                        Span::styled(line.to_string(), text_style),
+                    ])
+                });
+            }
             out.push(Line::raw(""));
         }
         Node::Code { language, code } => {
@@ -137,15 +145,13 @@ pub fn render_node(
                 for n in item {
                     render_node(n, &mut rendered, links, plugins);
                 }
-                // Strip trailing empty lines added by individual node renderers;
-                // the list manages its own spacing.
-                while rendered
-                    .last()
-                    .is_some_and(|l| l.spans.iter().all(|s| s.content.is_empty()))
-                {
+                // strip empty lines at both ends; the list manages its own spacing.
+                let is_blank = |l: &Line| l.spans.iter().all(|s| s.content.is_empty());
+                while rendered.last().is_some_and(is_blank) {
                     rendered.pop();
                 }
-                if let Some((first, rest)) = rendered.split_first() {
+                let start = rendered.iter().take_while(|l| is_blank(l)).count();
+                if let Some((first, rest)) = rendered[start..].split_first() {
                     let mut spans = vec![Span::styled(
                         "- ".to_string(),
                         Style::default().fg(Color::DarkGray),
@@ -319,6 +325,24 @@ fn render_inline_to_spans(
 
 fn parse_inline_markdown(text: &str, links: &mut Vec<LinkTarget>) -> Line<'static> {
     Line::from(render_inline_to_spans(parse_inline(text), Some(links)))
+}
+
+/// splits `line` into one row per source line, each span keeping its style.
+fn split_at_newlines(line: Line<'static>) -> Vec<Line<'static>> {
+    let mut rows = Vec::new();
+    let mut row = Vec::new();
+    for span in line.spans {
+        for (i, piece) in span.content.split('\n').enumerate() {
+            if i > 0 {
+                rows.push(Line::from(std::mem::take(&mut row)));
+            }
+            if !piece.is_empty() {
+                row.push(Span::styled(piece.to_string(), span.style));
+            }
+        }
+    }
+    rows.push(Line::from(row));
+    rows
 }
 
 pub fn parse_inline_annotations(text: &str) -> Line<'static> {
@@ -1030,6 +1054,106 @@ mod tests {
                 .iter()
                 .all(|s| s.content.is_empty())
         );
+    }
+
+    // --- multi-line text ---
+
+    fn render(node: &Node) -> (Vec<Line<'static>>, Vec<LinkTarget>) {
+        use crate::plugins::PluginManager;
+        let mut out = Vec::new();
+        let mut links = Vec::new();
+        render_node(node, &mut out, &mut links, &mut PluginManager::empty());
+        (out, links)
+    }
+
+    fn screen_rows(lines: &[Line<'static>]) -> Vec<String> {
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect;
+        use ratatui::widgets::{Paragraph, Widget};
+        let area = Rect::new(0, 0, 24, lines.len() as u16);
+        let mut buf = Buffer::empty(area);
+        Paragraph::new(lines.to_vec()).render(area, &mut buf);
+        (0..area.height)
+            .map(|y| {
+                let row: String = (0..area.width).map(|x| buf[(x, y)].symbol()).collect();
+                row.trim_end().to_string()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn multi_line_text_renders_the_writers_rows() {
+        let nodes = [
+            Node::Paragraph {
+                text: "first\nsecond".into(),
+            },
+            Node::Text {
+                text: "one\n\nthree".into(),
+            },
+            Node::Quote {
+                text: "one\n\nthree".into(),
+            },
+            Node::Heading {
+                level: 2,
+                text: "top\nmore".into(),
+            },
+            Node::List {
+                items: vec![
+                    vec![Node::Paragraph {
+                        text: "\nfirst\nsecond".into(),
+                    }],
+                    vec![Node::Quote {
+                        text: "one\n\nthree".into(),
+                    }],
+                ],
+            },
+        ];
+        for node in &nodes {
+            let written = lepiter_core::render_nodes_to_text(std::slice::from_ref(node));
+            let written: Vec<&str> = written.lines().map(str::trim_end).collect();
+            assert_eq!(screen_rows(&render(node).0), written, "{node:?}");
+        }
+    }
+
+    #[test]
+    fn heading_continuation_keeps_the_heading_style() {
+        let (out, _) = render(&Node::Heading {
+            level: 1,
+            text: "top\nmore".into(),
+        });
+        assert_eq!(span_texts(&out[1]), vec!["more"]);
+        assert!(has_fg(&out[1], 0, Color::Cyan));
+    }
+
+    #[test]
+    fn markup_spanning_a_newline_keeps_its_style_and_link_numbers() {
+        let (out, links) = render(&Node::Text {
+            text: "**bold\nstill** [a](x)\n[b](y) end".into(),
+        });
+        assert_eq!(
+            screen_rows(&out),
+            vec!["bold", "still a[1]", "b[2] end", ""]
+        );
+        assert!(has_modifier(&out[0], 0, Modifier::BOLD));
+        assert!(has_modifier(&out[1], 0, Modifier::BOLD));
+        let targets: Vec<&str> = links.iter().map(|l| l.target.as_str()).collect();
+        assert_eq!(targets, vec!["x", "y"]);
+
+        let marked = highlight_selected_link_markers(&out, 2);
+        assert_eq!(span_texts(&marked[2]), vec!["b", "[2]", " end"]);
+        assert_eq!(marked[2].spans[1].style.bg, Some(Color::Yellow));
+    }
+
+    #[test]
+    fn page_search_marks_the_row_holding_the_hit() {
+        let (out, _) = render(&Node::Paragraph {
+            text: "first\nsecond".into(),
+        });
+        let result = highlight_page_search(&out, "second", Some(1));
+        assert_eq!(span_texts(&result[0]), vec!["first"]);
+        assert_eq!(result[0].spans[0].style.bg, None);
+        assert_eq!(span_texts(&result[1]), vec!["second"]);
+        assert_eq!(result[1].spans[0].style.bg, Some(Color::Yellow));
     }
 
     // --- highlight_page_search ---

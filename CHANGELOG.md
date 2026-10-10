@@ -44,6 +44,9 @@ all notable changes to this project are documented in this file.
   longer runs to the end of the line, and smalltalk and yaml read `''` as a
   quote. a javascript regex literal is coloured as a string, so a backtick or
   `/*` inside one no longer starts a template or a comment
+- the reader shows each line of a multi-line text snippet, quote or heading
+  on a row of its own instead of running them together, and gives every
+  quote line its own `>` marker
 
 ## 0.12.0 - 2026-09-12
 

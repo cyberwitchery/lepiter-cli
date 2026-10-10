@@ -47,6 +47,10 @@ all notable changes to this project are documented in this file.
 - the reader shows each line of a multi-line text snippet, quote or heading
   on a row of its own instead of running them together, and gives every
   quote line its own `>` marker
+- `show` in a terminal reads code blocks the way they are written: a snippet
+  holding a line of three backticks no longer ends its block early and
+  colours the rest of the page as code, and code inside a list item is
+  highlighted. the output no longer ends with an extra blank line
 
 ## 0.12.0 - 2026-09-12
 

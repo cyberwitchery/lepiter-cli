@@ -5,8 +5,8 @@ use std::path::PathBuf;
 use anyhow::{Context, Result, bail};
 use chrono::DateTime;
 use lepiter_core::{
-    LinkKind, language_to_snippet_type, parse_standalone_link, rewrite_inline_links,
-    unescape_block_start,
+    LinkKind, closes_fence, language_to_snippet_type, open_fence, parse_standalone_link,
+    rewrite_inline_links, unescape_block_start,
 };
 use serde_json::json;
 
@@ -398,29 +398,6 @@ fn is_quote_line(line: &str) -> bool {
 
 fn quote_body(line: &str) -> &str {
     line.strip_prefix("> ").unwrap_or("")
-}
-
-/// backtick count and info string of an opening code fence.
-fn open_fence(line: &str) -> Option<(usize, &str)> {
-    let ticks = line.chars().take_while(|c| *c == '`').count();
-    if ticks < 3 {
-        return None;
-    }
-    let info = line[ticks..].trim();
-    if info.contains('`') {
-        return None;
-    }
-    Some((ticks, info))
-}
-
-/// whether `line` closes a fence opened with `open_len` backticks.
-fn closes_fence(line: &str, open_len: usize) -> bool {
-    let rest = line.trim_start_matches(' ');
-    if line.len() - rest.len() > 3 {
-        return false;
-    }
-    let ticks = rest.chars().take_while(|c| *c == '`').count();
-    ticks >= open_len && rest[ticks..].trim().is_empty()
 }
 
 fn parse_code_block(

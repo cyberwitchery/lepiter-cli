@@ -24,6 +24,8 @@ pub enum CodeToken<'a> {
 struct LanguageSyntax {
     /// rest-of-line comment markers, e.g. `#` or `//`.
     line_comments: &'static [&'static str],
+    /// unquoted characters a line comment must follow unless it starts the line; `None` for any.
+    comment_after: Option<&'static [char]>,
     /// paired comment delimiters, e.g. `("/*", "*/")` or smalltalk `("\"", "\"")`.
     block_comments: &'static [(&'static str, &'static str)],
     /// how a string opened by each quote character is lexed.
@@ -73,6 +75,7 @@ const fn verbatim(quote: u8) -> StringDelim {
 /// languages with no known syntax: both quote styles are strings.
 static DEFAULT_SYNTAX: LanguageSyntax = LanguageSyntax {
     line_comments: &[],
+    comment_after: None,
     block_comments: &[],
     strings: &[escaped(b'"'), escaped(b'\'')],
     char_escape: None,
@@ -85,6 +88,7 @@ static DEFAULT_SYNTAX: LanguageSyntax = LanguageSyntax {
 /// the inverse of most languages.
 static SMALLTALK_SYNTAX: LanguageSyntax = LanguageSyntax {
     line_comments: &[],
+    comment_after: None,
     block_comments: &[("\"", "\"")],
     strings: &[StringDelim {
         doubled: true,
@@ -99,6 +103,7 @@ static SMALLTALK_SYNTAX: LanguageSyntax = LanguageSyntax {
 
 static PYTHON_SYNTAX: LanguageSyntax = LanguageSyntax {
     line_comments: &["#"],
+    comment_after: None,
     block_comments: &[],
     strings: &[
         StringDelim {
@@ -121,6 +126,7 @@ static PYTHON_SYNTAX: LanguageSyntax = LanguageSyntax {
 
 static JAVASCRIPT_SYNTAX: LanguageSyntax = LanguageSyntax {
     line_comments: &["//"],
+    comment_after: None,
     block_comments: &[("/*", "*/")],
     strings: &[
         escaped(b'"'),
@@ -158,8 +164,12 @@ static JAVASCRIPT_SYNTAX: LanguageSyntax = LanguageSyntax {
     ],
 };
 
+/// the characters that end an unquoted shell word.
+const SHELL_METACHARACTERS: &[char] = &[' ', '\t', '|', '&', ';', '(', ')', '<', '>'];
+
 static SHELL_SYNTAX: LanguageSyntax = LanguageSyntax {
     line_comments: &["#"],
+    comment_after: Some(SHELL_METACHARACTERS),
     block_comments: &[],
     strings: &[
         StringDelim {
@@ -182,6 +192,7 @@ static SHELL_SYNTAX: LanguageSyntax = LanguageSyntax {
 
 static JSON_SYNTAX: LanguageSyntax = LanguageSyntax {
     line_comments: &[],
+    comment_after: None,
     block_comments: &[],
     strings: &[escaped(b'"')],
     char_escape: None,
@@ -192,6 +203,7 @@ static JSON_SYNTAX: LanguageSyntax = LanguageSyntax {
 
 static YAML_SYNTAX: LanguageSyntax = LanguageSyntax {
     line_comments: &["#"],
+    comment_after: Some(&[' ', '\t']),
     block_comments: &[],
     strings: &[
         escaped(b'"'),
@@ -294,6 +306,7 @@ fn tokenize_line<'a>(
             .line_comments
             .iter()
             .any(|m| rest.starts_with(m.as_bytes()))
+            && comment_allowed(syntax.comment_after, &tokens)
         {
             tokens.push(CodeToken::Comment(&line[i..]));
             break;
@@ -378,6 +391,15 @@ fn tokenize_line<'a>(
     tokens
 }
 
+/// whether a line comment may open after `tokens`.
+fn comment_allowed(after: Option<&[char]>, tokens: &[CodeToken<'_>]) -> bool {
+    match (after, tokens.last()) {
+        (None, _) | (_, None) => true,
+        (Some(after), Some(CodeToken::Punct(c))) => after.contains(c),
+        (Some(_), Some(_)) => false,
+    }
+}
+
 /// words after which an expression starts, so a `/` opens a regex.
 const REGEX_AFTER_WORDS: &[&str] = &[
     "return",
@@ -452,9 +474,7 @@ fn heredoc_opener(text: &str) -> Option<(usize, &str)> {
     let rest = &rest[quote.map_or(0, char::len_utf8)..];
     let len = match quote {
         Some(q) => rest.find(q)?,
-        None => rest
-            .find([' ', '\t', '|', '&', ';', '(', ')', '<', '>'])
-            .unwrap_or(rest.len()),
+        None => rest.find(SHELL_METACHARACTERS).unwrap_or(rest.len()),
     };
     let word = &rest[..len];
     if !word.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_') {
@@ -663,6 +683,67 @@ mod tests {
         // comments must highlight like `shell`/`bash`.
         let tokens = tokenize_code_line("ls -la # list", Some("shellcommand"));
         assert_eq!(comments(&tokens), vec!["# list"]);
+    }
+
+    #[test]
+    fn shell_hash_starts_a_comment_only_at_the_start_of_a_word() {
+        for language in ["shell", "bash", "shellcommand"] {
+            for (line, comment) in [
+                ("echo $#", None),
+                ("n=${#arr[@]}", None),
+                ("base=${path##*/}", None),
+                ("x=${v#pre}", None),
+                ("echo a#b", None),
+                ("echo \"a\"#b", None),
+                ("echo 'a'#b", None),
+                ("echo $((16#ff))", None),
+                (r"echo \ #b", None),
+                ("echo {#,x}", None),
+                ("cat 2>&1#b", None),
+                ("# c", Some("# c")),
+                ("ls -la\t# list", Some("# list")),
+                ("cmd;# c", Some("# c")),
+                ("a|# c", Some("# c")),
+                ("(echo a)# c", Some("# c")),
+                ("[ $# -eq 0 ] && exit # c", Some("# c")),
+            ] {
+                let tokens = &block(&[line], language)[0];
+                assert_eq!(
+                    comments(tokens),
+                    Vec::from_iter(comment),
+                    "{language}: {line}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn shell_hash_after_a_multiline_string_continues_the_word() {
+        let lines = block(&["x='a", "b'#c # d"], "shellcommand");
+        assert_eq!(comments(&lines[1]), vec!["# d"]);
+    }
+
+    #[test]
+    fn yaml_comment_needs_white_space_before_it() {
+        for (line, comment) in [
+            ("url: http://x/#frag", None),
+            ("key: a#b", None),
+            ("key:#c", None),
+            ("key: [a#b, c] # d", Some("# d")),
+            ("key: v # c", Some("# c")),
+            ("key: v\t# c", Some("# c")),
+            ("# c", Some("# c")),
+            ("- # c", Some("# c")),
+        ] {
+            let tokens = &block(&[line], "yaml")[0];
+            assert_eq!(comments(tokens), Vec::from_iter(comment), "{line}");
+        }
+    }
+
+    #[test]
+    fn python_hash_starts_a_comment_anywhere_outside_a_string() {
+        let tokens = &block(&["x=1#c 'd'"], "python")[0];
+        assert_eq!(comments(tokens), vec!["#c 'd'"]);
     }
 
     #[test]

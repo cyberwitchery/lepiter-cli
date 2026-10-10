@@ -51,6 +51,11 @@ all notable changes to this project are documented in this file.
   holding a line of three backticks no longer ends its block early and
   colours the rest of the page as code, and code inside a list item is
   highlighted. the output no longer ends with an extra blank line
+- code highlighting in the reader and in `show` starts a shell comment only
+  at a `#` that begins a word, and a yaml comment only at a `#` that follows
+  a space or a tab or starts the line, so `$#`, `${#arr[@]}`, `${path##*/}`
+  or `a#b` in shell, or `http://x/#frag` in yaml, no longer colours the rest
+  of the line as a comment
 
 ## 0.12.0 - 2026-09-12
 

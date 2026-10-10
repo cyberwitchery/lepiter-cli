@@ -36,6 +36,8 @@ struct LanguageSyntax {
     heredocs: bool,
     /// a `/` where an operand is expected opens a regex literal, e.g. javascript `/[/*]/g`.
     regex_literals: bool,
+    /// `"…"`, `$(…)`, `${…}`, `$((…))` and backquotes nest inside one another, as in a posix shell.
+    substitutions: bool,
     /// language keywords rendered distinctly.
     keywords: &'static [&'static str],
 }
@@ -81,6 +83,7 @@ static DEFAULT_SYNTAX: LanguageSyntax = LanguageSyntax {
     char_escape: None,
     heredocs: false,
     regex_literals: false,
+    substitutions: false,
     keywords: &[],
 };
 
@@ -98,6 +101,7 @@ static SMALLTALK_SYNTAX: LanguageSyntax = LanguageSyntax {
     char_escape: Some(b'$'),
     heredocs: false,
     regex_literals: false,
+    substitutions: false,
     keywords: &["self", "super", "true", "false", "nil", "thisContext"],
 };
 
@@ -118,6 +122,7 @@ static PYTHON_SYNTAX: LanguageSyntax = LanguageSyntax {
     char_escape: None,
     heredocs: false,
     regex_literals: false,
+    substitutions: false,
     keywords: &[
         "def", "class", "return", "if", "elif", "else", "for", "while", "in", "try", "except",
         "with", "as", "import", "from", "pass", "break", "continue", "True", "False", "None",
@@ -139,6 +144,7 @@ static JAVASCRIPT_SYNTAX: LanguageSyntax = LanguageSyntax {
     char_escape: None,
     heredocs: false,
     regex_literals: true,
+    substitutions: false,
     keywords: &[
         "function",
         "return",
@@ -171,19 +177,14 @@ static SHELL_SYNTAX: LanguageSyntax = LanguageSyntax {
     line_comments: &["#"],
     comment_after: Some(SHELL_METACHARACTERS),
     block_comments: &[],
-    strings: &[
-        StringDelim {
-            multiline: true,
-            ..escaped(b'"')
-        },
-        StringDelim {
-            multiline: true,
-            ..verbatim(b'\'')
-        },
-    ],
+    strings: &[StringDelim {
+        multiline: true,
+        ..verbatim(b'\'')
+    }],
     char_escape: Some(b'\\'),
     heredocs: true,
     regex_literals: false,
+    substitutions: true,
     keywords: &[
         "if", "then", "fi", "for", "in", "do", "done", "case", "esac", "while", "function", "echo",
         "exit",
@@ -198,6 +199,7 @@ static JSON_SYNTAX: LanguageSyntax = LanguageSyntax {
     char_escape: None,
     heredocs: false,
     regex_literals: false,
+    substitutions: false,
     keywords: &["true", "false", "null"],
 };
 
@@ -215,6 +217,7 @@ static YAML_SYNTAX: LanguageSyntax = LanguageSyntax {
     char_escape: None,
     heredocs: false,
     regex_literals: false,
+    substitutions: false,
     keywords: &["true", "false", "null"],
 };
 
@@ -234,8 +237,18 @@ fn syntax_for_language(language: Option<&str>) -> &'static LanguageSyntax {
 }
 
 /// what the lexer is inside of where one line ends and the next begins.
-#[derive(Debug, Clone, Copy)]
-enum LexState<'a> {
+#[derive(Debug, Default)]
+struct LexState<'a> {
+    mode: Mode<'a>,
+    /// shell quotes and substitutions still open, innermost last.
+    shell: Vec<Shell>,
+    /// an escaped line break carries the shell word in progress into the next line.
+    word: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+enum Mode<'a> {
+    #[default]
     Code,
     /// a block comment, ended by the delimiter held here.
     Comment(&'static str),
@@ -245,6 +258,27 @@ enum LexState<'a> {
     },
     /// a heredoc body, ended by a line holding just this word.
     Heredoc(&'a str),
+}
+
+/// a shell quote or substitution the lexer is inside of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Shell {
+    /// `"…"`: everything in it, substitutions included, is one string.
+    Quote,
+    /// `'…'` inside a double-quoted word.
+    Single,
+    /// `$'…'` inside a double-quoted word.
+    Ansi,
+    /// `$(…)`, `<(…)`, `>(…)` or `name=(…)`: the word goes on after its `)`.
+    Command,
+    /// `(…)`: its `)` ends the word.
+    Subshell,
+    /// one open parenthesis of `$((…))` inside a double-quoted word.
+    Arithmetic,
+    /// `${…}`.
+    Param,
+    /// a backquoted command.
+    Backtick,
 }
 
 /// tokenise the lines of one code block into [`CodeToken`]s, one `Vec` per
@@ -263,7 +297,7 @@ pub fn tokenize_code_block<'a>(
     language: Option<&str>,
 ) -> Vec<Vec<CodeToken<'a>>> {
     let syntax = syntax_for_language(language);
-    let mut state = LexState::Code;
+    let mut state = LexState::default();
     lines
         .into_iter()
         .map(|line| tokenize_line(line, syntax, &mut state))
@@ -280,18 +314,26 @@ fn tokenize_line<'a>(
     let mut heredoc = None;
     let mut start = 0;
     let mut i = 0;
+    // the token count at which a shell word goes on, so a `#` there opens no comment
+    let mut glued = std::mem::take(&mut state.word).then_some(0);
 
     loop {
-        if !matches!(state, LexState::Code) {
-            let (end, next) = scan(*state, bytes, i);
+        if !matches!(state.mode, Mode::Code) {
+            let (end, next) = scan(state.mode, bytes, i);
             if end > start {
                 let text = &line[start..end];
-                tokens.push(match state {
-                    LexState::String { .. } | LexState::Heredoc(_) => CodeToken::StringLit(text),
+                tokens.push(match state.mode {
+                    Mode::String { .. } | Mode::Heredoc(_) => CodeToken::StringLit(text),
                     _ => CodeToken::Comment(text),
                 });
             }
-            *state = next;
+            state.mode = next;
+            i = end;
+        } else if state.shell.contains(&Shell::Quote) {
+            let end = scan_quoted(line, i, glued != Some(tokens.len()), state, &mut heredoc);
+            if end > start {
+                tokens.push(CodeToken::StringLit(&line[start..end]));
+            }
             i = end;
         }
         if i >= bytes.len() {
@@ -300,14 +342,22 @@ fn tokenize_line<'a>(
         start = i;
         let rest = &bytes[i..];
         let b = bytes[i];
+        let comment_ok = glued != Some(tokens.len())
+            && comment_allowed(syntax.comment_after, &tokens)
+            && state.shell.last() != Some(&Shell::Param);
 
         // rest-of-line comments (e.g. `#`, `//`)
-        if syntax
-            .line_comments
-            .iter()
-            .any(|m| rest.starts_with(m.as_bytes()))
-            && comment_allowed(syntax.comment_after, &tokens)
+        if comment_ok
+            && syntax
+                .line_comments
+                .iter()
+                .any(|m| rest.starts_with(m.as_bytes()))
         {
+            if state.shell.last() == Some(&Shell::Backtick) {
+                i = backtick_end(bytes, i);
+                tokens.push(CodeToken::Comment(&line[start..i]));
+                continue;
+            }
             tokens.push(CodeToken::Comment(&line[i..]));
             break;
         }
@@ -318,7 +368,7 @@ fn tokenize_line<'a>(
             .iter()
             .find(|(open, _)| rest.starts_with(open.as_bytes()))
         {
-            *state = LexState::Comment(close);
+            state.mode = Mode::Comment(close);
             i += open.len();
             continue;
         }
@@ -341,15 +391,24 @@ fn tokenize_line<'a>(
         }
 
         if syntax.char_escape == Some(b) {
+            if syntax.substitutions && i + 1 == bytes.len() {
+                state.word = !comment_ok;
+            }
             i += 1 + line[i + 1..].chars().next().map_or(0, char::len_utf8);
             tokens.push(CodeToken::StringLit(&line[start..i]));
+            continue;
+        }
+
+        if syntax.substitutions && b == b'"' {
+            state.shell.push(Shell::Quote);
+            i += 1;
             continue;
         }
 
         // string literals
         if let Some(delim) = syntax.strings.iter().find(|d| d.quote == b) {
             let triple = delim.triple && rest.starts_with(&[b; 3]);
-            *state = LexState::String { delim, triple };
+            state.mode = Mode::String { delim, triple };
             i += if triple { 3 } else { 1 };
             continue;
         }
@@ -381,14 +440,146 @@ fn tokenize_line<'a>(
 
         // punctuation / whitespace / non-ascii: decode one full char
         let ch = line[i..].chars().next().unwrap();
+        if syntax.substitutions && nest(&mut state.shell, ch, tokens.last()) {
+            glued = Some(tokens.len() + 1);
+        }
         tokens.push(CodeToken::Punct(ch));
         i += ch.len_utf8();
     }
 
     if let Some(word) = heredoc {
-        *state = LexState::Heredoc(word);
+        state.mode = Mode::Heredoc(word);
     }
     tokens
+}
+
+/// tracks the shell construct `ch` opens or closes, returning whether the word goes on after it.
+fn nest(shell: &mut Vec<Shell>, ch: char, last: Option<&CodeToken<'_>>) -> bool {
+    let top = shell.last().copied();
+    let after = |chars: &[char]| matches!(last, Some(CodeToken::Punct(c)) if chars.contains(c));
+    match ch {
+        '(' if after(&['$', '<', '>', '=']) => shell.push(Shell::Command),
+        '(' => shell.push(Shell::Subshell),
+        ')' if matches!(top, Some(Shell::Command | Shell::Subshell)) => {
+            return shell.pop() == Some(Shell::Command);
+        }
+        '{' if after(&['$']) => shell.push(Shell::Param),
+        '}' if top == Some(Shell::Param) => {
+            shell.pop();
+        }
+        '`' if top == Some(Shell::Backtick) => {
+            shell.pop();
+        }
+        '`' => shell.push(Shell::Backtick),
+        _ => {}
+    }
+    false
+}
+
+/// opens the substitution a `$` at the start of `rest` begins, returning its length.
+fn open_dollar(shell: &mut Vec<Shell>, rest: &[u8]) -> usize {
+    if rest.starts_with(b"$((") {
+        shell.extend([Shell::Arithmetic; 2]);
+        3
+    } else if rest.starts_with(b"$(") {
+        shell.push(Shell::Command);
+        2
+    } else if rest.starts_with(b"${") {
+        shell.push(Shell::Param);
+        2
+    } else {
+        1
+    }
+}
+
+/// scans the double-quoted shell word `state` is inside, nesting included, from `i` to its
+/// closing quote or the end of the line, returning where it stops.
+fn scan_quoted<'a>(
+    line: &'a str,
+    mut i: usize,
+    mut word_start: bool,
+    state: &mut LexState<'a>,
+    heredoc: &mut Option<&'a str>,
+) -> usize {
+    let bytes = line.as_bytes();
+    let shell = &mut state.shell;
+    let base = shell.iter().position(|s| *s == Shell::Quote).unwrap_or(0);
+    while i < bytes.len() && shell.len() > base {
+        let top = shell[shell.len() - 1];
+        let b = bytes[i];
+        let code = matches!(top, Shell::Command | Shell::Subshell);
+        let mut step = 1;
+        let mut glue = false;
+        match top {
+            Shell::Single | Shell::Ansi => match b {
+                b'\\' if top == Shell::Ansi => step = 2,
+                b'\'' => {
+                    shell.pop();
+                }
+                _ => {}
+            },
+            Shell::Quote | Shell::Backtick => match b {
+                b'\\' => step = 2,
+                b'"' if top == Shell::Quote => {
+                    shell.pop();
+                }
+                b'`' if top == Shell::Backtick => {
+                    shell.pop();
+                }
+                b'`' => shell.push(Shell::Backtick),
+                b'$' if top == Shell::Quote => step = open_dollar(shell, &bytes[i..]),
+                _ => {}
+            },
+            _ => match b {
+                b'\\' => {
+                    if code && i + 1 == bytes.len() {
+                        state.word = !word_start;
+                    }
+                    step = 2;
+                }
+                b'\'' => shell.push(Shell::Single),
+                b'"' => shell.push(Shell::Quote),
+                b'`' => shell.push(Shell::Backtick),
+                b'$' if bytes.get(i + 1) == Some(&b'\'') => {
+                    shell.push(Shell::Ansi);
+                    step = 2;
+                }
+                b'$' => step = open_dollar(shell, &bytes[i..]),
+                b'#' if code && word_start => step = bytes.len() - i,
+                b'<' if code
+                    && (i == 0 || bytes[i - 1] != b'<')
+                    && let Some((len, word)) = heredoc_opener(&line[i..]) =>
+                {
+                    *heredoc = Some(word);
+                    step = len;
+                }
+                b'(' => shell.push(if top == Shell::Arithmetic {
+                    Shell::Arithmetic
+                } else if i > 0 && matches!(bytes[i - 1], b'<' | b'>' | b'=') {
+                    Shell::Command
+                } else {
+                    Shell::Subshell
+                }),
+                b')' if top != Shell::Param => glue = shell.pop() != Some(Shell::Subshell),
+                b'}' if top == Shell::Param => {
+                    shell.pop();
+                }
+                _ => {}
+            },
+        }
+        word_start =
+            !glue && b != b'\\' && SHELL_METACHARACTERS.contains(&char::from(bytes[i + step - 1]));
+        i += step;
+    }
+    i.min(bytes.len())
+}
+
+/// the first unescaped backquote at or after `i`, else the end of the line.
+fn backtick_end(bytes: &[u8], mut i: usize) -> usize {
+    while i < bytes.len() && bytes[i] != b'`' {
+        i += if bytes[i] == b'\\' { 2 } else { 1 };
+    }
+    i.min(bytes.len())
 }
 
 /// whether a line comment may open after `tokens`.
@@ -486,21 +677,19 @@ fn heredoc_opener(text: &str) -> Option<(usize, &str)> {
 
 /// scans from `i` to the end of the comment or string `state` is inside,
 /// returning where it stops and the state after it.
-fn scan<'a>(state: LexState<'a>, bytes: &[u8], mut i: usize) -> (usize, LexState<'a>) {
+fn scan<'a>(state: Mode<'a>, bytes: &[u8], mut i: usize) -> (usize, Mode<'a>) {
     match state {
-        LexState::Code => (i, state),
-        LexState::Heredoc(word) if bytes.trim_ascii() == word.as_bytes() => {
-            (bytes.len(), LexState::Code)
-        }
-        LexState::Heredoc(_) => (bytes.len(), state),
-        LexState::Comment(close) => match bytes[i..]
+        Mode::Code => (i, state),
+        Mode::Heredoc(word) if bytes.trim_ascii() == word.as_bytes() => (bytes.len(), Mode::Code),
+        Mode::Heredoc(_) => (bytes.len(), state),
+        Mode::Comment(close) => match bytes[i..]
             .windows(close.len())
             .position(|w| w == close.as_bytes())
         {
-            Some(at) => (i + at + close.len(), LexState::Code),
+            Some(at) => (i + at + close.len(), Mode::Code),
             None => (bytes.len(), state),
         },
-        LexState::String { delim, triple } => {
+        Mode::String { delim, triple } => {
             let q = delim.quote;
             while i < bytes.len() {
                 if delim.backslash && bytes[i] == b'\\' {
@@ -512,19 +701,19 @@ fn scan<'a>(state: LexState<'a>, bytes: &[u8], mut i: usize) -> (usize, LexState
                     i += 1;
                 } else if triple {
                     if bytes[i..].starts_with(&[q; 3]) {
-                        return (i + 3, LexState::Code);
+                        return (i + 3, Mode::Code);
                     }
                     i += 1;
                 } else if delim.doubled && bytes.get(i + 1) == Some(&q) {
                     i += 2;
                 } else {
-                    return (i + 1, LexState::Code);
+                    return (i + 1, Mode::Code);
                 }
             }
             if delim.multiline || triple {
                 (i, state)
             } else {
-                (i, LexState::Code)
+                (i, Mode::Code)
             }
         }
     }
@@ -706,6 +895,15 @@ mod tests {
                 ("a|# c", Some("# c")),
                 ("(echo a)# c", Some("# c")),
                 ("[ $# -eq 0 ] && exit # c", Some("# c")),
+                ("x=$(date)#tag", None),
+                ("a=$((16#ff))#x", None),
+                ("diff <(true)#x", None),
+                ("arr=(a b)#what", None),
+                ("echo $(echo $(date)#in)#out", None),
+                ("echo ${x:-a #b} # c", Some("# c")),
+                ("((i++))#c", Some("#c")),
+                ("$( (cd /tmp; pwd)#c", Some("#c")),
+                ("echo `echo a #c` b", Some("#c")),
             ] {
                 let tokens = &block(&[line], language)[0];
                 assert_eq!(
@@ -715,6 +913,69 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn shell_escaped_line_break_carries_the_word_into_the_next_line() {
+        for (first, comment) in [
+            (r"echo a\", None),
+            (r"x=$(date)\", None),
+            (r"echo a \", Some("#b")),
+            (r"\", Some("#b")),
+        ] {
+            let lines = block(&[first, "#b"], "shellcommand");
+            assert_eq!(comments(&lines[1]), Vec::from_iter(comment), "{first}");
+        }
+    }
+
+    #[test]
+    fn shell_double_quoted_word_ends_at_its_own_closing_quote() {
+        for line in [
+            r#"y="$(echo "a b")""#,
+            r#"u="$(printf '%s' "$(echo "deep")")""#,
+            r#"echo "${x:-"d e"}""#,
+            r#"echo "`echo "bq"`""#,
+            r#"V="${V:-$(rg x | sed -E 's/.*"([^"]+)".*/\1/')}""#,
+            r#"echo "${x//'"'/y}""#,
+            r#"echo "$(echo $'a\'b')""#,
+            r#"echo "$(echo a#b "c")""#,
+            r#"echo "$(( $# > 0 ))""#,
+            r#"echo "$(echo $(date)#in "x")""#,
+            r#"echo "$(( n << bits ))""#,
+            r#"echo "$(echo "1) it's")""#,
+        ] {
+            let lines = block(&[line, "ls"], "shellcommand");
+            assert_eq!(
+                strings(&lines[0]),
+                vec![&line[line.find('"').unwrap()..]],
+                "{line}"
+            );
+            assert_eq!(lines[1], vec![CodeToken::Ident("ls")], "{line}");
+        }
+    }
+
+    #[test]
+    fn shell_substitution_in_a_double_quoted_word_spans_lines() {
+        let lines = block(
+            &[
+                r#"x="$( # 1) list the "pending" files"#,
+                "  cat <<EOF",
+                "it's",
+                "EOF",
+                r#")" # c"#,
+                "ls",
+            ],
+            "shellcommand",
+        );
+        assert_eq!(
+            lines[0][2],
+            CodeToken::StringLit(r#""$( # 1) list the "pending" files"#)
+        );
+        assert_eq!(lines[1], vec![CodeToken::StringLit("  cat <<EOF")]);
+        assert_eq!(lines[2], vec![CodeToken::StringLit("it's")]);
+        assert_eq!(strings(&lines[4]), vec![r#")""#]);
+        assert_eq!(comments(&lines[4]), vec!["# c"]);
+        assert_eq!(lines[5], vec![CodeToken::Ident("ls")]);
     }
 
     #[test]

@@ -56,6 +56,10 @@ all notable changes to this project are documented in this file.
   a space or a tab or starts the line, so `$#`, `${#arr[@]}`, `${path##*/}`
   or `a#b` in shell, or `http://x/#frag` in yaml, no longer colours the rest
   of the line as a comment
+- shell highlighting in the reader and in `show` follows quotes nested in
+  `$(…)`, `${…}` and backquotes, so `x="$(echo "a b")"` no longer ends its
+  string early and recolours the rest of the snippet, and the `#` in
+  `x=$(date)#tag` no longer starts a comment
 
 ## 0.12.0 - 2026-09-12
 

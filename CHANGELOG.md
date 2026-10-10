@@ -36,6 +36,13 @@ all notable changes to this project are documented in this file.
   parentheses the brackets hold. it used to keep the brackets as part of the
   target, or was no link at all when they held an unbalanced parenthesis.
   affects both the `show` output and the interactive reader
+- code highlighting in the reader and in `show` now follows comments and
+  strings across lines, so a multi-line pharo comment, javascript `/* … */`
+  comment or template string, python docstring or shell heredoc is coloured
+  as a whole, not just its first line. in smalltalk, yaml and shell
+  single-quoted strings a backslash is a plain character, so `'C:\'` no
+  longer runs to the end of the line, and smalltalk and yaml read `''` as a
+  quote
 
 ## 0.12.0 - 2026-09-12
 

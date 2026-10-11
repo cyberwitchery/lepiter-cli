@@ -37,22 +37,14 @@ pub fn render_nodes_to_text_with(
     escaping: BlockEscaping,
 ) -> String {
     let mut out = String::new();
-    render_nodes_into(nodes, rewrite, escaping, Position::Snippet, &mut out);
+    render_nodes_into(nodes, rewrite, escaping, &mut out);
     out
-}
-
-/// whether a node is a snippet of its own or sits inside a list item.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Position {
-    Snippet,
-    ListItem,
 }
 
 fn render_nodes_into(
     nodes: &[Node],
     rewrite: &mut impl FnMut(LinkKind, &str) -> Option<String>,
     escaping: BlockEscaping,
-    position: Position,
     out: &mut String,
 ) {
     for node in nodes {
@@ -72,7 +64,6 @@ fn render_nodes_into(
             Node::Paragraph { text } | Node::Text { text } => {
                 let text = rewrite_inline_links(text, &mut *rewrite);
                 if escaping == BlockEscaping::Escape
-                    && position == Position::Snippet
                     && !text.contains('\n')
                     && is_standalone_link(&text)
                 {
@@ -84,7 +75,7 @@ fn render_nodes_into(
             Node::List { items } => {
                 for item in items {
                     let mut item_out = String::new();
-                    render_nodes_into(item, rewrite, escaping, Position::ListItem, &mut item_out);
+                    render_nodes_into(item, rewrite, escaping, &mut item_out);
                     let mut lines = item_out.trim().lines();
                     if let Some(first) = lines.next() {
                         out.push_str("- ");
@@ -611,18 +602,30 @@ mod tests {
     }
 
     #[test]
-    fn a_list_item_that_is_a_link_is_left_a_working_link() {
+    fn a_list_item_block_that_is_only_a_link_is_escaped() {
         let text = render_escaped(&[Node::List {
             items: vec![
                 vec![Node::Text {
                     text: "[label](https://example.com)".to_string(),
                 }],
-                vec![Node::Text {
-                    text: "plain".to_string(),
+                vec![
+                    Node::Text {
+                        text: "plain".to_string(),
+                    },
+                    Node::Text {
+                        text: "[label](https://example.com)".to_string(),
+                    },
+                ],
+                vec![Node::Link {
+                    text: "label".to_string(),
+                    url: "https://example.com".to_string(),
                 }],
             ],
         }]);
-        assert_eq!(text, "- [label](https://example.com)\n- plain\n\n");
+        assert_eq!(
+            text,
+            "- \\[label](https://example.com)\n- plain\n  \n  \\[label](https://example.com)\n- [label](https://example.com)\n\n"
+        );
     }
 
     #[test]

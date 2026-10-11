@@ -24,8 +24,7 @@ const SPEC: ArgSpec<'static> = ArgSpec {
             - picture, youtube and word snippets come back as the link or\n    \
             text snippet their markdown form implies\n  \
             - a carriage return in a text snippet is dropped; a crlf line\n    \
-            break comes back as a plain newline\n  \
-            - a snippet nested inside a list item is flattened to text",
+            break comes back as a plain newline",
     toggles: &[],
     valued: &[],
 };
@@ -263,7 +262,7 @@ enum Snippet {
         language: Option<String>,
         code: String,
     },
-    List(Vec<String>),
+    List(Vec<Vec<Snippet>>),
     Link {
         text: String,
         url: String,
@@ -280,9 +279,18 @@ enum Snippet {
     },
 }
 
+/// deeper list nesting is read as text, keeping the page under `serde_json`'s nesting limit.
+const MAX_LIST_DEPTH: usize = 16;
+
 fn parse_markdown_body(body: &str, slug_to_id: &HashMap<String, String>) -> Vec<Snippet> {
+    parse_blocks(body, slug_to_id, 0)
+}
+
+fn parse_blocks(body: &str, slug_to_id: &HashMap<String, String>, depth: usize) -> Vec<Snippet> {
     let mut snippets = Vec::new();
     let mut lines = body.lines().peekable();
+    // no fence this long or longer closes anywhere in the rest of `body`
+    let mut unclosable_fence = usize::MAX;
 
     while let Some(line) = lines.next() {
         // blank lines between blocks
@@ -292,9 +300,14 @@ fn parse_markdown_body(body: &str, slug_to_id: &HashMap<String, String>) -> Vec<
 
         // code block
         if let Some((fence_len, info)) = open_fence(line) {
-            let (snipps, consumed) = parse_code_block(fence_len, info, &mut lines);
+            let (snipps, consumed) = if fence_len < unclosable_fence {
+                parse_code_block(fence_len, info, &mut lines)
+            } else {
+                (Vec::new(), false)
+            };
             snippets.extend(snipps);
             if !consumed {
+                unclosable_fence = unclosable_fence.min(fence_len);
                 // unterminated code block — treat opening as text
                 snippets.push(Snippet::Text(rewrite_links_to_internal(line, slug_to_id)));
             }
@@ -334,9 +347,16 @@ fn parse_markdown_body(body: &str, slug_to_id: &HashMap<String, String>) -> Vec<
                     break;
                 }
             }
-            let items: Vec<String> = items
-                .into_iter()
-                .map(|item| rewrite_links_to_internal(&unescape_lines(&item), slug_to_id))
+            let items = items
+                .iter()
+                .map(|item| {
+                    if depth < MAX_LIST_DEPTH {
+                        parse_blocks(item, slug_to_id, depth + 1)
+                    } else {
+                        let text = rewrite_links_to_internal(&unescape_lines(item), slug_to_id);
+                        vec![Snippet::Text(text)]
+                    }
+                })
                 .collect();
             snippets.push(Snippet::List(items));
             continue;
@@ -407,8 +427,9 @@ fn parse_code_block(
 ) -> (Vec<Snippet>, bool) {
     let mut body = Vec::new();
     let mut found_end = false;
+    let mut rest = lines.clone();
 
-    for line in lines.by_ref() {
+    for line in rest.by_ref() {
         if closes_fence(line, fence_len) {
             found_end = true;
             break;
@@ -419,6 +440,7 @@ fn parse_code_block(
     if !found_end {
         return (Vec::new(), false);
     }
+    *lines = rest;
 
     // diff rewrite block: ```diff <lang>
     if let Some(rewrite_lang) = info.strip_prefix("diff ")
@@ -527,61 +549,67 @@ fn build_code_snippet_json(language: &Option<String>, code: &str) -> serde_json:
     }
 }
 
-fn build_page_json(fm: &Frontmatter, snippets: &[Snippet]) -> serde_json::Value {
-    let mut items: Vec<serde_json::Value> = Vec::new();
-
-    for snippet in snippets {
-        match snippet {
-            Snippet::Text(text) => {
-                items.push(json!({ "__type": "textSnippet", "string": text }));
-            }
-            Snippet::Code { language, code } => {
-                items.push(build_code_snippet_json(language, code));
-            }
-            Snippet::List(list_items) => {
-                let children: Vec<serde_json::Value> = list_items
-                    .iter()
-                    .map(|item| json!({ "__type": "textSnippet", "string": item }))
-                    .collect();
-                items.push(json!({
-                    "__type": "listSnippet",
-                    "children": { "items": children }
-                }));
-            }
-            Snippet::Link { text, url } => {
-                items.push(json!({
-                    "__type": "linkSnippet",
-                    "string": text,
-                    "url": url
-                }));
-            }
-            Snippet::Rewrite {
-                language,
-                search,
-                replace,
-                scope,
-                is_method_pattern,
-            } => {
-                let mut obj = json!({
-                    "__type": "pharoRewrite",
-                    "search": search,
-                    "replace": replace,
-                });
-                if let Some(scope) = scope {
-                    obj["scope"] = json!(scope);
-                }
-                if let Some(is_method) = is_method_pattern {
-                    obj["isMethodPattern"] = json!(is_method);
-                }
-                // language is implicit in the __type
-                let _ = language;
-                items.push(obj);
-            }
-            Snippet::Unknown { typ } => {
-                items.push(json!({ "__type": typ }));
-            }
+fn snippet_json(snippet: &Snippet) -> serde_json::Value {
+    match snippet {
+        Snippet::Text(text) => json!({ "__type": "textSnippet", "string": text }),
+        Snippet::Code { language, code } => build_code_snippet_json(language, code),
+        Snippet::List(list_items) => {
+            let children: Vec<serde_json::Value> =
+                list_items.iter().map(|item| list_item_json(item)).collect();
+            json!({
+                "__type": "listSnippet",
+                "children": { "items": children }
+            })
         }
+        Snippet::Link { text, url } => json!({
+            "__type": "linkSnippet",
+            "string": text,
+            "url": url
+        }),
+        Snippet::Rewrite {
+            language,
+            search,
+            replace,
+            scope,
+            is_method_pattern,
+        } => {
+            let mut obj = json!({
+                "__type": "pharoRewrite",
+                "search": search,
+                "replace": replace,
+            });
+            if let Some(scope) = scope {
+                obj["scope"] = json!(scope);
+            }
+            if let Some(is_method) = is_method_pattern {
+                obj["isMethodPattern"] = json!(is_method);
+            }
+            // language is implicit in the __type
+            let _ = language;
+            obj
+        }
+        Snippet::Unknown { typ } => json!({ "__type": typ }),
     }
+}
+
+/// the list child for one item: its first block, holding the item's other blocks as children.
+fn list_item_json(blocks: &[Snippet]) -> serde_json::Value {
+    let holder = Snippet::Text(String::new());
+    let (first, rest) = match blocks {
+        // a list's children are its items, so blocks after a leading list need a holder
+        [] | [Snippet::List(_), _, ..] => (&holder, blocks),
+        [first, rest @ ..] => (first, rest),
+    };
+    let mut item = snippet_json(first);
+    if !rest.is_empty() {
+        let children: Vec<serde_json::Value> = rest.iter().map(snippet_json).collect();
+        item["children"] = json!({ "items": children });
+    }
+    item
+}
+
+fn build_page_json(fm: &Frontmatter, snippets: &[Snippet]) -> serde_json::Value {
+    let mut items: Vec<serde_json::Value> = snippets.iter().map(snippet_json).collect();
 
     if items.is_empty() {
         items.push(json!({ "__type": "textSnippet", "string": "" }));
@@ -993,6 +1021,34 @@ mod tests {
     }
 
     #[test]
+    fn an_unterminated_fence_keeps_the_lines_after_it() {
+        let input = "before\n\n```python\ncode line\n\n- ```python\n  item code\n- next\n";
+        let snippets = parse_markdown_body(input, &HashMap::new());
+        let [
+            Snippet::Text(before),
+            Snippet::Text(fence),
+            Snippet::Text(code),
+            Snippet::List(items),
+        ] = &snippets[..]
+        else {
+            panic!("expected three texts and a list, got {snippets:?}");
+        };
+        assert_eq!([before, fence, code], ["before", "```python", "code line"]);
+        assert!(matches!(
+            &items[0][..],
+            [Snippet::Text(f), Snippet::Text(c)] if f == "```python" && c == "item code"
+        ));
+        assert!(matches!(&items[1][..], [Snippet::Text(t)] if t == "next"));
+
+        let snippets = parse_markdown_body("````a\n```b\nx\n```\n", &HashMap::new());
+        assert!(matches!(
+            &snippets[..],
+            [Snippet::Text(t), Snippet::Code { language: Some(l), code }]
+                if t == "````a" && l == "b" && code == "x"
+        ));
+    }
+
+    #[test]
     fn diff_block_without_change_lines_stays_text() {
         let slug_map = HashMap::new();
         let input = "```diff pharo\njust a note\n```\n\nafter\n";
@@ -1082,7 +1138,14 @@ mod tests {
         assert_eq!(snippets.len(), 1);
         match &snippets[0] {
             Snippet::List(items) => {
-                assert_eq!(items, &["first", "second", "third"]);
+                let texts: Vec<_> = items
+                    .iter()
+                    .map(|item| match &item[..] {
+                        [Snippet::Text(t)] => t.as_str(),
+                        other => panic!("expected one Text, got {other:?}"),
+                    })
+                    .collect();
+                assert_eq!(texts, ["first", "second", "third"]);
             }
             other => panic!("expected List, got {other:?}"),
         }
@@ -1096,11 +1159,66 @@ mod tests {
         assert_eq!(snippets.len(), 1);
         match &snippets[0] {
             Snippet::List(items) => {
-                assert_eq!(items[0], "first\ncontinued");
-                assert_eq!(items[1], "second");
+                assert!(matches!(&items[0][..], [Snippet::Text(t)] if t == "first\ncontinued"));
+                assert!(matches!(&items[1][..], [Snippet::Text(t)] if t == "second"));
             }
             other => panic!("expected List, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn list_item_blocks_are_read_like_page_blocks() {
+        let mut slug_map = HashMap::new();
+        slug_map.insert("two.md".to_string(), "id-two".to_string());
+        let input = "- intro [two](two.md)\n  \n  ```python\n  \\d [x](two.md)\n  ```\n- [two](two.md)\n- \\[two](two.md)\n\n";
+        let snippets = parse_markdown_body(input, &slug_map);
+        let [Snippet::List(items)] = &snippets[..] else {
+            panic!("expected one List, got {snippets:?}");
+        };
+        assert!(matches!(
+            &items[0][..],
+            [Snippet::Text(t), Snippet::Code { language: Some(l), code }]
+                if t == "intro [two](page:id-two)" && l == "python" && code == "\\d [x](two.md)"
+        ));
+        assert!(matches!(
+            &items[1][..],
+            [Snippet::Link { text, url }] if text == "two" && url == "page:id-two"
+        ));
+        assert!(matches!(&items[2][..], [Snippet::Text(t)] if t == "[two](page:id-two)"));
+    }
+
+    #[test]
+    fn list_nesting_past_the_depth_limit_is_read_back_as_text() {
+        let fm = Frontmatter {
+            title: "Deep".to_string(),
+            id: "deep-1".to_string(),
+            tags: Vec::new(),
+            updated_at: None,
+        };
+        let lists_in_items = format!("{}x\n", "- ".repeat(100_000));
+        let lists_under_text: String = (0..100)
+            .map(|level| format!("{}- level {level}\n", "  ".repeat(level)))
+            .collect();
+        for input in [lists_in_items, lists_under_text] {
+            let snippets = parse_markdown_body(&input, &HashMap::new());
+            let bytes = serde_json::to_vec(&build_page_json(&fm, &snippets)).unwrap();
+            serde_json::from_slice::<serde_json::Value>(&bytes).expect("page reads back");
+        }
+    }
+
+    #[test]
+    fn an_indented_list_inside_an_item_is_a_nested_list() {
+        let snippets = parse_markdown_body("- outer\n  - inner\n- next\n", &HashMap::new());
+        let [Snippet::List(items)] = &snippets[..] else {
+            panic!("expected one List, got {snippets:?}");
+        };
+        let [Snippet::Text(outer), Snippet::List(inner)] = &items[0][..] else {
+            panic!("expected text and a nested list, got {:?}", items[0]);
+        };
+        assert_eq!(outer, "outer");
+        assert_eq!(inner.len(), 1);
+        assert!(matches!(&inner[0][..], [Snippet::Text(t)] if t == "inner"));
+        assert!(matches!(&items[1][..], [Snippet::Text(t)] if t == "next"));
     }
 
     #[test]
@@ -1282,8 +1400,8 @@ mod tests {
             updated_at: None,
         };
         let snippets = vec![Snippet::List(vec![
-            "item one".to_string(),
-            "item two".to_string(),
+            vec![Snippet::Text("item one".to_string())],
+            vec![Snippet::Text("item two".to_string())],
         ])];
         let json = build_page_json(&fm, &snippets);
         let items = json["children"]["items"].as_array().unwrap();
@@ -1291,6 +1409,53 @@ mod tests {
         let children = items[0]["children"]["items"].as_array().unwrap();
         assert_eq!(children.len(), 2);
         assert_eq!(children[0]["string"], "item one");
+    }
+
+    #[test]
+    fn list_item_json_nests_later_blocks_under_the_first() {
+        let item = list_item_json(&[
+            Snippet::Text("intro".to_string()),
+            Snippet::Code {
+                language: Some("python".to_string()),
+                code: "x".to_string(),
+            },
+            Snippet::Unknown {
+                typ: "wardleyMap".to_string(),
+            },
+        ]);
+        assert_eq!(
+            item,
+            json!({
+                "__type": "textSnippet",
+                "string": "intro",
+                "children": { "items": [
+                    { "__type": "pythonSnippet", "code": "x" },
+                    { "__type": "wardleyMap" },
+                ] }
+            })
+        );
+    }
+
+    #[test]
+    fn list_item_json_holds_blocks_after_a_leading_list_in_an_empty_text() {
+        let nested = Snippet::List(vec![vec![Snippet::Text("a".to_string())]]);
+        let item = list_item_json(&[nested.clone(), Snippet::Text("after".to_string())]);
+        assert_eq!(
+            item,
+            json!({
+                "__type": "textSnippet",
+                "string": "",
+                "children": { "items": [snippet_json(&nested), { "__type": "textSnippet", "string": "after" }] }
+            })
+        );
+        assert_eq!(
+            list_item_json(std::slice::from_ref(&nested)),
+            snippet_json(&nested)
+        );
+        assert_eq!(
+            list_item_json(&[]),
+            json!({ "__type": "textSnippet", "string": "" })
+        );
     }
 
     #[test]

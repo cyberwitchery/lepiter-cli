@@ -14,6 +14,11 @@ all notable changes to this project are documented in this file.
   leading `[` that pairs into `[[…]]` or a trailing backslash, or a url with an
   unbalanced `(`, comes back as a text snippet, and a text snippet that is
   exactly one link whose url balances its parentheses comes back as a link
+- `export` now writes a text snippet inside a list item that is exactly one
+  link with a leading backslash, `- \[label](url)`, as it already did outside
+  a list, so `import` can tell it from a link snippet; a markdown viewer shows
+  it as literal text. earlier versions wrote both as `- [label](url)`, which
+  `import` now reads as a link snippet where it used to read both as text
 
 ### fixed
 - a link snippet now survives `export` and `import`, unless its text or url
@@ -32,6 +37,18 @@ all notable changes to this project are documented in this file.
   grammar as the rest of the page, so a link whose url balances its
   parentheses, like `https://en.wikipedia.org/wiki/Foo_(bar)`, comes back as a
   link snippet instead of text
+- `import` reads a list item back as the snippets `export` wrote for it. it
+  used to join the item's lines into one text snippet, so a code snippet in a
+  list item came back as text, with a leading backslash dropped from each line
+  and links to exported pages rewritten inside the code. the code blocks,
+  quotes, nested lists, link snippets and unknown snippets in a list item now
+  come back as those snippets, the item's first snippet holding the rest as
+  its children, and code is read exactly as written. a list nested inside an
+  item, such as `- a` followed by `  - b`, comes back as a nested list, and a
+  list nested more than 16 levels deep is read as text below that depth
+- `import` no longer drops the rest of a page after a code fence that is never
+  closed. the fence line comes back as a text snippet and the lines after it
+  are read as usual
 - `[label](<target>)` is now read as a link to `target`, with any spaces and
   parentheses the brackets hold. it used to keep the brackets as part of the
   target, or was no link at all when they held an unbalanced parenthesis.

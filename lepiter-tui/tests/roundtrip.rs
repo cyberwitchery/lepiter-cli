@@ -33,20 +33,30 @@ fn run(args: &[&Path]) {
     );
 }
 
-/// a knowledge base holding one page built from `items`.
-fn kb_with_snippets(items: Value) -> TempDir {
-    let dir = tempfile::tempdir().expect("tempdir");
+/// writes a page built from `items` into the knowledge base at `kb`.
+fn write_page(kb: &Path, id: &str, title: &str, items: Value) {
     let page = json!({
-        "uid": { "uuid": "roundtrip-page" },
-        "pageType": { "title": "roundtrip page" },
+        "uid": { "uuid": id },
+        "pageType": { "title": title },
         "children": { "items": items }
     });
     std::fs::write(
-        dir.path().join("roundtrip-page.lepiter"),
+        kb.join(format!("{id}.lepiter")),
         serde_json::to_vec_pretty(&page).unwrap(),
     )
     .unwrap();
+}
+
+/// a knowledge base holding one page built from `items`.
+fn kb_with_snippets(items: Value) -> TempDir {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_page(dir.path(), "roundtrip-page", "roundtrip page", items);
     dir
+}
+
+/// a list snippet with one item per entry of `items`.
+fn list(items: Value) -> Value {
+    json!({ "__type": "listSnippet", "children": { "items": items } })
 }
 
 /// node trees as JSON, minus the `raw` payload of an `Unknown` node.
@@ -193,6 +203,96 @@ fn blank_text_snippets_survive_next_to_their_neighbours() {
 }
 
 #[test]
+fn list_item_code_keeps_its_backslashes_and_page_links() {
+    let kb = kb_with_snippets(json!([list(json!([{
+        "__type": "pythonSnippet",
+        "code": "\\d+ starts this line\nprint('[x](two.md)')",
+    }]))]));
+    write_page(
+        kb.path(),
+        "two-page",
+        "two",
+        json!([{ "__type": "textSnippet", "string": "page two" }]),
+    );
+    assert_roundtrips(kb.path());
+}
+
+#[test]
+fn list_item_paragraph_keeps_its_code_block_child() {
+    let kb = kb_with_snippets(json!([list(json!([{
+        "__type": "textSnippet",
+        "string": "intro",
+        "children": { "items": [
+            { "__type": "pythonSnippet", "code": "print('hi')\n\nprint('bye')" },
+        ] }
+    }]))]));
+    assert_roundtrips(kb.path());
+}
+
+#[test]
+fn list_item_quote_survives() {
+    let kb = kb_with_snippets(json!([list(json!([
+        { "__type": "textSnippet", "string": "> first\n\nthird" },
+        {
+            "__type": "textSnippet",
+            "string": "intro",
+            "children": { "items": [
+                { "__type": "textSnippet", "string": "> quoted" },
+            ] }
+        },
+    ]))]));
+    assert_roundtrips(kb.path());
+}
+
+#[test]
+fn list_item_nested_list_survives() {
+    let kb = kb_with_snippets(json!([list(json!([
+        {
+            "__type": "textSnippet",
+            "string": "outer",
+            "children": { "items": [list(json!([
+                {
+                    "__type": "textSnippet",
+                    "string": "inner one",
+                    "children": { "items": [
+                        { "__type": "pythonSnippet", "code": "print('deep')" },
+                    ] }
+                },
+                { "__type": "textSnippet", "string": "inner two" },
+            ]))] }
+        },
+        list(json!([
+            { "__type": "textSnippet", "string": "a" },
+            { "__type": "textSnippet", "string": "b" },
+        ])),
+    ]))]));
+    assert_roundtrips(kb.path());
+}
+
+#[test]
+fn list_item_link_snippet_and_link_only_paragraph_stay_apart() {
+    let kb = kb_with_snippets(json!([list(json!([
+        { "__type": "linkSnippet", "string": "label", "url": "https://example.com" },
+        { "__type": "textSnippet", "string": "[label](https://example.com)" },
+    ]))]));
+    let markdown = exported_markdown(kb.path());
+    assert!(
+        markdown.contains("- [label](https://example.com)\n- \\[label](https://example.com)\n"),
+        "a link snippet and a link-only paragraph are written alike:\n{markdown}"
+    );
+    assert_roundtrips(kb.path());
+}
+
+#[test]
+fn list_item_unknown_snippet_survives_next_to_prose_spelling_its_marker() {
+    let kb = kb_with_snippets(json!([list(json!([
+        { "__type": "wardleyMap" },
+        { "__type": "textSnippet", "string": "[[unknown: wardleyMap]]" },
+    ]))]));
+    assert_roundtrips(kb.path());
+}
+
+#[test]
 fn prose_lines_after_the_first_that_look_like_blocks_stay_prose() {
     let kb = kb_with_snippets(json!([
         { "__type": "textSnippet", "string": "intro\n- not a list\n> not a quote\n```\nnot code\n```" },
@@ -255,8 +355,8 @@ fn guard_list_item_that_is_a_link_stays_a_list_item() {
     ]));
     let markdown = exported_markdown(kb.path());
     assert!(
-        markdown.contains("- [label](https://example.com)\n"),
-        "a list item link was escaped into literal text:\n{markdown}"
+        markdown.contains("- \\[label](https://example.com)\n"),
+        "a list item that is only a link was not escaped:\n{markdown}"
     );
     assert_roundtrips(kb.path());
 }

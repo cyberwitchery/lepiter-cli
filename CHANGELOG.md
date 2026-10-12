@@ -77,6 +77,12 @@ all notable changes to this project are documented in this file.
   `$(…)`, `${…}` and backquotes, so `x="$(echo "a b")"` no longer ends its
   string early and recolours the rest of the snippet, and the `#` in
   `x=$(date)#tag` no longer starts a comment
+- yaml highlighting in the reader and in `show` reads strings as yaml does:
+  a quote inside a plain value, as in `don't`, `5"` or `O'Brien`, no longer
+  colours the rest of the line as a string and hides the comment after it, a
+  quoted string can run across lines, and the indented body of a `|` or `>`
+  block scalar is coloured as a string, so a `#` or a quote in it no longer
+  starts a comment or a string
 
 ## 0.12.0 - 2026-09-12
 

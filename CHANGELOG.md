@@ -2,7 +2,7 @@
 
 all notable changes to this project are documented in this file.
 
-## Unreleased
+## 0.12.1 - 2026-10-14
 
 ### changed
 - re-importing a markdown export written by 0.12.0 or earlier can change some

@@ -80,7 +80,8 @@ all notable changes to this project are documented in this file.
 - yaml highlighting in the reader and in `show` reads strings as yaml does:
   a quote inside a plain value, as in `don't`, `5"` or `O'Brien`, no longer
   colours the rest of the line as a string and hides the comment after it, a
-  quoted string can run across lines, and the indented body of a `|` or `>`
+  quoted string can run across lines but not past a `---` or `...` document
+  marker, and the indented body of a `|` or `>`
   block scalar is coloured as a string, so a `#` or a quote in it no longer
   starts a comment or a string
 

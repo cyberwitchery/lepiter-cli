@@ -519,6 +519,10 @@ fn tokenize_line<'a>(
     let mut body = None;
     if syntax.nodes {
         state.yaml.start_line(bytes);
+        // a quoted scalar cannot hold a document marker, so an unterminated one ends there.
+        if matches!(state.mode, Mode::String { .. }) && document_marker(bytes) {
+            state.mode = Mode::Code;
+        }
     }
 
     loop {
@@ -1465,6 +1469,41 @@ mod tests {
         assert!(strings(&lines[3]).is_empty());
         assert_eq!(comments(&lines[3]), vec!["# c"]);
         assert_eq!(strings(&lines[4]), vec!["'x'"]);
+    }
+
+    #[test]
+    fn yaml_earlier_lines_close_before_later_strings() {
+        for (case, last) in [
+            (&["a:", "  b: 1", "c: |", "  x # c"][..], "  x # c"),
+            (
+                &["on: [push]", "run: |", "  echo \"hi\" # x"],
+                "  echo \"hi\" # x",
+            ),
+            (&["a: b", "c: |", "  x # c"], "  x # c"),
+        ] {
+            let lines = block(case, "yaml");
+            assert_eq!(
+                lines[case.len() - 1],
+                vec![CodeToken::StringLit(last)],
+                "{case:?}"
+            );
+        }
+        for (case, string) in [
+            (&["args:", "  - --foo", "  - 'bar'"][..], "'bar'"),
+            (&["--- plain text", "--- 'quoted'"], "'quoted'"),
+        ] {
+            let lines = block(case, "yaml");
+            assert_eq!(strings(&lines[case.len() - 1]), vec![string], "{case:?}");
+        }
+    }
+
+    #[test]
+    fn yaml_unterminated_quote_stops_at_a_document_marker() {
+        let lines = block(&["a: \"open", "b: 1 # one", "---", "c: 'x' # two"], "yaml");
+        assert_eq!(lines[1], vec![CodeToken::StringLit("b: 1 # one")]);
+        assert!(strings(&lines[2]).is_empty());
+        assert_eq!(strings(&lines[3]), vec!["'x'"]);
+        assert_eq!(comments(&lines[3]), vec!["# two"]);
     }
 
     #[test]

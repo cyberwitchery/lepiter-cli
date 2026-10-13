@@ -1,6 +1,8 @@
 //! shared code-highlighting tokenizer used by both the tui renderer
 //! (ratatui spans) and the cli pretty-printer (ansi escape codes).
 
+use libyaml_safer::{ScalarStyle, Scanner, Token, TokenData};
+
 /// a single token produced by the code tokenizer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CodeToken<'a> {
@@ -38,8 +40,6 @@ struct LanguageSyntax {
     regex_literals: bool,
     /// `"…"`, `$(…)`, `${…}`, `$((…))` and backquotes nest inside one another, as in a posix shell.
     substitutions: bool,
-    /// a quote, or a `|` or `>` block scalar header, opens a string only where a yaml node can start.
-    nodes: bool,
     /// language keywords rendered distinctly.
     keywords: &'static [&'static str],
 }
@@ -86,7 +86,6 @@ static DEFAULT_SYNTAX: LanguageSyntax = LanguageSyntax {
     heredocs: false,
     regex_literals: false,
     substitutions: false,
-    nodes: false,
     keywords: &[],
 };
 
@@ -105,7 +104,6 @@ static SMALLTALK_SYNTAX: LanguageSyntax = LanguageSyntax {
     heredocs: false,
     regex_literals: false,
     substitutions: false,
-    nodes: false,
     keywords: &["self", "super", "true", "false", "nil", "thisContext"],
 };
 
@@ -127,7 +125,6 @@ static PYTHON_SYNTAX: LanguageSyntax = LanguageSyntax {
     heredocs: false,
     regex_literals: false,
     substitutions: false,
-    nodes: false,
     keywords: &[
         "def", "class", "return", "if", "elif", "else", "for", "while", "in", "try", "except",
         "with", "as", "import", "from", "pass", "break", "continue", "True", "False", "None",
@@ -150,7 +147,6 @@ static JAVASCRIPT_SYNTAX: LanguageSyntax = LanguageSyntax {
     heredocs: false,
     regex_literals: true,
     substitutions: false,
-    nodes: false,
     keywords: &[
         "function",
         "return",
@@ -191,7 +187,6 @@ static SHELL_SYNTAX: LanguageSyntax = LanguageSyntax {
     heredocs: true,
     regex_literals: false,
     substitutions: true,
-    nodes: false,
     keywords: &[
         "if", "then", "fi", "for", "in", "do", "done", "case", "esac", "while", "function", "echo",
         "exit",
@@ -207,30 +202,19 @@ static JSON_SYNTAX: LanguageSyntax = LanguageSyntax {
     heredocs: false,
     regex_literals: false,
     substitutions: false,
-    nodes: false,
     keywords: &["true", "false", "null"],
 };
 
+/// yaml text outside the strings and comments [`tokenize_yaml`] finds.
 static YAML_SYNTAX: LanguageSyntax = LanguageSyntax {
-    line_comments: &["#"],
-    comment_after: Some(&[' ', '\t']),
+    line_comments: &[],
+    comment_after: None,
     block_comments: &[],
-    strings: &[
-        StringDelim {
-            multiline: true,
-            ..escaped(b'"')
-        },
-        StringDelim {
-            doubled: true,
-            multiline: true,
-            ..verbatim(b'\'')
-        },
-    ],
+    strings: &[],
     char_escape: None,
     heredocs: false,
     regex_literals: false,
     substitutions: false,
-    nodes: true,
     keywords: &["true", "false", "null"],
 };
 
@@ -257,7 +241,6 @@ struct LexState<'a> {
     shell: Vec<Shell>,
     /// an escaped line break carries the shell word in progress into the next line.
     word: bool,
-    yaml: Yaml,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -272,9 +255,6 @@ enum Mode<'a> {
     },
     /// a heredoc body, ended by a line holding just this word.
     Heredoc(&'a str),
-    /// a yaml block scalar body, ended by a line that is not blank and is indented less than `indent`.
-    /// while `auto`, `indent` is a minimum and the first line that is not blank sets it.
-    Block { indent: usize, auto: bool },
 }
 
 /// a shell quote or substitution the lexer is inside of.
@@ -298,189 +278,6 @@ enum Shell {
     Backtick,
 }
 
-/// the yaml structure read so far, which decides where a node can start.
-#[derive(Debug, Default)]
-struct Yaml {
-    /// open flow collections.
-    flow: usize,
-    /// columns of the open block collections, innermost last.
-    indents: Vec<usize>,
-    /// a plain scalar goes on in the next line that is indented at least this far.
-    plain: Option<usize>,
-    /// how far into the line the scanner has read.
-    pos: usize,
-    /// whether that is inside a plain scalar.
-    in_plain: bool,
-    /// the column of the node on this line that a `: ` would make a key.
-    key: Option<usize>,
-}
-
-impl Yaml {
-    fn start_line(&mut self, bytes: &[u8]) {
-        self.pos = 0;
-        self.key = None;
-        self.in_plain = false;
-        let spaces = bytes.iter().take_while(|&&b| b == b' ').count();
-        if spaces == bytes.len() {
-            return;
-        }
-        self.in_plain = self.plain.take().is_some_and(|min| spaces >= min)
-            && bytes[spaces] != b'#'
-            && !document_marker(bytes);
-    }
-
-    /// resumes after a string or block scalar body that ends at `end`.
-    fn skip_to(&mut self, end: usize) {
-        self.pos = end;
-        self.in_plain = false;
-    }
-
-    fn end_line(&mut self, bytes: &[u8], end: usize) {
-        self.advance(bytes, end);
-        if self.in_plain && end == bytes.len() {
-            self.plain = Some(match self.flow {
-                0 => self.indents.last().map_or(0, |n| n + 1),
-                _ => 0,
-            });
-        }
-    }
-
-    /// whether a node can start at `i`, recording it as one if so.
-    fn node_at(&mut self, bytes: &[u8], i: usize) -> bool {
-        self.advance(bytes, i);
-        if self.pos != i || self.in_plain {
-            return false;
-        }
-        self.unwind(i);
-        self.node(i);
-        true
-    }
-
-    /// the body mode of a block scalar whose header is at `i`, if one can start there.
-    fn block_scalar(
-        &mut self,
-        bytes: &[u8],
-        i: usize,
-        explicit: Option<usize>,
-    ) -> Option<Mode<'static>> {
-        if !self.node_at(bytes, i) || self.flow > 0 {
-            return None;
-        }
-        self.pos = bytes.len();
-        let min = self.indents.last().map_or(1, |n| n + 1);
-        Some(match explicit {
-            Some(m) => Mode::Block {
-                indent: min + m - 1,
-                auto: false,
-            },
-            None => Mode::Block {
-                indent: min,
-                auto: true,
-            },
-        })
-    }
-
-    /// scans the code from where the scanner stands up to `end`.
-    fn advance(&mut self, bytes: &[u8], end: usize) {
-        while self.pos < end {
-            let i = self.pos;
-            let b = bytes[i];
-            let next = bytes.get(i + 1).copied();
-            let blank = matches!(next, None | Some(b' ' | b'\t'));
-            if self.in_plain {
-                let flow_end = self.flow > 0 && next.is_some_and(|n| b",[]{}".contains(&n));
-                if (self.flow > 0 && b",?[]{}".contains(&b)) || (b == b':' && (blank || flow_end)) {
-                    self.in_plain = false;
-                } else {
-                    self.pos += 1;
-                }
-                continue;
-            }
-            self.pos += 1;
-            if b == b' ' || b == b'\t' {
-                continue;
-            }
-            self.unwind(i);
-            match b {
-                b'-' | b'?' | b':' if blank || (b != b'-' && self.flow > 0) => {
-                    if self.flow == 0 {
-                        let col = if b == b':' { self.key.unwrap_or(i) } else { i };
-                        if self.indents.last().is_none_or(|&n| n < col) {
-                            self.indents.push(col);
-                        }
-                        self.key = None;
-                    }
-                }
-                b'[' | b'{' => {
-                    self.node(i);
-                    self.flow += 1;
-                }
-                b']' | b'}' => self.flow = self.flow.saturating_sub(1),
-                b',' => {}
-                b'&' | b'*' | b'!' => {
-                    self.node(i);
-                    let name = |c: u8| match b {
-                        b'!' => !matches!(c, b' ' | b'\t'),
-                        _ => c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_'),
-                    };
-                    while bytes.get(self.pos).is_some_and(|&c| name(c)) {
-                        self.pos += 1;
-                    }
-                }
-                b'%' if i == 0 && self.flow == 0 => self.pos = bytes.len(),
-                b'-' | b'.' if i == 0 && document_marker(bytes) => {
-                    self.indents.clear();
-                    self.flow = 0;
-                    self.key = None;
-                    self.pos = 3;
-                }
-                _ => {
-                    self.node(i);
-                    self.in_plain = true;
-                }
-            }
-        }
-    }
-
-    /// closes the block collections a token at column `i` is outside of.
-    fn unwind(&mut self, i: usize) {
-        while self.flow == 0 && self.indents.last().is_some_and(|&n| n > i) {
-            self.indents.pop();
-        }
-    }
-
-    /// notes a node starting at column `i`, the key if a `: ` follows.
-    fn node(&mut self, i: usize) {
-        if self.flow == 0 && self.key.is_none() {
-            self.key = Some(i);
-        }
-    }
-}
-
-/// whether `line` starts with a yaml `---` or `...` document marker.
-fn document_marker(line: &[u8]) -> bool {
-    (line.starts_with(b"---") || line.starts_with(b"..."))
-        && matches!(line.get(3), None | Some(b' ' | b'\t'))
-}
-
-/// parses a yaml block scalar header such as `|`, `>-` or `|2+` at the start of `rest`,
-/// returning its length and explicit indentation.
-fn block_header(rest: &[u8]) -> Option<(usize, Option<usize>)> {
-    if !matches!(rest.first(), Some(b'|' | b'>')) {
-        return None;
-    }
-    let (mut len, mut chomp, mut explicit) = (1, false, None);
-    while len < 3 {
-        match rest.get(len) {
-            Some(b'+' | b'-') if !chomp => chomp = true,
-            Some(&d @ b'1'..=b'9') if explicit.is_none() => explicit = Some(usize::from(d - b'0')),
-            _ => break,
-        }
-        len += 1;
-    }
-    matches!(rest.get(len), None | Some(b' ' | b'\t')).then_some((len, explicit))
-}
-
 /// tokenise the lines of one code block into [`CodeToken`]s, one `Vec` per
 /// line. a comment or string still open at the end of a line carries on into
 /// the next, and nothing carries past the last line.
@@ -496,12 +293,149 @@ pub fn tokenize_code_block<'a>(
     lines: impl IntoIterator<Item = &'a str>,
     language: Option<&str>,
 ) -> Vec<Vec<CodeToken<'a>>> {
+    if language == Some("yaml") {
+        return tokenize_yaml(lines.into_iter().collect());
+    }
     let syntax = syntax_for_language(language);
     let mut state = LexState::default();
     lines
         .into_iter()
         .map(|line| tokenize_line(line, syntax, &mut state))
         .collect()
+}
+
+const GAP: u8 = 0;
+const TOKEN: u8 = 1;
+const STRING: u8 = 2;
+
+/// lexes a yaml block from the tokens a yaml scanner reads in it. quoted and block scalars are
+/// strings, and a `#` outside every token that starts the line or follows a blank opens a comment.
+fn tokenize_yaml<'a>(lines: Vec<&'a str>) -> Vec<Vec<CodeToken<'a>>> {
+    // libyaml-safer 0.3 panics on a block scalar that ends the input without a line break
+    let text = lines.join("\n") + "\n";
+    let mut marks = vec![GAP; text.len()];
+    let mut from = 0;
+    while from < text.len() {
+        from = scan_yaml(&text, from, &mut marks);
+    }
+    let mut start = 0;
+    lines
+        .into_iter()
+        .map(|line| {
+            let marks = &marks[start..start + line.len()];
+            start += line.len() + 1;
+            yaml_line(line, marks)
+        })
+        .collect()
+}
+
+/// marks the tokens a scanner reads in `text` from `from`. after a scanner error, returns the
+/// start of the error's line to scan again from, or of the next line if this scan began there.
+fn scan_yaml(text: &str, mut from: usize, marks: &mut [u8]) -> usize {
+    // libyaml-safer 0.3 leaves a byte order mark out of the offsets in its marks
+    if text[from..].starts_with('\u{feff}') {
+        from += '\u{feff}'.len_utf8();
+    }
+    let mut input = &text.as_bytes()[from..];
+    let mut scanner = Scanner::new();
+    scanner.set_input_string(&mut input);
+    for token in scanner {
+        let error = match token {
+            Ok(token) => {
+                mark_token(text, from, &token, marks);
+                continue;
+            }
+            Err(error) => error,
+        };
+        let at = error
+            .problem_mark()
+            .map_or(from, |m| floor(text, from + m.index as usize));
+        let line = text[..at].rfind('\n').map_or(0, |n| n + 1);
+        let resume = if at == text.len() {
+            at
+        } else if line > from {
+            line
+        } else {
+            text[at..].find('\n').map_or(text.len(), |n| at + n + 1)
+        };
+        if let Some(cleared) = marks.get_mut(resume..at) {
+            cleared.fill(GAP);
+        }
+        // an unterminated quoted scalar runs on to where scanning starts again
+        if let Some(open) = error
+            .context_mark()
+            .map(|m| floor(text, from + m.index as usize))
+            && matches!(text.as_bytes().get(open), Some(b'\'' | b'"'))
+            && let Some(string) = marks.get_mut(open..resume)
+        {
+            string.fill(STRING);
+        }
+        return resume;
+    }
+    text.len()
+}
+
+/// `i` moved back to a char boundary of `text`, since libyaml-safer 0.3 can misplace a mark.
+fn floor(text: &str, i: usize) -> usize {
+    let mut i = i.min(text.len());
+    while !text.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
+fn mark_token(text: &str, from: usize, token: &Token, marks: &mut [u8]) {
+    let start = floor(text, from + token.start_mark.index as usize);
+    let end = floor(text, from + token.end_mark.index as usize).max(start);
+    match &token.data {
+        TokenData::Scalar {
+            style: ScalarStyle::Literal | ScalarStyle::Folded,
+            ..
+        } => {
+            let indicators = text.as_bytes()[start..end]
+                .iter()
+                .skip(1)
+                .take_while(|b| matches!(b, b'+' | b'-' | b'1'..=b'9'))
+                .count();
+            marks[start..floor(text, end.min(start + 1 + indicators))].fill(STRING);
+            // the body runs from the line after the header to the indentation of the next token
+            let body = text[start..end].find('\n').map_or(end, |n| start + n + 1);
+            let last = text[..end].rfind('\n').map_or(0, |n| n + 1).max(body);
+            let indented = text.as_bytes()[last..end].iter().all(|&b| b == b' ');
+            marks[body..if indented { last } else { end }].fill(STRING);
+        }
+        TokenData::Scalar {
+            style: ScalarStyle::SingleQuoted | ScalarStyle::DoubleQuoted,
+            ..
+        } => marks[start..end].fill(STRING),
+        _ => marks[start..end].fill(TOKEN),
+    }
+}
+
+/// the tokens of one line of a yaml block, given what the scanner marked in it.
+fn yaml_line<'a>(line: &'a str, marks: &[u8]) -> Vec<CodeToken<'a>> {
+    let bytes = line.as_bytes();
+    let comment = (0..bytes.len()).find(|&i| {
+        bytes[i] == b'#' && marks[i] == GAP && (i == 0 || matches!(bytes[i - 1], b' ' | b'\t'))
+    });
+    let end = comment.unwrap_or(bytes.len());
+    let mut tokens = Vec::new();
+    let mut i = 0;
+    while i < end {
+        let string = marks[i] == STRING;
+        let j = (i..end)
+            .find(|&j| (marks[j] == STRING) != string)
+            .unwrap_or(end);
+        if string {
+            tokens.push(CodeToken::StringLit(&line[i..j]));
+        } else {
+            let mut state = LexState::default();
+            tokens.extend(tokenize_line(&line[i..j], &YAML_SYNTAX, &mut state));
+        }
+        i = j;
+    }
+    tokens.extend(comment.map(|c| CodeToken::Comment(&line[c..])));
+    tokens
 }
 
 fn tokenize_line<'a>(
@@ -516,10 +450,6 @@ fn tokenize_line<'a>(
     let mut i = 0;
     // the token count at which a shell word goes on, so a `#` there opens no comment
     let mut glued = std::mem::take(&mut state.word).then_some(0);
-    let mut body = None;
-    if syntax.nodes {
-        state.yaml.start_line(bytes);
-    }
 
     loop {
         if !matches!(state.mode, Mode::Code) {
@@ -527,15 +457,12 @@ fn tokenize_line<'a>(
             if end > start {
                 let text = &line[start..end];
                 tokens.push(match state.mode {
-                    Mode::Comment(_) => CodeToken::Comment(text),
-                    _ => CodeToken::StringLit(text),
+                    Mode::String { .. } | Mode::Heredoc(_) => CodeToken::StringLit(text),
+                    _ => CodeToken::Comment(text),
                 });
             }
             state.mode = next;
             i = end;
-            if syntax.nodes {
-                state.yaml.skip_to(end);
-            }
         } else if state.shell.contains(&Shell::Quote) {
             let end = scan_quoted(line, i, glued != Some(tokens.len()), state, &mut heredoc);
             if end > start {
@@ -612,20 +539,8 @@ fn tokenize_line<'a>(
             continue;
         }
 
-        if syntax.nodes
-            && let Some((len, explicit)) = block_header(rest)
-            && let Some(mode) = state.yaml.block_scalar(bytes, i, explicit)
-        {
-            i += len;
-            tokens.push(CodeToken::StringLit(&line[start..i]));
-            body = Some(mode);
-            continue;
-        }
-
         // string literals
-        if let Some(delim) = syntax.strings.iter().find(|d| d.quote == b)
-            && (!syntax.nodes || state.yaml.node_at(bytes, i))
-        {
+        if let Some(delim) = syntax.strings.iter().find(|d| d.quote == b) {
             let triple = delim.triple && rest.starts_with(&[b; 3]);
             state.mode = Mode::String { delim, triple };
             i += if triple { 3 } else { 1 };
@@ -668,12 +583,6 @@ fn tokenize_line<'a>(
 
     if let Some(word) = heredoc {
         state.mode = Mode::Heredoc(word);
-    }
-    if syntax.nodes {
-        state.yaml.end_line(bytes, i);
-    }
-    if let Some(mode) = body {
-        state.mode = mode;
     }
     tokens
 }
@@ -907,24 +816,6 @@ fn scan<'a>(state: Mode<'a>, bytes: &[u8], mut i: usize) -> (usize, Mode<'a>) {
         Mode::Code => (i, state),
         Mode::Heredoc(word) if bytes.trim_ascii() == word.as_bytes() => (bytes.len(), Mode::Code),
         Mode::Heredoc(_) => (bytes.len(), state),
-        Mode::Block { indent, auto } => {
-            let spaces = bytes.iter().take_while(|&&b| b == b' ').count();
-            let blank = spaces == bytes.len();
-            if !blank && spaces < indent {
-                (0, Mode::Code)
-            } else if auto {
-                let indent = indent.max(spaces);
-                (
-                    bytes.len(),
-                    Mode::Block {
-                        indent,
-                        auto: blank,
-                    },
-                )
-            } else {
-                (bytes.len(), state)
-            }
-        }
         Mode::Comment(close) => match bytes[i..]
             .windows(close.len())
             .position(|w| w == close.as_bytes())
@@ -1689,5 +1580,46 @@ mod tests {
             );
             assert_eq!(block(&["x"], language)[0], vec![CodeToken::Ident("x")]);
         }
+    }
+
+    #[test]
+    fn yaml_earlier_lines_close_before_later_strings() {
+        for (case, last) in [
+            (&["a:", "  b: 1", "c: |", "  x # c"][..], "  x # c"),
+            (
+                &["on: [push]", "run: |", "  echo \"hi\" # x"],
+                "  echo \"hi\" # x",
+            ),
+            (&["a: b", "c: |", "  x # c"], "  x # c"),
+        ] {
+            let lines = block(case, "yaml");
+            assert_eq!(
+                lines[case.len() - 1],
+                vec![CodeToken::StringLit(last)],
+                "{case:?}"
+            );
+        }
+        for (case, string) in [
+            (&["args:", "  - --foo", "  - 'bar'"][..], "'bar'"),
+            (&["--- plain text", "--- 'quoted'"], "'quoted'"),
+        ] {
+            let lines = block(case, "yaml");
+            assert_eq!(strings(&lines[case.len() - 1]), vec![string], "{case:?}");
+        }
+    }
+
+    #[test]
+    fn yaml_unterminated_quote_stops_at_a_document_marker() {
+        let lines = block(&["a: \"open", "b: 1 # one", "---", "c: 'x' # two"], "yaml");
+        assert_eq!(lines[1], vec![CodeToken::StringLit("b: 1 # one")]);
+        assert!(strings(&lines[2]).is_empty());
+        assert_eq!(strings(&lines[3]), vec!["'x'"]);
+        assert_eq!(comments(&lines[3]), vec!["# two"]);
+    }
+
+    #[test]
+    fn yaml_block_scalar_body_can_end_the_block() {
+        let lines = block(&["k: |", "  x"], "yaml");
+        assert_eq!(lines[1], vec![CodeToken::StringLit("  x")]);
     }
 }

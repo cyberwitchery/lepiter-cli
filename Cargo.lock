@@ -672,6 +672,7 @@ dependencies = [
  "crossterm",
  "indexmap",
  "lepiter-core",
+ "libyaml-safer",
  "open",
  "ratatui",
  "serde",
@@ -705,6 +706,12 @@ name = "libm"
 version = "0.2.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
+
+[[package]]
+name = "libyaml-safer"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d325b93a27b93b93b7cf4a57d681c5b6a4d8f910e695db989c055eb1e4f657df"
 
 [[package]]
 name = "line-clipping"

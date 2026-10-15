@@ -152,12 +152,13 @@ impl<'a> Iterator for InlineLinks<'a> {
 }
 
 /// the byte range of the inline code span whose backtick run starts at byte
-/// `start`, if it closes: a run of n backticks closes at the next run of exactly n.
+/// `start`, if it closes: a run of n backticks closes at the next run of exactly n
+/// on the same line.
 pub fn code_span_at(text: &str, start: usize) -> Option<Range<usize>> {
     let bytes = text.as_bytes();
     let run = backtick_run(bytes, start);
     let mut i = start + run;
-    while run > 0 && i < bytes.len() {
+    while run > 0 && i < bytes.len() && !matches!(bytes[i], b'\n' | b'\r') {
         let len = backtick_run(bytes, i);
         if len == run {
             return Some(start..i + len);
@@ -856,7 +857,13 @@ mod tests {
     #[test]
     fn a_link_inside_inline_code_is_code() {
         assert!(scan("`[[a]]` ``[b](c)``").is_empty());
-        for text in ["`[[a]]` [[a]]", r"\`[[a]]` x", "``[[a]]`"] {
+        for text in [
+            "`[[a]]` [[a]]",
+            r"\`[[a]]` x",
+            "``[[a]]`",
+            "`\n[[a]]\n`",
+            "`\r[[a]]\r`",
+        ] {
             assert_eq!(scan(text).len(), 1, "{text:?}");
         }
     }

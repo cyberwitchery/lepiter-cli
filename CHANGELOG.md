@@ -2,7 +2,12 @@
 
 all notable changes to this project are documented in this file.
 
-## unreleased
+## Unreleased
+
+### changed
+- re-importing a markdown export written by 0.12.1 or earlier keeps a link
+  inside inline code pointing at the exported `.md` file: those versions
+  rewrote it on export, and `import` now leaves inline code as written
 
 ### fixed
 - a `[[…]]` or `[label](target)` inside inline code is code, as in Glamorous

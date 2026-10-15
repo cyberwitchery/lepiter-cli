@@ -2097,10 +2097,13 @@ mod tests {
                     "Source",
                     &[],
                     "{{gtPage:Bare}} {{gtPage:Spaced |db=51vbb0nzpw6rs2rntv5xqzu35|label=s}} \
-                     {{gtPage:id=e58h992dm4ds8uri3tnxj2nje}} {{gtPage:attachments/gone}}",
+                     {{gtPage:id=e58h992dm4ds8uri3tnxj2nje}} {{gtPage:attachments/gone}} \
+                     {{gtPage:Named|id=e58h992dm4ds8uri3tnxj2nje}} \
+                     {{gtPage:id=f5lxx1zz5oxftqflll12hk78q}}",
                 ),
                 ("p2", "Bare", &[], ""),
                 ("p3", "Spaced ", &[], ""),
+                ("p4", "Named", &[], ""),
                 ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "By id", &[], ""),
             ],
         );
@@ -2109,7 +2112,7 @@ mod tests {
         targets.sort();
         assert_eq!(
             targets,
-            ["aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "p2", "p3"]
+            ["aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "p2", "p3", "p4"]
         );
         assert_eq!(index.orphan_ids(&result.linked_pages, None), ["p1"]);
         let broken: Vec<&str> = result
@@ -2117,7 +2120,7 @@ mod tests {
             .iter()
             .map(|b| b.target.as_str())
             .collect();
-        assert_eq!(broken, ["attachments/gone"]);
+        assert_eq!(broken, ["attachments/gone", "f5lxx1zz5oxftqflll12hk78q"]);
         assert!(result.missing_attachments.is_empty());
         index.build_backlinks();
         assert_eq!(index.backlinks_for("p2"), ["p1"]);

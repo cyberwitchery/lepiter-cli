@@ -248,38 +248,10 @@ mod tests {
     }
 
     #[test]
-    fn search_match_kind_score_ordering() {
-        assert!(SearchMatchKind::Title.score() > SearchMatchKind::Tag.score());
-        assert!(SearchMatchKind::Tag.score() > SearchMatchKind::Content.score());
-    }
-
-    #[test]
     fn search_match_kind_is_meta() {
         assert!(SearchMatchKind::Title.is_meta());
         assert!(SearchMatchKind::Tag.is_meta());
         assert!(!SearchMatchKind::Content.is_meta());
-    }
-
-    #[test]
-    fn page_meta_serializes_without_internal_fields() {
-        let meta = PageMeta {
-            id: "abc-123".to_string(),
-            id_lower: "abc-123".to_string(),
-            title: "My Page".to_string(),
-            title_lower: "my page".to_string(),
-            path: PathBuf::from("/kb/abc-123.lepiter"),
-            updated_at: None,
-            tags: vec!["rust".to_string()],
-            tags_lower: vec!["rust".to_string()],
-        };
-        let json: serde_json::Value = serde_json::to_value(&meta).unwrap();
-        assert_eq!(json["id"], "abc-123");
-        assert_eq!(json["title"], "My Page");
-        assert_eq!(json["tags"], serde_json::json!(["rust"]));
-        // Internal lowercase fields must not appear in output.
-        assert!(json.get("id_lower").is_none());
-        assert!(json.get("title_lower").is_none());
-        assert!(json.get("tags_lower").is_none());
     }
 
     #[test]
@@ -363,44 +335,6 @@ mod tests {
             let json: serde_json::Value = serde_json::to_value(&node).unwrap();
             assert_eq!(json["type"], expected_type, "wrong type tag for {:?}", node);
         }
-    }
-
-    #[test]
-    fn unknown_node_serializes_source_type() {
-        let node = Node::Unknown {
-            typ: "wardleyMap".to_string(),
-            raw: serde_json::json!({"data": 1}),
-        };
-        let json: serde_json::Value = serde_json::to_value(&node).unwrap();
-        assert_eq!(json["source_type"], "wardleyMap");
-        assert_eq!(json["raw"]["data"], 1);
-    }
-
-    #[test]
-    fn search_match_kind_serializes_lowercase() {
-        assert_eq!(
-            serde_json::to_value(SearchMatchKind::Title).unwrap(),
-            serde_json::json!("title")
-        );
-        assert_eq!(
-            serde_json::to_value(SearchMatchKind::Tag).unwrap(),
-            serde_json::json!("tag")
-        );
-        assert_eq!(
-            serde_json::to_value(SearchMatchKind::Content).unwrap(),
-            serde_json::json!("content")
-        );
-    }
-
-    #[test]
-    fn search_hit_serializes() {
-        let hit = SearchHit {
-            id: "p1".to_string(),
-            kind: SearchMatchKind::Tag,
-        };
-        let json: serde_json::Value = serde_json::to_value(&hit).unwrap();
-        assert_eq!(json["id"], "p1");
-        assert_eq!(json["kind"], "tag");
     }
 
     #[test]

@@ -29,12 +29,14 @@ fn wardley_plugin_renders_nodes_over_ipc() -> Result<()> {
     let line = String::from_utf8_lossy(&output.stdout);
     let resp: serde_json::Value = serde_json::from_str(line.trim())?;
     assert!(resp.get("ok").and_then(Value::as_bool).unwrap_or(false));
-    let lines = resp
-        .get("lines")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    assert!(!lines.is_empty());
+    assert_eq!(
+        resp.get("lines"),
+        Some(&serde_json::json!([
+            "wardley map (2 nodes)",
+            "- alpha",
+            "- beta"
+        ]))
+    );
     Ok(())
 }
 

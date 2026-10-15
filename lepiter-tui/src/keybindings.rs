@@ -529,61 +529,77 @@ mod tests {
         )
     }
 
+    /// An App in `mode`: Page mode has a page open, the others start empty.
+    fn make_app_in(mode: Mode) -> App {
+        if mode == Mode::Page {
+            return make_app_on_page();
+        }
+        let mut app = make_app();
+        app.mode = mode;
+        app
+    }
+
+    /// An App over a one-page knowledge base whose page has two links.
+    fn make_app_on_page_with_two_links() -> (tempfile::TempDir, App) {
+        let dir = tempfile::tempdir().unwrap();
+        let page = json!({
+            "uid": { "uuid": "two-links" },
+            "pageType": { "title": "two links" },
+            "children": { "items": [
+                { "__type": "textSnippet", "string": "[a](https://a.example) and [b](https://b.example)" }
+            ] }
+        });
+        std::fs::write(dir.path().join("two-links.lepiter"), page.to_string()).unwrap();
+        let mut app = make_app();
+        app.index = lepiter_core::KnowledgeBase::open(dir.path()).unwrap();
+        app.open_page("two-links", false);
+        assert_eq!(app.mode, Mode::Page);
+        assert_eq!(app.current_rendered_page().unwrap().links.len(), 2);
+        (dir, app)
+    }
+
     // ── Help mode ──────────────────────────────────────────────────
 
     #[test]
-    fn help_mode_question_mark_dismisses() {
-        let mut app = make_app();
-        app.show_help = true;
-        let result = app.handle_key(key(KeyCode::Char('?')));
-        assert!(!app.show_help);
-        assert!(matches!(result, KeyResult::Continue));
+    fn help_mode_dismisses_only_on_question_mark_or_esc() {
+        let cases = [
+            (KeyCode::Char('?'), false),
+            (KeyCode::Esc, false),
+            // 'q' must NOT quit while help is showing.
+            (KeyCode::Char('q'), true),
+            (KeyCode::Enter, true),
+        ];
+        for (code, still_shown) in cases {
+            let mut app = make_app();
+            app.show_help = true;
+            let result = app.handle_key(key(code));
+            assert_eq!(app.show_help, still_shown, "{code:?}");
+            assert!(matches!(result, KeyResult::Continue), "{code:?}");
+        }
     }
 
-    #[test]
-    fn help_mode_esc_dismisses() {
-        let mut app = make_app();
-        app.show_help = true;
-        let result = app.handle_key(key(KeyCode::Esc));
-        assert!(!app.show_help);
-        assert!(matches!(result, KeyResult::Continue));
-    }
+    // ── q and ? per mode ───────────────────────────────────────────
 
     #[test]
-    fn help_mode_ignores_other_keys() {
-        let mut app = make_app();
-        app.show_help = true;
-        let result = app.handle_key(key(KeyCode::Char('q')));
-        // 'q' should NOT quit while help is showing.
-        assert!(app.show_help);
-        assert!(matches!(result, KeyResult::Continue));
-    }
-
-    #[test]
-    fn help_mode_ignores_enter() {
-        let mut app = make_app();
-        app.show_help = true;
-        let result = app.handle_key(key(KeyCode::Enter));
-        assert!(app.show_help);
-        assert!(matches!(result, KeyResult::Continue));
+    fn q_quits_and_question_mark_shows_help_in_every_browsing_mode() {
+        let cases = [
+            (Mode::List, 'q', true),
+            (Mode::Page, 'q', true),
+            (Mode::Backlinks, 'q', true),
+            (Mode::List, '?', false),
+            (Mode::Page, '?', false),
+            (Mode::Backlinks, '?', false),
+        ];
+        for (mode, c, quits) in cases {
+            let mut app = make_app_in(mode);
+            assert!(!app.show_help);
+            let result = app.handle_key(key(KeyCode::Char(c)));
+            assert_eq!(matches!(result, KeyResult::Quit), quits, "{mode:?} {c}");
+            assert_eq!(app.show_help, !quits, "{mode:?} {c}");
+        }
     }
 
     // ── List mode ──────────────────────────────────────────────────
-
-    #[test]
-    fn list_q_returns_quit() {
-        let mut app = make_app();
-        let result = app.handle_key(key(KeyCode::Char('q')));
-        assert!(matches!(result, KeyResult::Quit));
-    }
-
-    #[test]
-    fn list_question_mark_shows_help() {
-        let mut app = make_app();
-        assert!(!app.show_help);
-        app.handle_key(key(KeyCode::Char('?')));
-        assert!(app.show_help);
-    }
 
     #[test]
     fn list_slash_enters_search_mode() {
@@ -601,60 +617,22 @@ mod tests {
     }
 
     #[test]
-    fn list_j_moves_selection_down() {
-        let mut app = make_app();
-        app.rebuild_visible_ids();
-        if app.visible_ids.len() < 2 {
-            return; // need at least 2 pages for this test
+    fn list_movement_keys_move_the_selection() {
+        let cases = [
+            (KeyCode::Char('j'), 0, 1),
+            (KeyCode::Char('k'), 1, 0),
+            (KeyCode::Down, 0, 1),
+            (KeyCode::Up, 1, 0),
+            (KeyCode::Char('k'), 0, 0),
+        ];
+        for (code, start, expected) in cases {
+            let mut app = make_app();
+            app.rebuild_visible_ids();
+            assert!(app.visible_ids.len() >= 2);
+            app.selected = start;
+            app.handle_key(key(code));
+            assert_eq!(app.selected, expected, "{code:?} from {start}");
         }
-        app.selected = 0;
-        app.handle_key(key(KeyCode::Char('j')));
-        assert_eq!(app.selected, 1);
-    }
-
-    #[test]
-    fn list_k_moves_selection_up() {
-        let mut app = make_app();
-        app.rebuild_visible_ids();
-        if app.visible_ids.len() < 2 {
-            return;
-        }
-        app.selected = 1;
-        app.handle_key(key(KeyCode::Char('k')));
-        assert_eq!(app.selected, 0);
-    }
-
-    #[test]
-    fn list_down_arrow_moves_selection() {
-        let mut app = make_app();
-        app.rebuild_visible_ids();
-        if app.visible_ids.len() < 2 {
-            return;
-        }
-        app.selected = 0;
-        app.handle_key(key(KeyCode::Down));
-        assert_eq!(app.selected, 1);
-    }
-
-    #[test]
-    fn list_up_arrow_moves_selection() {
-        let mut app = make_app();
-        app.rebuild_visible_ids();
-        if app.visible_ids.len() < 2 {
-            return;
-        }
-        app.selected = 1;
-        app.handle_key(key(KeyCode::Up));
-        assert_eq!(app.selected, 0);
-    }
-
-    #[test]
-    fn list_selection_clamps_at_zero() {
-        let mut app = make_app();
-        app.rebuild_visible_ids();
-        app.selected = 0;
-        app.handle_key(key(KeyCode::Char('k')));
-        assert_eq!(app.selected, 0);
     }
 
     #[test]
@@ -668,13 +646,6 @@ mod tests {
         app.handle_key(key(KeyCode::Enter));
         assert_eq!(app.mode, Mode::Page);
         assert!(app.opened.is_some());
-    }
-
-    #[test]
-    fn list_returns_tick() {
-        let mut app = make_app();
-        let result = app.handle_key(key(KeyCode::Esc));
-        assert!(matches!(result, KeyResult::Tick));
     }
 
     // ── Search mode ────────────────────────────────────────────────
@@ -722,12 +693,8 @@ mod tests {
         app.rebuild_visible_ids();
         app.mode = Mode::Search;
         app.handle_key(key(KeyCode::Enter));
-        // With pages present, Enter opens the selected page (Page mode).
-        if app.visible_ids.is_empty() {
-            assert_eq!(app.mode, Mode::List);
-        } else {
-            assert_eq!(app.mode, Mode::Page);
-        }
+        assert_eq!(app.mode, Mode::Page);
+        assert_eq!(app.opened.as_deref(), Some(app.visible_ids[0].as_str()));
     }
 
     #[test]
@@ -747,26 +714,12 @@ mod tests {
 
     #[test]
     fn search_always_returns_search_tick() {
-        let mut app = make_app();
-        app.mode = Mode::Search;
-        let result = app.handle_key(key(KeyCode::Char('x')));
-        assert!(matches!(result, KeyResult::SearchTick));
-    }
-
-    #[test]
-    fn search_esc_returns_search_tick() {
-        let mut app = make_app();
-        app.mode = Mode::Search;
-        let result = app.handle_key(key(KeyCode::Esc));
-        assert!(matches!(result, KeyResult::SearchTick));
-    }
-
-    #[test]
-    fn search_unrecognized_key_returns_search_tick() {
-        let mut app = make_app();
-        app.mode = Mode::Search;
-        let result = app.handle_key(key(KeyCode::F(1)));
-        assert!(matches!(result, KeyResult::SearchTick));
+        for code in [KeyCode::Char('x'), KeyCode::Esc, KeyCode::F(1)] {
+            let mut app = make_app();
+            app.mode = Mode::Search;
+            let result = app.handle_key(key(code));
+            assert!(matches!(result, KeyResult::SearchTick), "{code:?}");
+        }
     }
 
     // ── Page mode ──────────────────────────────────────────────────
@@ -779,42 +732,32 @@ mod tests {
     }
 
     #[test]
-    fn page_j_scrolls_down() {
-        let mut app = make_app_on_page();
-        app.page_scroll = 0;
-        app.handle_key(key(KeyCode::Char('j')));
-        assert_eq!(app.page_scroll, 1);
-    }
-
-    #[test]
-    fn page_k_scrolls_up() {
-        let mut app = make_app_on_page();
-        app.page_scroll = 5;
-        app.handle_key(key(KeyCode::Char('k')));
-        assert_eq!(app.page_scroll, 4);
-    }
-
-    #[test]
-    fn page_k_clamps_at_zero() {
-        let mut app = make_app_on_page();
-        app.page_scroll = 0;
-        app.handle_key(key(KeyCode::Char('k')));
-        assert_eq!(app.page_scroll, 0);
-    }
-
-    #[test]
-    fn page_g_scrolls_to_top() {
-        let mut app = make_app_on_page();
-        app.page_scroll = 50;
-        app.handle_key(key(KeyCode::Char('g')));
-        assert_eq!(app.page_scroll, 0);
+    fn page_scroll_keys_scroll_the_page_not_the_list() {
+        let cases = [
+            (KeyCode::Char('j'), 0, 1),
+            (KeyCode::Char('k'), 5, 4),
+            (KeyCode::Char('k'), 0, 0),
+            (KeyCode::Down, 0, 1),
+            (KeyCode::Up, 3, 2),
+            (KeyCode::Char('g'), 50, 0),
+        ];
+        for (code, start, expected) in cases {
+            let mut app = make_app_on_page();
+            let selected = app.selected;
+            app.page_scroll = start;
+            app.handle_key(key(code));
+            assert_eq!(app.page_scroll, expected, "{code:?} from {start}");
+            assert_eq!(app.selected, selected, "{code:?} moved the list selection");
+        }
     }
 
     #[test]
     fn page_big_g_scrolls_to_bottom() {
         let mut app = make_app_on_page();
         app.handle_key(key(KeyCode::Char('G')));
-        assert!(app.page_scroll > 0);
+        app.handle_key(key(KeyCode::Char('k')));
+        let lines = app.current_rendered_page().unwrap().lines.len();
+        assert_eq!(app.page_scroll, lines - 1);
     }
 
     #[test]
@@ -822,20 +765,6 @@ mod tests {
         let mut app = make_app_on_page();
         app.handle_key(key(KeyCode::Esc));
         assert_eq!(app.mode, Mode::List);
-    }
-
-    #[test]
-    fn page_q_quits() {
-        let mut app = make_app_on_page();
-        let result = app.handle_key(key(KeyCode::Char('q')));
-        assert!(matches!(result, KeyResult::Quit));
-    }
-
-    #[test]
-    fn page_question_mark_shows_help() {
-        let mut app = make_app_on_page();
-        app.handle_key(key(KeyCode::Char('?')));
-        assert!(app.show_help);
     }
 
     #[test]
@@ -874,41 +803,28 @@ mod tests {
 
     #[test]
     fn page_tab_cycles_link_selection_forward() {
-        let mut app = make_app_on_page();
-        let initial = app.selected_link;
+        let (_dir, mut app) = make_app_on_page_with_two_links();
+        assert_eq!(app.selected_link, 0);
         app.handle_key(key(KeyCode::Tab));
-        // If there are links, selection should advance (or stay at 0 if no links).
-        let page = app.current_rendered_page();
-        if let Some(p) = page
-            && !p.links.is_empty()
-        {
-            assert!(app.selected_link >= initial);
-        }
+        assert_eq!(app.selected_link, 1);
     }
 
     #[test]
     fn page_backtab_cycles_link_selection_backward() {
-        let mut app = make_app_on_page();
-        // Set link selection to 1 to test backward.
+        let (_dir, mut app) = make_app_on_page_with_two_links();
         app.selected_link = 1;
         app.handle_key(key(KeyCode::BackTab));
         assert_eq!(app.selected_link, 0);
     }
 
     #[test]
-    fn page_down_arrow_scrolls() {
-        let mut app = make_app_on_page();
-        app.page_scroll = 0;
-        app.handle_key(key(KeyCode::Down));
-        assert_eq!(app.page_scroll, 1);
-    }
-
-    #[test]
-    fn page_up_arrow_scrolls() {
-        let mut app = make_app_on_page();
-        app.page_scroll = 3;
-        app.handle_key(key(KeyCode::Up));
-        assert_eq!(app.page_scroll, 2);
+    fn page_tab_on_a_page_without_links_resets_link_selection() {
+        for code in [KeyCode::Tab, KeyCode::BackTab] {
+            let mut app = make_app_on_page();
+            app.selected_link = 3;
+            app.handle_key(key(code));
+            assert_eq!(app.selected_link, 0, "{code:?}");
+        }
     }
 
     #[test]
@@ -949,104 +865,52 @@ mod tests {
     }
 
     #[test]
-    fn edit_pageup_decreases_scroll() {
-        let mut app = make_app();
-        app.mode = Mode::Edit;
-        let mut edit = make_edit_state();
-        edit.preview_scroll = 15;
-        app.edit = Some(edit);
-        app.handle_key(key(KeyCode::PageUp));
-        assert_eq!(app.edit.as_ref().unwrap().preview_scroll, 5);
+    fn edit_page_keys_scroll_the_preview() {
+        let cases = [
+            (KeyCode::PageUp, 15, 5),
+            (KeyCode::PageDown, 0, 10),
+            (KeyCode::PageUp, 3, 0),
+        ];
+        for (code, start, expected) in cases {
+            let mut app = make_app();
+            app.mode = Mode::Edit;
+            let mut edit = make_edit_state();
+            edit.preview_scroll = start;
+            app.edit = Some(edit);
+            app.handle_key(key(code));
+            assert_eq!(
+                app.edit.as_ref().unwrap().preview_scroll,
+                expected,
+                "{code:?} from {start}"
+            );
+        }
     }
 
     #[test]
-    fn edit_pagedown_increases_scroll() {
-        let mut app = make_app();
-        app.mode = Mode::Edit;
-        let mut edit = make_edit_state();
-        edit.preview_scroll = 0;
-        app.edit = Some(edit);
-        app.handle_key(key(KeyCode::PageDown));
-        assert_eq!(app.edit.as_ref().unwrap().preview_scroll, 10);
-    }
-
-    #[test]
-    fn edit_pageup_clamps_at_zero() {
-        let mut app = make_app();
-        app.mode = Mode::Edit;
-        let mut edit = make_edit_state();
-        edit.preview_scroll = 3;
-        app.edit = Some(edit);
-        app.handle_key(key(KeyCode::PageUp));
-        assert_eq!(app.edit.as_ref().unwrap().preview_scroll, 0);
-    }
-
-    #[test]
-    fn edit_left_arrow_moves_cursor() {
-        let mut app = make_app();
-        app.mode = Mode::Edit;
-        let mut edit = make_edit_state();
-        edit.cursor = 5;
-        app.edit = Some(edit);
-        app.handle_key(key(KeyCode::Left));
-        assert_eq!(app.edit.as_ref().unwrap().cursor, 4);
-    }
-
-    #[test]
-    fn edit_right_arrow_moves_cursor() {
-        let mut app = make_app();
-        app.mode = Mode::Edit;
-        let mut edit = make_edit_state();
-        edit.cursor = 0;
-        app.edit = Some(edit);
-        app.handle_key(key(KeyCode::Right));
-        assert_eq!(app.edit.as_ref().unwrap().cursor, 1);
-    }
-
-    #[test]
-    fn edit_left_clamps_at_zero() {
-        let mut app = make_app();
-        app.mode = Mode::Edit;
-        let mut edit = make_edit_state();
-        edit.cursor = 0;
-        app.edit = Some(edit);
-        app.handle_key(key(KeyCode::Left));
-        assert_eq!(app.edit.as_ref().unwrap().cursor, 0);
-    }
-
-    #[test]
-    fn edit_right_clamps_at_buffer_len() {
-        let mut app = make_app();
-        app.mode = Mode::Edit;
-        let mut edit = make_edit_state();
-        let len = edit.buffer.chars().count();
-        edit.cursor = len;
-        app.edit = Some(edit);
-        app.handle_key(key(KeyCode::Right));
-        assert_eq!(app.edit.as_ref().unwrap().cursor, len);
-    }
-
-    #[test]
-    fn edit_home_moves_cursor_to_start() {
-        let mut app = make_app();
-        app.mode = Mode::Edit;
-        let mut edit = make_edit_state();
-        edit.cursor = 5;
-        app.edit = Some(edit);
-        app.handle_key(key(KeyCode::Home));
-        assert_eq!(app.edit.as_ref().unwrap().cursor, 0);
-    }
-
-    #[test]
-    fn edit_end_moves_cursor_to_end() {
-        let mut app = make_app();
-        app.mode = Mode::Edit;
-        let mut edit = make_edit_state();
-        let len = edit.buffer.chars().count();
-        edit.cursor = 0;
-        app.edit = Some(edit);
-        app.handle_key(key(KeyCode::End));
-        assert_eq!(app.edit.as_ref().unwrap().cursor, len);
+    fn edit_cursor_keys_move_the_cursor() {
+        // The buffer is "hello world", 11 chars.
+        let cases = [
+            (KeyCode::Left, 5, 4),
+            (KeyCode::Right, 0, 1),
+            (KeyCode::Left, 0, 0),
+            (KeyCode::Right, 11, 11),
+            (KeyCode::Home, 5, 0),
+            (KeyCode::End, 0, 11),
+        ];
+        for (code, start, expected) in cases {
+            let mut app = make_app();
+            app.mode = Mode::Edit;
+            let mut edit = make_edit_state();
+            assert_eq!(edit.buffer, "hello world");
+            edit.cursor = start;
+            app.edit = Some(edit);
+            app.handle_key(key(code));
+            assert_eq!(
+                app.edit.as_ref().unwrap().cursor,
+                expected,
+                "{code:?} from {start}"
+            );
+        }
     }
 
     #[test]
@@ -1057,7 +921,8 @@ mod tests {
         edit.cursor = 0;
         app.edit = Some(edit);
         app.handle_key(key(KeyCode::Char('X')));
-        assert!(app.edit.as_ref().unwrap().buffer.starts_with('X'));
+        assert_eq!(app.edit.as_ref().unwrap().buffer, "Xhello world");
+        assert_eq!(app.edit.as_ref().unwrap().cursor, 1);
     }
 
     #[test]
@@ -1067,10 +932,9 @@ mod tests {
         let mut edit = make_edit_state();
         edit.cursor = 5;
         app.edit = Some(edit);
-        let before = app.edit.as_ref().unwrap().buffer.clone();
         app.handle_key(key(KeyCode::Enter));
-        assert!(app.edit.as_ref().unwrap().buffer.contains('\n'));
-        assert!(app.edit.as_ref().unwrap().buffer.len() > before.len());
+        assert_eq!(app.edit.as_ref().unwrap().buffer, "hello\n world");
+        assert_eq!(app.edit.as_ref().unwrap().cursor, 6);
     }
 
     #[test]
@@ -1080,9 +944,8 @@ mod tests {
         let mut edit = make_edit_state();
         edit.cursor = 1;
         app.edit = Some(edit);
-        let before_len = app.edit.as_ref().unwrap().buffer.len();
         app.handle_key(key(KeyCode::Backspace));
-        assert_eq!(app.edit.as_ref().unwrap().buffer.len(), before_len - 1);
+        assert_eq!(app.edit.as_ref().unwrap().buffer, "ello world");
         assert_eq!(app.edit.as_ref().unwrap().cursor, 0);
     }
 
@@ -1092,10 +955,10 @@ mod tests {
         app.mode = Mode::Edit;
         let mut edit = make_edit_state();
         edit.cursor = 0;
-        let first_char = edit.buffer.chars().next().unwrap();
         app.edit = Some(edit);
         app.handle_key(key(KeyCode::Delete));
-        assert!(!app.edit.as_ref().unwrap().buffer.starts_with(first_char));
+        assert_eq!(app.edit.as_ref().unwrap().buffer, "ello world");
+        assert_eq!(app.edit.as_ref().unwrap().cursor, 0);
     }
 
     #[test]
@@ -1127,54 +990,30 @@ mod tests {
     }
 
     #[test]
-    fn edit_tab_switches_snippet_forward() {
-        let mut app = make_app();
-        app.mode = Mode::Edit;
-        let edit = make_edit_state();
-        assert_eq!(edit.selected, 0);
-        app.edit = Some(edit);
-        app.handle_key(key(KeyCode::Tab));
-        assert_eq!(app.edit.as_ref().unwrap().selected, 1);
-    }
-
-    #[test]
-    fn edit_backtab_switches_snippet_backward() {
-        let mut app = make_app();
-        app.mode = Mode::Edit;
-        let mut edit = make_edit_state();
-        edit.selected = 1;
-        if let Some(entry) = edit.snippets.get(1) {
-            edit.set_buffer(entry.text.clone());
+    fn edit_tab_and_backtab_switch_snippets_within_bounds() {
+        // make_edit_state has two snippets.
+        let cases = [
+            (0, KeyCode::Tab, 1),
+            (1, KeyCode::BackTab, 0),
+            (1, KeyCode::Tab, 1),
+            (0, KeyCode::BackTab, 0),
+        ];
+        for (start, code, expected) in cases {
+            let mut app = make_app();
+            app.mode = Mode::Edit;
+            let mut edit = make_edit_state();
+            assert_eq!(edit.snippets.len(), 2);
+            edit.selected = start;
+            let text = edit.snippets[start].text.clone();
+            edit.set_buffer(text);
+            app.edit = Some(edit);
+            app.handle_key(key(code));
+            assert_eq!(
+                app.edit.as_ref().unwrap().selected,
+                expected,
+                "{code:?} from {start}"
+            );
         }
-        app.edit = Some(edit);
-        app.handle_key(key(KeyCode::BackTab));
-        assert_eq!(app.edit.as_ref().unwrap().selected, 0);
-    }
-
-    #[test]
-    fn edit_tab_clamps_at_last_snippet() {
-        let mut app = make_app();
-        app.mode = Mode::Edit;
-        let mut edit = make_edit_state();
-        let last = edit.snippets.len() - 1;
-        edit.selected = last;
-        if let Some(entry) = edit.snippets.get(last) {
-            edit.set_buffer(entry.text.clone());
-        }
-        app.edit = Some(edit);
-        app.handle_key(key(KeyCode::Tab));
-        assert_eq!(app.edit.as_ref().unwrap().selected, last);
-    }
-
-    #[test]
-    fn edit_backtab_clamps_at_first_snippet() {
-        let mut app = make_app();
-        app.mode = Mode::Edit;
-        let edit = make_edit_state();
-        assert_eq!(edit.selected, 0);
-        app.edit = Some(edit);
-        app.handle_key(key(KeyCode::BackTab));
-        assert_eq!(app.edit.as_ref().unwrap().selected, 0);
     }
 
     // ── Open externally ────────────────────────────────────────────
@@ -1197,68 +1036,31 @@ mod tests {
     // ── Mode transitions ───────────────────────────────────────────
 
     #[test]
-    fn list_to_search_to_list_roundtrip() {
-        let mut app = make_app();
-        assert_eq!(app.mode, Mode::List);
-
-        app.handle_key(key(KeyCode::Char('/')));
-        assert_eq!(app.mode, Mode::Search);
-
-        app.handle_key(key(KeyCode::Esc));
-        assert_eq!(app.mode, Mode::List);
-    }
-
-    #[test]
-    fn list_to_page_to_list_via_b() {
-        let mut app = make_app();
-        app.rebuild_visible_ids();
-        if app.visible_ids.is_empty() {
-            return;
-        }
-        app.handle_key(key(KeyCode::Enter));
-        assert_eq!(app.mode, Mode::Page);
-
-        app.handle_key(key(KeyCode::Char('b')));
-        assert_eq!(app.mode, Mode::List);
-    }
-
-    #[test]
     fn page_to_edit_to_page_roundtrip() {
         let mut app = make_app_on_page();
-        // 'e' enters edit mode.
         app.handle_key(key(KeyCode::Char('e')));
-        // Whether we enter edit depends on whether the page has editable snippets.
-        if app.mode == Mode::Edit {
-            app.handle_key(key(KeyCode::Esc));
-            assert_eq!(app.mode, Mode::Page);
-        }
+        assert_eq!(app.mode, Mode::Edit);
+        app.handle_key(key(KeyCode::Esc));
+        assert_eq!(app.mode, Mode::Page);
     }
 
     // ── Unrecognized keys ──────────────────────────────────────────
 
     #[test]
-    fn list_unrecognized_key_returns_tick() {
-        let mut app = make_app();
-        let result = app.handle_key(key(KeyCode::F(12)));
-        assert!(matches!(result, KeyResult::Tick));
-    }
-
-    #[test]
-    fn page_unrecognized_key_returns_tick() {
-        let mut app = make_app_on_page();
-        let result = app.handle_key(key(KeyCode::F(12)));
-        assert!(matches!(result, KeyResult::Tick));
+    fn list_and_page_keys_return_tick() {
+        let cases = [
+            (Mode::List, KeyCode::Esc),
+            (Mode::List, KeyCode::F(12)),
+            (Mode::Page, KeyCode::F(12)),
+        ];
+        for (mode, code) in cases {
+            let mut app = make_app_in(mode);
+            let result = app.handle_key(key(code));
+            assert!(matches!(result, KeyResult::Tick), "{mode:?} {code:?}");
+        }
     }
 
     // ── Page mode: keys that should NOT work ───────────────────────
-
-    #[test]
-    fn page_j_k_dont_change_list_selection() {
-        let mut app = make_app_on_page();
-        let before = app.selected;
-        app.handle_key(key(KeyCode::Char('j')));
-        assert_eq!(app.selected, before); // j scrolls page, not selection
-    }
 
     #[test]
     fn list_g_does_not_change_scroll() {
@@ -1382,24 +1184,14 @@ mod tests {
     }
 
     #[test]
-    fn list_slash_still_enters_list_search() {
-        let mut app = make_app();
-        app.handle_key(key(KeyCode::Char('/')));
-        assert_eq!(app.mode, Mode::Search);
-    }
-
-    #[test]
     fn open_page_clears_page_search() {
         let mut app = make_app_on_page();
         app.page_search = "something".to_string();
         app.page_search_needle = "something".to_string();
         app.page_search_match_lines = vec![1, 2];
         app.page_search_current = 1;
-        // Go back and reopen.
-        app.handle_key(key(KeyCode::Esc));
-        if let Some(id) = app.visible_ids.first().cloned() {
-            app.open_page(&id, false);
-        }
+        let id = app.visible_ids[1].clone();
+        app.open_page(&id, false);
         assert!(app.page_search.is_empty());
         assert!(app.page_search_needle.is_empty());
         assert!(app.page_search_match_lines.is_empty());
@@ -1411,10 +1203,10 @@ mod tests {
     #[test]
     fn page_shift_b_shows_backlinks_or_status() {
         let mut app = make_app_on_page();
+        assert_eq!(app.opened.as_deref(), Some("fixture-page-alpha"));
         app.handle_key(key(KeyCode::Char('B')));
-        // Either enters Backlinks mode (if backlinks exist) or stays
-        // in Page mode with a status message.
-        assert!(app.mode == Mode::Backlinks || app.status.contains("no backlinks"));
+        assert_eq!(app.mode, Mode::Backlinks);
+        assert_eq!(app.backlink_ids, vec!["fixture-page-beta".to_string()]);
     }
 
     #[test]
@@ -1424,14 +1216,6 @@ mod tests {
         app.backlink_ids = vec!["dummy".to_string()];
         app.handle_key(key(KeyCode::Esc));
         assert_eq!(app.mode, Mode::Page);
-    }
-
-    #[test]
-    fn backlinks_q_quits() {
-        let mut app = make_app();
-        app.mode = Mode::Backlinks;
-        let result = app.handle_key(key(KeyCode::Char('q')));
-        assert!(matches!(result, KeyResult::Quit));
     }
 
     #[test]
@@ -1460,14 +1244,6 @@ mod tests {
 
         app.handle_key(key(KeyCode::Char('j')));
         assert_eq!(app.backlink_selected, 0); // only 1 item
-    }
-
-    #[test]
-    fn backlinks_question_mark_shows_help() {
-        let mut app = make_app();
-        app.mode = Mode::Backlinks;
-        app.handle_key(key(KeyCode::Char('?')));
-        assert!(app.show_help);
     }
 
     #[test]

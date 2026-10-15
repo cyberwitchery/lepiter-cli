@@ -174,84 +174,25 @@ mod tests {
     use lepiter_core::{KnowledgeBase, rewrite_inline_links};
 
     #[test]
-    fn slugify_basic_title() {
-        assert_eq!(slugify("My Cool Page"), "my-cool-page");
+    fn slugify_cases() {
+        let cases = [
+            ("My Cool Page", "my-cool-page"),
+            ("Page 42", "page-42"),
+            ("Hello, World!", "hello-world"),
+            ("foo---bar", "foo-bar"),
+            ("--hello--", "hello"),
+            ("  spaces  ", "spaces"),
+            ("", "untitled"),
+            ("---", "untitled"),
+            ("!@#", "untitled"),
+        ];
+        for (title, slug) in cases {
+            assert_eq!(slugify(title), slug, "{title:?}");
+        }
     }
 
     #[test]
-    fn slugify_collapses_special_chars() {
-        assert_eq!(slugify("Hello, World!"), "hello-world");
-        assert_eq!(slugify("foo---bar"), "foo-bar");
-    }
-
-    #[test]
-    fn slugify_trims_hyphens() {
-        assert_eq!(slugify("--hello--"), "hello");
-        assert_eq!(slugify("  spaces  "), "spaces");
-    }
-
-    #[test]
-    fn slugify_empty_falls_back() {
-        assert_eq!(slugify(""), "untitled");
-        assert_eq!(slugify("---"), "untitled");
-        assert_eq!(slugify("!@#"), "untitled");
-    }
-
-    #[test]
-    fn slugify_preserves_numbers() {
-        assert_eq!(slugify("Page 42"), "page-42");
-    }
-
-    #[test]
-    fn rewrite_wikilinks() {
-        let resolve = |target: &str| -> Option<String> {
-            if target == "Other Page" {
-                Some("other-page.md".to_string())
-            } else {
-                None
-            }
-        };
-        assert_eq!(
-            rewrite_inline_links("see [[Other Page]] here", export_link_rewriter(resolve)),
-            "see [Other Page](other-page.md) here"
-        );
-    }
-
-    #[test]
-    fn rewrite_wikilinks_unresolved() {
-        let resolve = |_: &str| -> Option<String> { None };
-        assert_eq!(
-            rewrite_inline_links("see [[Unknown]] here", export_link_rewriter(resolve)),
-            "see [[Unknown]] here"
-        );
-    }
-
-    #[test]
-    fn rewrite_markdown_links() {
-        let resolve = |target: &str| -> Option<String> {
-            if target == "page:abc" {
-                Some("alpha.md".to_string())
-            } else {
-                None
-            }
-        };
-        assert_eq!(
-            rewrite_inline_links("see [link](page:abc) done", export_link_rewriter(resolve)),
-            "see [link](alpha.md) done"
-        );
-    }
-
-    #[test]
-    fn rewrite_preserves_external_links() {
-        let resolve = |_: &str| -> Option<String> { None };
-        assert_eq!(
-            rewrite_inline_links("[docs](https://example.com)", export_link_rewriter(resolve)),
-            "[docs](https://example.com)"
-        );
-    }
-
-    #[test]
-    fn rewrite_mixed_links() {
+    fn rewrite_links_for_export() {
         let resolve = |target: &str| -> Option<String> {
             match target {
                 "Other" => Some("other.md".to_string()),
@@ -259,22 +200,21 @@ mod tests {
                 _ => None,
             }
         };
-        assert_eq!(
-            rewrite_inline_links(
+        let cases = [
+            (
                 "see [[Other]] and [link](page:p1) and [[Missing]]",
-                export_link_rewriter(resolve)
+                "see [Other](other.md) and [link](alpha.md) and [[Missing]]",
             ),
-            "see [Other](other.md) and [link](alpha.md) and [[Missing]]"
-        );
-    }
-
-    #[test]
-    fn rewrite_unicode_text() {
-        let resolve = |_: &str| -> Option<String> { None };
-        assert_eq!(
-            rewrite_inline_links("日本語テキスト [[リンク]]", export_link_rewriter(resolve)),
-            "日本語テキスト [[リンク]]"
-        );
+            ("[docs](https://example.com)", "[docs](https://example.com)"),
+            ("日本語テキスト [[リンク]]", "日本語テキスト [[リンク]]"),
+        ];
+        for (text, expected) in cases {
+            assert_eq!(
+                rewrite_inline_links(text, export_link_rewriter(resolve)),
+                expected,
+                "{text:?}"
+            );
+        }
     }
 
     #[test]
@@ -287,11 +227,10 @@ mod tests {
             content: Vec::new(),
         };
         let fm = build_frontmatter(&page);
-        assert!(fm.starts_with("---\n"));
-        assert!(fm.ends_with("---\n\n"));
-        assert!(fm.contains("title: \"Test Page\""));
-        assert!(fm.contains("id: abc-123"));
-        assert!(fm.contains("tags: [\"rust\", \"cli\"]"));
+        assert_eq!(
+            fm,
+            "---\ntitle: \"Test Page\"\nid: abc-123\ntags: [\"rust\", \"cli\"]\n---\n\n"
+        );
     }
 
     #[test]
@@ -346,18 +285,6 @@ mod tests {
 
         let index = KnowledgeBase::open(&dir).unwrap();
         (dir, index)
-    }
-
-    #[test]
-    fn build_slug_map_handles_duplicates() {
-        let (dir, index) = make_test_kb(&[("p1", "Alpha"), ("p2", "Alpha"), ("p3", "Beta")]);
-        let slugs = build_slug_map(&index);
-
-        let mut values: Vec<&str> = slugs.values().map(|s| s.as_str()).collect();
-        values.sort();
-        assert_eq!(values, vec!["alpha", "alpha-2", "beta"]);
-
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

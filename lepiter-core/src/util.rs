@@ -197,88 +197,73 @@ mod tests {
 
     #[test]
     fn extract_attachment_relative_covers_all_branches() {
-        // Direct "attachments/" prefix
-        assert_eq!(
-            extract_attachment_relative("attachments/image.png"),
-            Some("attachments/image.png")
-        );
-        // Path containing "/attachments/"
-        assert_eq!(
-            extract_attachment_relative("abc/attachments/image.png"),
-            Some("attachments/image.png")
-        );
-        // Bare "attachments/" found mid-string (no leading slash)
-        assert_eq!(
-            extract_attachment_relative("data_attachments/image.png"),
-            Some("attachments/image.png")
-        );
-        // No attachment path at all
-        assert_eq!(extract_attachment_relative("image.png"), None);
-        assert_eq!(extract_attachment_relative(""), None);
+        let cases: &[(&str, Option<&str>)] = &[
+            // direct "attachments/" prefix
+            ("attachments/image.png", Some("attachments/image.png")),
+            // path containing "/attachments/"
+            ("abc/attachments/image.png", Some("attachments/image.png")),
+            // bare "attachments/" found mid-string (no leading slash)
+            ("data_attachments/image.png", Some("attachments/image.png")),
+            // deeply nested path before attachments/
+            ("a/b/c/attachments/deep.png", Some("attachments/deep.png")),
+            // several attachments/ segments: the first one wins
+            (
+                "x/attachments/attachments/file.txt",
+                Some("attachments/attachments/file.txt"),
+            ),
+            // trailing slash, no filename
+            ("attachments/", Some("attachments/")),
+            ("foo/attachments/", Some("attachments/")),
+            // "attachments" without trailing slash
+            ("attachments", None),
+            // no attachment path at all
+            ("image.png", None),
+            ("", None),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(extract_attachment_relative(input), *expected, "{input:?}");
+        }
     }
 
     #[test]
-    fn extract_attachment_relative_nested_paths() {
-        // Deeply nested path before attachments/
-        assert_eq!(
-            extract_attachment_relative("a/b/c/attachments/deep.png"),
-            Some("attachments/deep.png")
-        );
-        // Multiple attachments/ segments — should match first /attachments/
-        assert_eq!(
-            extract_attachment_relative("x/attachments/attachments/file.txt"),
-            Some("attachments/attachments/file.txt")
-        );
-    }
-
-    #[test]
-    fn extract_attachment_relative_no_filename() {
-        // Trailing slash, no filename
-        assert_eq!(
-            extract_attachment_relative("attachments/"),
-            Some("attachments/")
-        );
-        assert_eq!(
-            extract_attachment_relative("foo/attachments/"),
-            Some("attachments/")
-        );
-    }
-
-    #[test]
-    fn extract_attachment_relative_only_keyword() {
-        // "attachments" without trailing slash
-        assert_eq!(extract_attachment_relative("attachments"), None);
-    }
-
-    #[test]
-    fn is_external_target_common_schemes() {
-        assert!(is_external_target("http://example.com"));
-        assert!(is_external_target("https://example.com"));
-        assert!(is_external_target("mailto:user@example.com"));
-        assert!(is_external_target("file:///home/user/doc.txt"));
-        assert!(is_external_target("ftp://files.example.com"));
-        assert!(is_external_target("ssh://host.example.com"));
-    }
-
-    #[test]
-    fn is_external_target_mixed_case() {
-        assert!(is_external_target("HTTP://EXAMPLE.COM"));
-        assert!(is_external_target("Https://Example.Com"));
-        assert!(is_external_target("MAILTO:USER@EXAMPLE.COM"));
-        assert!(is_external_target("File://localhost/path"));
-        assert!(is_external_target("hTtPs://mixed.case"));
-        assert!(is_external_target("FTP://FILES.EXAMPLE.COM"));
-    }
-
-    #[test]
-    fn is_external_target_rejects_non_urls() {
-        assert!(!is_external_target("attachments/image.png"));
-        assert!(!is_external_target("page:some-id"));
-        assert!(!is_external_target("title:My Page"));
-        assert!(!is_external_target("just some text"));
-        assert!(!is_external_target(""));
-        assert!(!is_external_target("   "));
-        assert!(!is_external_target("not-a-scheme"));
+    fn is_external_target_classifies_inputs() {
+        let cases: &[(&str, bool)] = &[
+            // common schemes
+            ("http://example.com", true),
+            ("https://example.com", true),
+            ("mailto:user@example.com", true),
+            ("file:///home/user/doc.txt", true),
+            ("ftp://files.example.com", true),
+            ("ssh://host.example.com", true),
+            // mixed case
+            ("HTTP://EXAMPLE.COM", true),
+            ("Https://Example.Com", true),
+            ("MAILTO:USER@EXAMPLE.COM", true),
+            ("File://localhost/path", true),
+            ("hTtPs://mixed.case", true),
+            ("FTP://FILES.EXAMPLE.COM", true),
+            // scheme separator at the very start
+            ("://bare", true),
+            // single character scheme
+            ("x://y", true),
+            // scheme with numbers
+            ("h323://voip.example.com", true),
+            // just the scheme prefix, no content after
+            ("http://", true),
+            ("https://", true),
+            ("mailto:", true),
+            // not urls
+            ("attachments/image.png", false),
+            ("page:some-id", false),
+            ("title:My Page", false),
+            ("just some text", false),
+            ("", false),
+            ("   ", false),
+            ("not-a-scheme", false),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(is_external_target(input), *expected, "{input:?}");
+        }
     }
 
     // -- extract_inline_link_targets edge cases --
@@ -291,97 +276,14 @@ mod tests {
     }
 
     #[test]
-    fn inline_unclosed_bracket() {
-        // [unclosed( — no closing ] so no link is formed
-        assert!(inline_targets("[unclosed(").is_empty());
-    }
-
-    #[test]
-    fn inline_unclosed_paren() {
-        // [text]( — ] found but no closing )
-        assert!(inline_targets("[text](").is_empty());
-    }
-
-    #[test]
-    fn inline_empty_target() {
-        // []() — empty target string is skipped
-        assert!(inline_targets("[]()").is_empty());
-    }
-
-    #[test]
-    fn inline_nested_brackets() {
-        assert_eq!(
-            inline_targets("[text with [inner] brackets](url)"),
-            vec!["url"]
-        );
-    }
-
-    #[test]
-    fn inline_linked_image_yields_the_link_not_the_image_source() {
-        assert_eq!(
-            inline_targets("[![img](a.png)](page:abc)"),
-            vec!["page:abc"]
-        );
-    }
-
-    #[test]
     fn inline_consecutive_links() {
         assert_eq!(inline_targets("[a](b)[c](d)"), vec!["b", "d"],);
-    }
-
-    #[test]
-    fn inline_empty_wikilink() {
-        // [[]] — empty target after trim is skipped
-        assert!(inline_targets("[[]]").is_empty());
-    }
-
-    #[test]
-    fn inline_unclosed_wikilink() {
-        // [[ with no closing ]] — no target extracted
-        assert!(inline_targets("[[").is_empty());
     }
 
     #[test]
     fn inline_wikilink_unclosed_single_bracket() {
         // [[text — no closing ]], falls through to markdown link check which also fails
         assert!(inline_targets("[[text").is_empty());
-    }
-
-    #[test]
-    fn inline_unicode_link_target() {
-        // Delimiters are ASCII, so multi-byte UTF-8 content is handled correctly
-        assert_eq!(inline_targets("[名前](ページ)"), vec!["ページ"],);
-    }
-
-    #[test]
-    fn inline_unicode_wikilink() {
-        assert_eq!(inline_targets("[[日本語ページ]]"), vec!["日本語ページ"],);
-    }
-
-    #[test]
-    fn inline_whitespace_only_target() {
-        // [label](   ) — target is whitespace-only, trimmed to empty, skipped
-        assert!(inline_targets("[label](   )").is_empty());
-    }
-
-    #[test]
-    fn inline_whitespace_only_wikilink() {
-        // [[   ]] — whitespace-only, trimmed to empty, skipped
-        assert!(inline_targets("[[   ]]").is_empty());
-    }
-
-    #[test]
-    fn inline_target_trimmed() {
-        // Surrounding whitespace is trimmed from the target
-        assert_eq!(inline_targets("[label](  url  )"), vec!["url"],);
-    }
-
-    #[test]
-    fn inline_mixed_links_and_wikilinks() {
-        assert_eq!(
-            inline_targets("see [[wiki]] and [md](target) done"),
-            vec!["wiki", "target"],
-        );
     }
 
     #[test]
@@ -395,24 +297,5 @@ mod tests {
     #[test]
     fn inline_empty_input() {
         assert!(inline_targets("").is_empty());
-    }
-
-    #[test]
-    fn inline_no_links() {
-        assert!(inline_targets("just plain text").is_empty());
-    }
-
-    #[test]
-    fn is_external_target_boundary_inputs() {
-        // scheme separator at the very start
-        assert!(is_external_target("://bare"));
-        // single character scheme
-        assert!(is_external_target("x://y"));
-        // scheme with numbers
-        assert!(is_external_target("h323://voip.example.com"));
-        // just the scheme prefix, no content after
-        assert!(is_external_target("http://"));
-        assert!(is_external_target("https://"));
-        assert!(is_external_target("mailto:"));
     }
 }

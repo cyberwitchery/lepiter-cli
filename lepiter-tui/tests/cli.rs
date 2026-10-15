@@ -38,6 +38,23 @@ fn fixtures_path_str() -> String {
     fixtures_dir().display().to_string()
 }
 
+/// the corpus pages nothing links to, as (id, title), sorted by title.
+const CORPUS_ORPHANS: [(&str, &str); 6] = [
+    ("fixture-page-beta", "beta page"),
+    ("fixture-page-gamma", "gamma unknown page"),
+    ("fixture-page-media", "media page"),
+    ("fixture-page-rewrite", "rewrite page"),
+    ("fixture-page-tagonly", "tag only page"),
+    ("fixture-page-word", "word page"),
+];
+
+fn corpus_orphans_json() -> serde_json::Value {
+    CORPUS_ORPHANS
+        .iter()
+        .map(|(id, title)| serde_json::json!({ "id": id, "title": title }))
+        .collect()
+}
+
 /// a directory no other test shares. `tempfile` picks the name: a timestamp
 /// cannot, because `SystemTime::now` ticks at microsecond granularity here, so
 /// two tests in the same process stamp the same value and collide. unlike the
@@ -115,10 +132,29 @@ mod info {
         let out = run(&["info", "--json", "--detail", &fixtures_path_str()]);
         assert!(out.status.success());
         let json: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("valid JSON");
-        assert!(json["broken_links"].is_array());
-        assert!(json["orphan_pages"].is_array());
-        assert!(json["tag_distribution"].is_object());
-        assert!(json["snippet_types"].is_object());
+        assert_eq!(json["broken_links"], serde_json::json!([]));
+        assert_eq!(json["orphan_pages"], corpus_orphans_json());
+        assert_eq!(
+            json["tag_distribution"],
+            serde_json::json!({ "alpha": 1, "fixture": 2, "shelved": 1 })
+        );
+        // container types (page, snippets, children) are not snippet types.
+        assert_eq!(
+            json["snippet_types"],
+            serde_json::json!({
+                "elementSnippet": 1,
+                "listSnippet": 1,
+                "mysterySnippet": 1,
+                "pharoLinkSnippet": 1,
+                "pharoRewrite": 1,
+                "pictureSnippet": 1,
+                "pythonSnippet": 1,
+                "quoteSnippet": 1,
+                "textSnippet": 5,
+                "wordSnippet": 1,
+                "youtubeSnippet": 1
+            })
+        );
     }
 
     #[test]
@@ -126,21 +162,17 @@ mod info {
         let out = run(&["info", "--detail", &fixtures_path_str()]);
         assert!(out.status.success());
         let text = stdout(&out);
-        assert!(text.contains("Broken Links"));
-        assert!(text.contains("Orphan Pages"));
-        assert!(text.contains("Tag Distribution"));
-        assert!(text.contains("Snippet Types"));
-    }
-
-    #[test]
-    fn unknown_flag_exits_nonzero() {
-        let out = run(&["info", "--badarg", &fixtures_path_str()]);
-        assert!(!out.status.success());
-        let err = stderr(&out);
-        assert!(
-            err.contains("unknown flag"),
-            "expected unknown flag error, got: {err}"
-        );
+        for header in [
+            "Broken Links (0):",
+            "Orphan Pages (6):",
+            "Tag Distribution (3):",
+            "Snippet Types (11):",
+        ] {
+            assert!(
+                text.lines().any(|l| l == header),
+                "expected `{header}`, got: {text}"
+            );
+        }
     }
 
     /// all subcommands take the first positional as the kb path
@@ -164,11 +196,14 @@ mod info {
     fn first_positional_wins_consistently_across_subcommands() {
         for cmd in ["info", "list", "ids", "links", "tags", "check"] {
             let out = run(&[cmd, &fixtures_path_str(), "/nonexistent/kb"]);
-            let err = stderr(&out);
-            assert!(
-                !err.contains("failed to open knowledge base"),
-                "`{cmd}` should read the first path, got: {err}"
+            let alone = run(&[cmd, &fixtures_path_str()]);
+            assert_eq!(
+                out.status.code(),
+                alone.status.code(),
+                "`{cmd}` should read the first path, got: {}",
+                stderr(&out)
             );
+            assert_eq!(stdout(&out), stdout(&alone), "`{cmd}` output differs");
         }
     }
 }
@@ -181,36 +216,29 @@ mod list {
     use super::*;
 
     #[test]
-    fn plain_output_has_header_and_all_pages() {
+    fn plain_output_lists_every_page_sorted_by_title() {
         let out = run(&["list", &fixtures_path_str()]);
         assert!(out.status.success());
         let text = stdout(&out);
-        assert!(text.contains("title"));
-        assert!(text.contains("id"));
-        // All 7 fixture pages should appear.
-        assert!(text.contains("alpha page"));
-        assert!(text.contains("beta page"));
-        assert!(text.contains("gamma unknown page"));
-        assert!(text.contains("media page"));
-        assert!(text.contains("rewrite page"));
-        assert!(text.contains("tag only page"));
-        assert!(text.contains("word page"));
-    }
-
-    #[test]
-    fn plain_output_is_sorted_alphabetically() {
-        let out = run(&["list", &fixtures_path_str()]);
-        let text = stdout(&out);
-        let titles: Vec<&str> = text
-            .lines()
-            .skip(2) // skip header and separator
-            .filter(|l| !l.is_empty())
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines[0], format!("{:<18}  id", "title"));
+        assert_eq!(lines[1], format!("{}  {}", "-".repeat(18), "-".repeat(36)));
+        let titles: Vec<&str> = lines[2..]
+            .iter()
             .filter_map(|l| l.split("  ").next())
-            .map(|t| t.trim())
             .collect();
-        let mut sorted = titles.clone();
-        sorted.sort();
-        assert_eq!(titles, sorted, "pages should be sorted alphabetically");
+        assert_eq!(
+            titles,
+            [
+                "alpha page",
+                "beta page",
+                "gamma unknown page",
+                "media page",
+                "rewrite page",
+                "tag only page",
+                "word page",
+            ]
+        );
     }
 
     #[test]
@@ -299,36 +327,6 @@ mod list {
             );
         }
     }
-
-    #[test]
-    fn unknown_flag_exits_nonzero() {
-        let out = run(&["list", "--badarg", &fixtures_path_str()]);
-        assert!(!out.status.success());
-        let err = stderr(&out);
-        assert!(
-            err.contains("unknown flag"),
-            "expected unknown flag error, got: {err}"
-        );
-    }
-}
-
-// ---------------------------------------------------------------------------
-// ids subcommand
-// ---------------------------------------------------------------------------
-
-mod ids {
-    use super::*;
-
-    #[test]
-    fn unknown_flag_exits_nonzero() {
-        let out = run(&["ids", "--badarg", &fixtures_path_str()]);
-        assert!(!out.status.success());
-        let err = stderr(&out);
-        assert!(
-            err.contains("unknown flag"),
-            "expected unknown flag error, got: {err}"
-        );
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -413,21 +411,6 @@ mod search {
     }
 
     #[test]
-    fn title_outranks_tag() {
-        // the alpha page carries "alpha" both in its title and as a tag.
-        let out = run(&["search", "--json", "alpha", &fixtures_path_str()]);
-        assert!(out.status.success());
-        let json: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
-        let alpha = json
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|h| h["id"] == "fixture-page-alpha")
-            .unwrap();
-        assert_eq!(alpha["kind"], "title");
-    }
-
-    #[test]
     fn full_text_content_match() {
         // "paragraph" only appears in rendered content of alpha page, not titles/tags.
         let out = run(&[
@@ -475,60 +458,6 @@ mod search {
     }
 
     #[test]
-    fn full_text_json_includes_matching_snippet() {
-        // "paragraph" only appears in rendered content, so the content hit
-        // should carry a snippet quoting the surrounding text.
-        let out = run(&[
-            "search",
-            "--full-text",
-            "--json",
-            "paragraph",
-            &fixtures_path_str(),
-        ]);
-        assert!(out.status.success());
-        let json: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
-        let hit = &json.as_array().unwrap()[0];
-        assert_eq!(hit["kind"], "content");
-        let snippet = hit["snippet"].as_str().expect("snippet should be a string");
-        assert!(
-            snippet.contains("paragraph"),
-            "snippet should quote the match, got: {snippet}"
-        );
-    }
-
-    #[test]
-    fn title_match_json_has_empty_snippet() {
-        let out = run(&["search", "--json", "alpha", &fixtures_path_str()]);
-        assert!(out.status.success());
-        let json: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
-        let hit = &json.as_array().unwrap()[0];
-        assert_eq!(hit["kind"], "title");
-        assert_eq!(hit["snippet"], "", "title hit should have an empty snippet");
-    }
-
-    #[test]
-    fn full_text_tsv_snippet_is_fourth_column() {
-        let out = run(&[
-            "search",
-            "--full-text",
-            "--tsv",
-            "paragraph",
-            &fixtures_path_str(),
-        ]);
-        assert!(out.status.success());
-        let text = stdout(&out);
-        let line = text.lines().next().expect("expected a result row");
-        let parts: Vec<&str> = line.split('\t').collect();
-        assert_eq!(parts.len(), 4, "expected four columns, got: {line}");
-        assert_eq!(parts[2], "content");
-        assert!(
-            parts[3].contains("paragraph"),
-            "fourth column should hold the snippet, got: {}",
-            parts[3]
-        );
-    }
-
-    #[test]
     fn full_text_snippet_holds_block_looking_prose_verbatim() {
         let root = write_text_snippet_kb(
             "search-verbatim",
@@ -557,45 +486,6 @@ mod search {
     }
 
     #[test]
-    fn full_text_plain_shows_indented_snippet() {
-        let out = run(&["search", "--full-text", "paragraph", &fixtures_path_str()]);
-        assert!(out.status.success());
-        let text = stdout(&out);
-        // The snippet appears on its own line, indented, beneath the match row.
-        assert!(
-            text.lines()
-                .any(|l| l.starts_with("    ") && l.contains("paragraph")),
-            "expected an indented snippet line, got: {text}"
-        );
-    }
-
-    #[test]
-    fn plain_output_shows_match_column() {
-        let out = run(&["search", "alpha", &fixtures_path_str()]);
-        assert!(out.status.success());
-        let text = stdout(&out);
-        assert!(text.contains("match"), "header should contain 'match'");
-        assert!(text.contains("title"), "should show match kind");
-        assert!(text.contains("alpha page"));
-    }
-
-    #[test]
-    fn json_results_include_tags() {
-        let out = run(&["search", "--json", "alpha", &fixtures_path_str()]);
-        let json: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
-        let hit = &json.as_array().unwrap()[0];
-        assert!(hit["tags"].is_array());
-        let tags: Vec<&str> = hit["tags"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|t| t.as_str().unwrap())
-            .collect();
-        assert!(tags.contains(&"fixture"));
-        assert!(tags.contains(&"alpha"));
-    }
-
-    #[test]
     fn missing_query_fails() {
         let out = run(&["search"]);
         assert!(!out.status.success());
@@ -613,17 +503,6 @@ mod search {
             json.as_array().unwrap().len(),
             0,
             "metadata-only search should not match page content"
-        );
-    }
-
-    #[test]
-    fn unknown_flag_exits_nonzero() {
-        let out = run(&["search", "--badarg", &fixtures_path_str()]);
-        assert!(!out.status.success());
-        let err = stderr(&out);
-        assert!(
-            err.contains("unknown flag"),
-            "expected unknown flag error, got: {err}"
         );
     }
 }
@@ -648,8 +527,21 @@ mod show {
         let json: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
         assert_eq!(json["id"], "fixture-page-alpha");
         assert_eq!(json["title"], "alpha page");
-        assert!(json["content"].is_array());
-        assert!(!json["content"].as_array().unwrap().is_empty());
+        assert_eq!(json["tags"], serde_json::json!(["fixture", "alpha"]));
+        assert!(json["updated_at"].is_string());
+
+        // alpha page: heading, paragraph, list
+        let content = json["content"].as_array().unwrap();
+        assert_eq!(content.len(), 3);
+        assert_eq!(content[0]["type"], "heading");
+        assert_eq!(content[0]["level"], 1);
+        assert_eq!(content[0]["text"], "alpha heading");
+
+        assert_eq!(content[1]["type"], "paragraph");
+        assert_eq!(content[1]["text"], "alpha paragraph");
+
+        assert_eq!(content[2]["type"], "list");
+        assert!(content[2]["items"].is_array());
     }
 
     #[test]
@@ -676,51 +568,6 @@ mod show {
     }
 
     #[test]
-    fn json_page_content_has_type_tags() {
-        let out = run(&[
-            "show",
-            "--json",
-            "--id",
-            "fixture-page-alpha",
-            &fixtures_path_str(),
-        ]);
-        let json: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
-        let content = json["content"].as_array().unwrap();
-
-        // alpha page: heading, paragraph, list
-        assert_eq!(content[0]["type"], "heading");
-        assert_eq!(content[0]["level"], 1);
-        assert_eq!(content[0]["text"], "alpha heading");
-
-        assert_eq!(content[1]["type"], "paragraph");
-        assert_eq!(content[1]["text"], "alpha paragraph");
-
-        assert_eq!(content[2]["type"], "list");
-        assert!(content[2]["items"].is_array());
-    }
-
-    #[test]
-    fn json_page_includes_tags_and_timestamp() {
-        let out = run(&[
-            "show",
-            "--json",
-            "--id",
-            "fixture-page-alpha",
-            &fixtures_path_str(),
-        ]);
-        let json: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
-        let tags: Vec<&str> = json["tags"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|t| t.as_str().unwrap())
-            .collect();
-        assert!(tags.contains(&"fixture"));
-        assert!(tags.contains(&"alpha"));
-        assert!(json["updated_at"].is_string());
-    }
-
-    #[test]
     fn json_beta_page_has_code_link_quote() {
         let out = run(&[
             "show",
@@ -735,9 +582,7 @@ mod show {
             .iter()
             .map(|n| n["type"].as_str().unwrap())
             .collect();
-        assert!(types.contains(&"code"), "beta should have code node");
-        assert!(types.contains(&"link"), "beta should have link node");
-        assert!(types.contains(&"quote"), "beta should have quote node");
+        assert_eq!(types, ["code", "link", "quote"]);
     }
 
     #[test]
@@ -764,10 +609,14 @@ mod show {
         let out = run(&["show", "--id", "fixture-page-alpha", &fixtures_path_str()]);
         assert!(out.status.success());
         let text = stdout(&out);
-        assert!(text.contains("# alpha heading"));
-        assert!(text.contains("alpha paragraph"));
-        assert!(text.contains("first item"));
-        assert!(text.contains("second item"));
+        let body = text
+            .split_once("---\n\n")
+            .expect("show prints a header separator")
+            .1;
+        assert_eq!(
+            body,
+            "# alpha heading\n\nalpha paragraph\n\n- first item\n- second item\n"
+        );
     }
 
     #[test]
@@ -809,8 +658,13 @@ mod show {
         ]);
         assert!(out.status.success());
         let text = stdout(&out);
-        assert!(text.contains("resolved links:"));
-        assert!(text.contains("internal:fixture-page-alpha"));
+        let (_, listing) = text
+            .split_once("resolved links:\n")
+            .expect("expected a resolved links section");
+        assert_eq!(
+            listing.lines().collect::<Vec<_>>(),
+            ["  [1] go alpha -> internal:fixture-page-alpha"]
+        );
     }
 
     #[test]
@@ -880,17 +734,6 @@ mod show {
         let err = stderr(&out);
         assert!(err.contains("ambiguous"));
     }
-
-    #[test]
-    fn unknown_flag_exits_nonzero() {
-        let out = run(&["show", "--badarg", &fixtures_path_str()]);
-        assert!(!out.status.success());
-        let err = stderr(&out);
-        assert!(
-            err.contains("unknown flag"),
-            "expected unknown flag error, got: {err}"
-        );
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -901,45 +744,15 @@ mod links {
     use super::*;
 
     #[test]
-    fn plain_output_shows_statistics() {
+    fn plain_output_shows_statistics_most_linked_and_isolated_pages() {
         let out = run(&["links", &fixtures_path_str()]);
         assert!(out.status.success());
-        let text = stdout(&out);
-        assert!(text.contains("Link Graph"), "should show header");
-        assert!(text.contains("pages: 7"), "expected 7 pages, got: {text}");
-        assert!(text.contains("links: 1"), "expected 1 link, got: {text}");
-    }
-
-    #[test]
-    fn plain_output_shows_most_linked() {
-        let out = run(&["links", &fixtures_path_str()]);
-        let text = stdout(&out);
-        assert!(
-            text.contains("Most Linked Pages"),
-            "should show most linked section"
-        );
-        assert!(
-            text.contains("alpha page"),
-            "alpha page should be most linked"
-        );
-    }
-
-    #[test]
-    fn plain_output_shows_isolated_pages() {
-        let out = run(&["links", &fixtures_path_str()]);
-        let text = stdout(&out);
-        assert!(
-            text.contains("Isolated Pages"),
-            "should show isolated section"
-        );
-        assert!(
-            text.contains("gamma unknown page"),
-            "gamma should be isolated"
-        );
-        assert!(text.contains("word page"), "word should be isolated");
-        assert!(
-            text.contains("tag only page"),
-            "tag only page should be isolated"
+        assert_eq!(
+            stdout(&out),
+            "Link Graph\n  pages: 7\n  links: 1\n\n\
+             Most Linked Pages:\n     1  alpha page\n\n\
+             Isolated Pages (5):\n  gamma unknown page\n  media page\n  rewrite page\n  \
+             tag only page\n  word page\n"
         );
     }
 
@@ -961,10 +774,13 @@ mod links {
     fn json_nodes_have_id_and_title() {
         let out = run(&["links", "--json", &fixtures_path_str()]);
         let json: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
-        for node in json["nodes"].as_array().unwrap() {
-            assert!(node["id"].is_string(), "node should have id");
-            assert!(node["title"].is_string(), "node should have title");
-        }
+        assert_eq!(
+            json["nodes"],
+            serde_json::json!([
+                { "id": "fixture-page-alpha", "title": "alpha page" },
+                { "id": "fixture-page-beta", "title": "beta page" },
+            ])
+        );
     }
 
     #[test]
@@ -1026,27 +842,31 @@ mod links {
     #[test]
     fn for_flag_nonexistent_page_fails() {
         let out = run(&["links", "--for", "nonexistent_xyz", &fixtures_path_str()]);
-        assert!(!out.status.success());
+        assert_eq!(out.status.code(), Some(1));
+        assert!(
+            stderr(&out).contains("no page found with title matching `nonexistent_xyz`"),
+            "got: {}",
+            stderr(&out)
+        );
     }
 
     #[test]
     fn dot_and_json_mutually_exclusive() {
         let out = run(&["links", "--dot", "--json", &fixtures_path_str()]);
-        assert!(!out.status.success());
+        assert_eq!(out.status.code(), Some(1));
+        assert!(
+            stderr(&out).contains("--dot and --json are mutually exclusive"),
+            "got: {}",
+            stderr(&out)
+        );
     }
 
     #[test]
     fn for_flag_missing_argument_fails() {
-        let out = run(&["links", "--for"]);
-        assert!(!out.status.success());
-    }
-
-    #[test]
-    fn unknown_flag_exits_nonzero() {
-        let out = run(&["links", "--badarg", &fixtures_path_str()]);
-        assert!(!out.status.success());
-        let err = stderr(&out);
-        assert!(err.contains("unknown flag"));
+        // the kb path comes first, so `--for` is the last argument and has no value.
+        let out = run(&["links", &fixtures_path_str(), "--for"]);
+        assert_eq!(out.status.code(), Some(1));
+        assert_eq!(stderr(&out), "Error: --for requires a page argument\n");
     }
 }
 
@@ -1058,30 +878,13 @@ mod tags {
     use super::*;
 
     #[test]
-    fn plain_output_shows_tag_counts() {
+    fn plain_output_shows_tag_counts_sorted_by_count_desc() {
         let out = run(&["tags", &fixtures_path_str()]);
         assert!(out.status.success());
-        let text = stdout(&out);
-        assert!(
-            text.contains("Tags (3 unique)"),
-            "expected 3 unique tags, got: {text}"
-        );
-        assert!(text.contains("fixture"), "should list fixture tag");
-        assert!(text.contains("alpha"), "should list alpha tag");
-        assert!(text.contains("shelved"), "should list shelved tag");
-    }
-
-    #[test]
-    fn plain_output_sorted_by_count_desc() {
-        let out = run(&["tags", &fixtures_path_str()]);
-        let text = stdout(&out);
-        // "fixture" appears on 2 pages (alpha, beta), "alpha" on 1 page.
-        // fixture should appear before alpha.
-        let fixture_pos = text.find("fixture").unwrap();
-        let alpha_pos = text.find("alpha").unwrap();
-        assert!(
-            fixture_pos < alpha_pos,
-            "fixture (count 2) should appear before alpha (count 1)"
+        // "fixture" is on 2 pages; ties at 1 sort alphabetically.
+        assert_eq!(
+            stdout(&out),
+            "Tags (3 unique)\n     2  fixture\n     1  alpha\n     1  shelved\n"
         );
     }
 
@@ -1108,13 +911,7 @@ mod tags {
         assert!(out.status.success());
         let text = stdout(&out);
         let lines: Vec<&str> = text.lines().collect();
-        assert_eq!(lines.len(), 3, "expected 3 TSV lines");
-        for line in &lines {
-            let parts: Vec<&str> = line.split('\t').collect();
-            assert_eq!(parts.len(), 2, "expected tag\\tcount, got: {line}");
-        }
-        // First line should be fixture with count 2.
-        assert!(lines[0].starts_with("fixture\t2"));
+        assert_eq!(lines, ["fixture\t2", "alpha\t1", "shelved\t1"]);
     }
 
     #[test]
@@ -1196,19 +993,10 @@ mod tags {
 
     #[test]
     fn for_flag_missing_argument_fails() {
-        let out = run(&["tags", "--for"]);
-        assert!(!out.status.success());
-    }
-
-    #[test]
-    fn unknown_flag_exits_nonzero() {
-        let out = run(&["tags", "--badarg", &fixtures_path_str()]);
-        assert!(!out.status.success());
-        let err = stderr(&out);
-        assert!(
-            err.contains("unknown flag"),
-            "expected unknown flag error, got: {err}"
-        );
+        // the kb path comes first, so `--for` is the last argument and has no value.
+        let out = run(&["tags", &fixtures_path_str(), "--for"]);
+        assert_eq!(out.status.code(), Some(1));
+        assert_eq!(stderr(&out), "Error: --for requires a tag argument\n");
     }
 }
 
@@ -1285,73 +1073,20 @@ mod check {
     #[test]
     fn exits_nonzero_when_issues_found() {
         let out = run(&["check", &fixtures_path_str()]);
-        assert!(
-            !out.status.success(),
-            "should exit nonzero when orphan pages exist"
+        assert_eq!(
+            out.status.code(),
+            Some(1),
+            "should exit 1 when orphan pages exist"
         );
     }
 
     #[test]
-    fn json_output_has_expected_fields() {
-        let out = run(&["check", "--json", &fixtures_path_str()]);
-        let text = stdout(&out);
-        let json: serde_json::Value =
-            serde_json::from_str(&text).expect("check --json should produce valid JSON");
-        assert!(json["broken_links"].is_array());
-        assert!(json["orphan_pages"].is_array());
-        assert!(json["load_errors"].is_array());
-        assert!(json["index_issues"].is_array());
-    }
-
-    #[test]
-    fn json_output_has_correct_counts() {
+    fn json_output_lists_orphans_but_not_the_linked_page() {
         let out = run(&["check", "--json", &fixtures_path_str()]);
         let json: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
-        let broken = json["broken_links"].as_array().unwrap();
-        assert_eq!(broken.len(), 0, "expected 0 broken links");
-        let orphans = json["orphan_pages"].as_array().unwrap();
-        assert_eq!(orphans.len(), 6, "expected 6 orphan pages");
-    }
-
-    #[test]
-    fn json_orphan_pages_have_id_and_title() {
-        let out = run(&["check", "--json", &fixtures_path_str()]);
-        let json: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
-        for page in json["orphan_pages"].as_array().unwrap() {
-            assert!(page["id"].is_string(), "orphan should have id");
-            assert!(page["title"].is_string(), "orphan should have title");
-        }
-    }
-
-    #[test]
-    fn json_orphan_excludes_linked_page() {
-        let out = run(&["check", "--json", &fixtures_path_str()]);
-        let json: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
-        let orphan_ids: Vec<&str> = json["orphan_pages"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter_map(|p| p["id"].as_str())
-            .collect();
-        assert!(
-            !orphan_ids.contains(&"fixture-page-alpha"),
-            "alpha should not be orphan (linked by beta)"
-        );
-        assert!(
-            orphan_ids.contains(&"fixture-page-beta"),
-            "beta should be orphan"
-        );
-    }
-
-    #[test]
-    fn unknown_flag_exits_nonzero() {
-        let out = run(&["check", "--badarg", &fixtures_path_str()]);
-        assert!(!out.status.success());
-        let err = stderr(&out);
-        assert!(
-            err.contains("unknown flag"),
-            "expected unknown flag error, got: {err}"
-        );
+        assert_eq!(json["broken_links"], serde_json::json!([]));
+        // alpha is linked to by beta, so it is the one page missing here.
+        assert_eq!(json["orphan_pages"], corpus_orphans_json());
     }
 
     // Tests using the broken-links fixture KB.
@@ -1371,117 +1106,65 @@ mod check {
     }
 
     #[test]
-    fn broken_links_fixture_detects_broken_links() {
+    fn broken_links_fixture_plain_lists_broken_links_and_exits_1() {
         let out = run(&["check", &broken_links_path_str()]);
+        assert_eq!(
+            out.status.code(),
+            Some(1),
+            "should exit 1 when broken links exist"
+        );
         let text = stdout(&out);
-        assert!(
-            text.contains("Broken Links (3)"),
-            "expected 3 broken links, got: {text}"
+        let (_, section) = text
+            .split_once("Broken Links (3):\n")
+            .unwrap_or_else(|| panic!("expected 3 broken links, got: {text}"));
+        assert_eq!(
+            section
+                .lines()
+                .take_while(|l| !l.is_empty())
+                .collect::<Vec<_>>(),
+            [
+                "  multi broken page -> page:bl-page-nope",
+                "  multi broken page -> page:bl-page-also-nope",
+                "  ok page -> page:bl-page-ghost",
+            ]
         );
     }
 
     #[test]
-    fn broken_links_fixture_plain_shows_targets() {
-        let out = run(&["check", &broken_links_path_str()]);
-        let text = stdout(&out);
-        assert!(
-            text.contains("page:bl-page-ghost"),
-            "should report ghost target, got: {text}"
-        );
-        assert!(
-            text.contains("page:bl-page-nope"),
-            "should report nope target, got: {text}"
-        );
-        assert!(
-            text.contains("page:bl-page-also-nope"),
-            "should report also-nope target, got: {text}"
-        );
-    }
-
-    #[test]
-    fn broken_links_fixture_json_has_broken_links() {
+    fn broken_links_fixture_json_reports_sources_orphans_and_no_errors() {
         let out = run(&["check", "--json", &broken_links_path_str()]);
         let json: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
-        let broken = json["broken_links"].as_array().unwrap();
-        assert_eq!(broken.len(), 3, "expected 3 broken links");
-        let targets: Vec<&str> = broken.iter().filter_map(|b| b["target"].as_str()).collect();
-        assert!(targets.contains(&"page:bl-page-ghost"));
-        assert!(targets.contains(&"page:bl-page-nope"));
-        assert!(targets.contains(&"page:bl-page-also-nope"));
-    }
-
-    #[test]
-    fn broken_links_fixture_json_broken_link_has_source() {
-        let out = run(&["check", "--json", &broken_links_path_str()]);
-        let json: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
-        let broken = json["broken_links"].as_array().unwrap();
-        let ghost = broken
-            .iter()
-            .find(|b| b["target"] == "page:bl-page-ghost")
-            .expect("ghost link should be in results");
-        assert_eq!(ghost["source_id"], "bl-page-ok");
-        assert_eq!(ghost["source_title"], "ok page");
-    }
-
-    #[test]
-    fn broken_links_fixture_orphans_correct() {
-        let out = run(&["check", "--json", &broken_links_path_str()]);
-        let json: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+        assert_eq!(
+            json["broken_links"],
+            serde_json::json!([
+                {
+                    "source_id": "bl-page-multi",
+                    "source_title": "multi broken page",
+                    "target": "page:bl-page-nope"
+                },
+                {
+                    "source_id": "bl-page-multi",
+                    "source_title": "multi broken page",
+                    "target": "page:bl-page-also-nope"
+                },
+                {
+                    "source_id": "bl-page-ok",
+                    "source_title": "ok page",
+                    "target": "page:bl-page-ghost"
+                },
+            ])
+        );
+        // target is linked to by ok, so only ok and multi are orphans
         let orphan_ids: Vec<&str> = json["orphan_pages"]
             .as_array()
             .unwrap()
             .iter()
             .filter_map(|p| p["id"].as_str())
             .collect();
-        // target is linked to by ok, so only ok and multi should be orphans
-        assert!(
-            !orphan_ids.contains(&"bl-page-target"),
-            "target should not be orphan"
-        );
-        assert!(orphan_ids.contains(&"bl-page-ok"), "ok should be orphan");
-        assert!(
-            orphan_ids.contains(&"bl-page-multi"),
-            "multi should be orphan"
-        );
-    }
-
-    #[test]
-    fn broken_links_fixture_exits_nonzero() {
-        let out = run(&["check", &broken_links_path_str()]);
-        assert!(
-            !out.status.success(),
-            "should exit nonzero when broken links exist"
-        );
-    }
-
-    #[test]
-    fn broken_links_fixture_json_has_load_errors_field() {
-        let out = run(&["check", "--json", &broken_links_path_str()]);
-        let json: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
-        assert!(
-            json["load_errors"].is_array(),
-            "load_errors should be present"
-        );
-        assert_eq!(
-            json["load_errors"].as_array().unwrap().len(),
-            0,
-            "no load errors expected for valid fixture"
-        );
-    }
-
-    #[test]
-    fn broken_links_fixture_json_has_index_issues_field() {
-        let out = run(&["check", "--json", &broken_links_path_str()]);
-        let json: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
-        assert!(
-            json["index_issues"].is_array(),
-            "index_issues should be present"
-        );
-        assert_eq!(
-            json["index_issues"].as_array().unwrap().len(),
-            0,
-            "no index issues expected for valid fixture"
-        );
+        assert_eq!(orphan_ids, ["bl-page-multi", "bl-page-ok"]);
+        assert_eq!(json["load_errors"], serde_json::json!([]));
+        assert_eq!(json["index_issues"], serde_json::json!([]));
+        assert_eq!(json["ok"], false);
     }
 }
 
@@ -1652,7 +1335,7 @@ mod help {
     #[test]
     fn unknown_subcommand_fails() {
         let out = run(&["bogus_command"]);
-        assert!(!out.status.success());
+        assert_eq!(out.status.code(), Some(2));
         let err = stderr(&out);
         assert!(err.contains("unknown subcommand"));
     }
@@ -1688,47 +1371,21 @@ mod help {
 
     #[test]
     fn unknown_flag_exits_with_status_2() {
-        let out = run(&["list", "--badarg"]);
-        assert_eq!(out.status.code(), Some(2));
-        assert!(stderr(&out).contains("unknown flag: --badarg"));
-    }
-}
-
-// ---------------------------------------------------------------------------
-// export subcommand
-// ---------------------------------------------------------------------------
-
-mod export {
-    use super::*;
-
-    #[test]
-    fn unknown_flag_exits_nonzero() {
-        let out = run(&["export", "--badarg", &fixtures_path_str()]);
-        assert!(!out.status.success());
-        let err = stderr(&out);
-        assert!(
-            err.contains("unknown flag"),
-            "expected unknown flag error, got: {err}"
-        );
-    }
-}
-
-// ---------------------------------------------------------------------------
-// import subcommand
-// ---------------------------------------------------------------------------
-
-mod import {
-    use super::*;
-
-    #[test]
-    fn unknown_flag_exits_nonzero() {
-        let out = run(&["import", "--badarg", &fixtures_path_str()]);
-        assert!(!out.status.success());
-        let err = stderr(&out);
-        assert!(
-            err.contains("unknown flag"),
-            "expected unknown flag error, got: {err}"
-        );
+        for cmd in [
+            "info", "list", "ids", "search", "show", "links", "tags", "check", "export", "import",
+        ] {
+            let out = run(&[cmd, "--badarg", &fixtures_path_str()]);
+            assert_eq!(
+                out.status.code(),
+                Some(2),
+                "`{cmd} --badarg` should be a usage error"
+            );
+            let err = stderr(&out);
+            assert!(
+                err.contains("unknown flag: --badarg"),
+                "`{cmd} --badarg` should name the flag, got: {err}"
+            );
+        }
     }
 }
 

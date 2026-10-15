@@ -583,18 +583,26 @@ mod tests {
     // --- parse_inline_markdown ---
 
     #[test]
-    fn inline_plain_text() {
-        let mut links = Vec::new();
-        let line = parse_inline_markdown("hello world", &mut links);
-        assert_eq!(span_texts(&line), vec!["hello world"]);
-        assert!(links.is_empty());
-    }
-
-    #[test]
-    fn inline_empty_string() {
-        let mut links = Vec::new();
-        let line = parse_inline_markdown("", &mut links);
-        assert!(line.spans.is_empty());
+    fn literal_text_renders_as_one_plain_span_on_both_paths() {
+        let cases: [(&str, &[&str]); 4] = [
+            ("hello world", &["hello world"]),
+            ("", &[]),
+            ("before **unclosed", &["before **unclosed"]),
+            ("array[0] done", &["array[0] done"]),
+        ];
+        for (text, expected) in cases {
+            let mut links = Vec::new();
+            let md_line = parse_inline_markdown(text, &mut links);
+            let ann_line = parse_inline_annotations(text);
+            assert!(links.is_empty(), "{text:?}");
+            for line in [&md_line, &ann_line] {
+                assert_eq!(span_texts(line), expected, "{text:?}");
+                assert!(
+                    line.spans.iter().all(|s| s.style == Style::default()),
+                    "{text:?}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -628,11 +636,14 @@ mod tests {
     fn inline_bold_and_italic_combined() {
         let mut links = Vec::new();
         let line = parse_inline_markdown("**bold *and italic* still bold**", &mut links);
-        // "bold " is bold, "and italic" is bold+italic, " still bold" is bold
-        assert!(has_modifier(&line, 0, Modifier::BOLD));
-        assert!(has_modifier(&line, 1, Modifier::BOLD));
-        assert!(has_modifier(&line, 1, Modifier::ITALIC));
-        assert!(has_modifier(&line, 2, Modifier::BOLD));
+        assert_eq!(
+            span_texts(&line),
+            vec!["bold ", "and italic", " still bold"]
+        );
+        for idx in 0..3 {
+            assert!(has_modifier(&line, idx, Modifier::BOLD));
+            assert_eq!(has_modifier(&line, idx, Modifier::ITALIC), idx == 1);
+        }
     }
 
     #[test]
@@ -653,30 +664,31 @@ mod tests {
 
     #[test]
     fn inline_url_link() {
-        let mut links = Vec::new();
-        let line = parse_inline_markdown("click [here](https://example.com) done", &mut links);
-        assert_eq!(links.len(), 1);
-        assert_eq!(links[0].label, "here");
-        assert_eq!(links[0].target, "https://example.com");
-        // span 0 = "click ", span 1 = link text, span 2 = marker, span 3 = " done"
-        assert_eq!(line.spans[0].content.as_ref(), "click ");
-        assert!(has_fg(&line, 1, Color::LightBlue));
-        assert_eq!(line.spans[2].content.as_ref(), "[1]");
-    }
-
-    #[test]
-    fn inline_url_link_with_parens_in_the_target() {
-        let mut links = Vec::new();
-        let line = parse_inline_markdown(
-            "see [Ruby](https://en.wikipedia.org/wiki/Ruby_(programming_language)) here",
-            &mut links,
-        );
-        assert_eq!(links.len(), 1);
-        assert_eq!(
-            links[0].target,
-            "https://en.wikipedia.org/wiki/Ruby_(programming_language)"
-        );
-        assert_eq!(line.spans[3].content.as_ref(), " here");
+        let cases = [
+            (
+                "click [here](https://example.com) done",
+                "click ",
+                "here",
+                "https://example.com",
+                " done",
+            ),
+            (
+                "see [Ruby](https://en.wikipedia.org/wiki/Ruby_(programming_language)) here",
+                "see ",
+                "Ruby",
+                "https://en.wikipedia.org/wiki/Ruby_(programming_language)",
+                " here",
+            ),
+        ];
+        for (text, before, label, target, after) in cases {
+            let mut links = Vec::new();
+            let line = parse_inline_markdown(text, &mut links);
+            assert_eq!(links.len(), 1, "{text:?}");
+            assert_eq!(links[0].label, label);
+            assert_eq!(links[0].target, target);
+            assert_eq!(span_texts(&line), vec![before, label, "[1]", after]);
+            assert!(has_fg(&line, 1, Color::LightBlue));
+        }
     }
 
     #[test]
@@ -724,43 +736,16 @@ mod tests {
         let line = parse_inline_markdown("[[First]] and [second](url2)", &mut links);
         assert_eq!(links.len(), 2);
         assert_eq!(links[0].label, "First");
+        assert_eq!(links[0].target, "First");
         assert_eq!(links[1].label, "second");
-        // wiki link gets [1], url link gets [2]
-        let texts = span_texts(&line);
-        assert!(texts.contains(&"[1]"));
-        assert!(texts.contains(&"[2]"));
-    }
-
-    #[test]
-    fn inline_unclosed_bold_treated_as_text() {
-        let mut links = Vec::new();
-        let line = parse_inline_markdown("before **unclosed", &mut links);
-        assert_eq!(span_texts(&line), vec!["before **unclosed"]);
-        assert!(!has_modifier(&line, 0, Modifier::BOLD));
-    }
-
-    #[test]
-    fn inline_bracket_not_a_link() {
-        let mut links = Vec::new();
-        // single [ without matching ](url) should be treated as text
-        let line = parse_inline_markdown("array[0] done", &mut links);
-        assert!(links.is_empty());
-        assert_eq!(span_texts(&line), vec!["array[0] done"]);
+        assert_eq!(links[1].target, "url2");
+        assert_eq!(
+            span_texts(&line),
+            vec!["First", "[1]", " and ", "second", "[2]"]
+        );
     }
 
     // --- parse_inline_annotations ---
-
-    #[test]
-    fn annotations_plain_text() {
-        let line = parse_inline_annotations("hello world");
-        assert_eq!(span_texts(&line), vec!["hello world"]);
-    }
-
-    #[test]
-    fn annotations_empty_string() {
-        let line = parse_inline_annotations("");
-        assert!(line.spans.is_empty());
-    }
 
     #[test]
     fn annotations_highlight() {
@@ -796,59 +781,21 @@ mod tests {
 
     // --- render_inline_to_spans consistency ---
 
-    #[test]
-    fn both_paths_style_annotations_identically() {
-        let mut links = Vec::new();
-        let md_line = parse_inline_markdown("text {{note}} end", &mut links);
-        let ann_line = parse_inline_annotations("text {{note}} end");
-        // annotation span (index 1) should have the same style in both
-        assert_eq!(md_line.spans[1].style, ann_line.spans[1].style);
-        assert_eq!(md_line.spans[1].content, ann_line.spans[1].content);
-    }
-
-    #[test]
-    fn both_paths_style_bold_identically() {
-        let mut links = Vec::new();
-        let md_line = parse_inline_markdown("**bold**", &mut links);
-        let ann_line = parse_inline_annotations("**bold**");
-        assert_eq!(md_line.spans[0].style, ann_line.spans[0].style);
-    }
-
     // --- sanitize_for_terminal ---
 
     #[test]
-    fn sanitize_tabs_to_spaces() {
-        assert_eq!(sanitize_for_terminal("a\tb"), "a    b");
-    }
-
-    #[test]
-    fn sanitize_strips_esc() {
-        assert_eq!(sanitize_for_terminal("hi\x1b[31mred"), "hi[31mred");
-    }
-
-    #[test]
-    fn sanitize_control_chars_to_space() {
-        // \x01 (SOH) should become a space
-        assert_eq!(sanitize_for_terminal("a\x01b"), "a b");
-    }
-
-    #[test]
-    fn sanitize_preserves_newlines() {
-        assert_eq!(sanitize_for_terminal("a\nb"), "a\nb");
-    }
-
-    #[test]
-    fn sanitize_plain_text_unchanged() {
-        let s = "hello world 123!";
-        assert_eq!(sanitize_for_terminal(s), s);
-    }
-
-    #[test]
-    fn sanitize_mixed() {
-        assert_eq!(
-            sanitize_for_terminal("\x1bhello\tworld\x02"),
-            "hello    world "
-        );
+    fn sanitize_for_terminal_cases() {
+        let cases = [
+            ("a\tb", "a    b"),
+            ("hi\x1b[31mred", "hi[31mred"),
+            ("a\x01b", "a b"),
+            ("a\nb", "a\nb"),
+            ("hello world 123!", "hello world 123!"),
+            ("\x1bhello\tworld\x02", "hello    world "),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(sanitize_for_terminal(input), expected, "{input:?}");
+        }
     }
 
     #[test]
@@ -857,15 +804,6 @@ mod tests {
         render_code_block(Some("pharo"), "x := 1. \"a\nit's here\ndone\" y", &mut out);
         assert_eq!(span_texts(&out[2]), vec!["it's here"]);
         assert!(has_fg(&out[2], 0, Color::DarkGray));
-    }
-
-    #[test]
-    fn code_block_state_does_not_leak_into_the_next_block() {
-        let mut out = Vec::new();
-        render_code_block(Some("javascript"), "/* open", &mut out);
-        render_code_block(Some("javascript"), "x", &mut out);
-        let x = out.iter().find(|l| span_texts(l) == vec!["x"]).unwrap();
-        assert!(!has_fg(x, 0, Color::DarkGray));
     }
 
     #[test]
@@ -912,44 +850,22 @@ mod tests {
     }
 
     #[test]
-    fn highlight_marker_embedded_in_text() {
-        let lines = vec![Line::from(Span::raw("before [1] after"))];
-        let result = highlight_selected_link_markers(&lines, 1);
-        let texts: Vec<&str> = result[0].spans.iter().map(|s| s.content.as_ref()).collect();
-        assert_eq!(texts, vec!["before ", "[1]", " after"]);
-        assert_eq!(result[0].spans[1].style.bg, Some(Color::Yellow));
-    }
-
-    #[test]
-    fn highlight_empty_lines() {
-        let lines: Vec<Line<'static>> = vec![Line::raw("")];
-        let result = highlight_selected_link_markers(&lines, 1);
-        assert_eq!(result.len(), 1);
-        // Line::raw("") produces a line with one empty span
-        assert!(
-            result[0]
-                .spans
-                .iter()
-                .all(|s| s.content.is_empty() || s.style.bg.is_none())
-        );
-    }
-
-    #[test]
-    fn highlight_marker_at_span_start() {
-        let lines = vec![Line::from(Span::raw("[5] trailing"))];
-        let result = highlight_selected_link_markers(&lines, 5);
-        assert_eq!(result[0].spans[0].content.as_ref(), "[5]");
-        assert_eq!(result[0].spans[0].style.bg, Some(Color::Yellow));
-        assert_eq!(result[0].spans[1].content.as_ref(), " trailing");
-    }
-
-    #[test]
-    fn highlight_marker_at_span_end() {
-        let lines = vec![Line::from(Span::raw("leading [3]"))];
-        let result = highlight_selected_link_markers(&lines, 3);
-        assert_eq!(result[0].spans[0].content.as_ref(), "leading ");
-        assert_eq!(result[0].spans[1].content.as_ref(), "[3]");
-        assert_eq!(result[0].spans[1].style.bg, Some(Color::Yellow));
+    fn highlight_marker_position_in_a_span() {
+        let cases: [(&str, usize, &[&str], usize); 3] = [
+            ("before [1] after", 1, &["before ", "[1]", " after"], 1),
+            ("[5] trailing", 5, &["[5]", " trailing"], 0),
+            ("leading [3]", 3, &["leading ", "[3]"], 1),
+        ];
+        for (text, selected, expected, marker) in cases {
+            let lines = vec![Line::from(Span::raw(text))];
+            let result = highlight_selected_link_markers(&lines, selected);
+            assert_eq!(span_texts(&result[0]), expected, "{text:?}");
+            assert_eq!(
+                result[0].spans[marker].style.bg,
+                Some(Color::Yellow),
+                "{text:?}"
+            );
+        }
     }
 
     // --- list rendering ---
@@ -1186,10 +1102,25 @@ mod tests {
     #[test]
     fn page_search_passive_highlight_for_non_current() {
         let lines = vec![Line::raw("needle first"), Line::raw("needle second")];
-        // Current match is line 0; line 1 should get passive style.
-        let result = highlight_page_search(&lines, "needle", Some(0));
-        assert_eq!(result[0].spans[0].style.bg, Some(Color::Yellow)); // active
-        assert_eq!(result[1].spans[0].style.bg, Some(Color::DarkGray)); // passive
+        // a current match is active, every other match (all of them without
+        // a current one) is passive.
+        let cases = [
+            (Some(0), [Color::Yellow, Color::DarkGray]),
+            (None, [Color::DarkGray, Color::DarkGray]),
+        ];
+        for (current, expected) in cases {
+            let result = highlight_page_search(&lines, "needle", current);
+            assert_eq!(
+                result[0].spans[0].style.bg,
+                Some(expected[0]),
+                "{current:?}"
+            );
+            assert_eq!(
+                result[1].spans[0].style.bg,
+                Some(expected[1]),
+                "{current:?}"
+            );
+        }
     }
 
     #[test]
@@ -1223,12 +1154,5 @@ mod tests {
         assert_eq!(texts, vec!["hel", "lo", " world"]);
         assert_eq!(result[0].spans[0].style.bg, Some(Color::Yellow));
         assert_eq!(result[0].spans[1].style.bg, Some(Color::Yellow));
-    }
-
-    #[test]
-    fn page_search_no_current_all_passive() {
-        let lines = vec![Line::raw("needle here")];
-        let result = highlight_page_search(&lines, "needle", None);
-        assert_eq!(result[0].spans[0].style.bg, Some(Color::DarkGray));
     }
 }

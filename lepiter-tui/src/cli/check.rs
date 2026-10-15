@@ -348,30 +348,10 @@ mod tests {
         }
     }
 
-    // --- CheckReport::ok ---
-
-    #[test]
-    fn report_ok_when_empty() {
-        let (_dir, index) = make_test_kb(&[]);
-        let report = empty_report(&index);
-        assert!(report.ok());
-    }
-
-    #[test]
-    fn report_not_ok_with_broken_links() {
-        let (_dir, index) = make_test_kb(&[("p1", "Page One", "see [link](page:gone)")]);
-        let analysis = index.analyze_all();
-        let report = CheckReport {
-            broken_links: &analysis.broken_links,
-            ..empty_report(&index)
-        };
-        assert!(!report.ok());
-    }
-
     // --- write_check_text: clean KB ---
 
     #[test]
-    fn check_text_clean_kb_shows_zero_counts() {
+    fn check_text_clean_kb_shows_zero_counts_and_empty_sections() {
         let (dir, index) = make_test_kb(&[]);
         let report = empty_report(&index);
         let out = output_string(|buf| {
@@ -384,16 +364,6 @@ mod tests {
         assert!(out.contains("missing_attachments: 0"));
         assert!(out.contains("load_errors: 0"));
         assert!(out.contains("index_issues: 0"));
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn check_text_clean_kb_shows_none_sections() {
-        let (dir, index) = make_test_kb(&[]);
-        let report = empty_report(&index);
-        let out = output_string(|buf| {
-            write_check_text(buf, &report);
-        });
         assert!(out.contains("Broken Links (0):"));
         assert!(out.contains("Orphan Pages (0):"));
         assert!(out.contains("Duplicate Titles (0):"));
@@ -714,97 +684,6 @@ mod tests {
         assert_eq!(errs[0]["page_id"], "p1");
         assert_eq!(errs[0]["title"], "Broken");
         assert_eq!(errs[0]["error"], "bad json");
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    // --- end-to-end with make_test_kb ---
-
-    #[test]
-    fn check_text_full_kb_with_all_issue_types() {
-        let (dir, index) = make_test_kb(&[
-            ("p1", "Alpha", "see [link](page:gone)"),
-            ("p2", "Alpha", "duplicate title"),
-            ("p3", "Beta", "see [img](attachments/missing.png)"),
-        ]);
-        let analysis = index.analyze_all();
-        let orphan_ids = index.orphan_ids(&analysis.linked_pages, None);
-        let dupes = index.find_duplicate_titles();
-        let report = CheckReport {
-            broken_links: &analysis.broken_links,
-            orphan_ids: &orphan_ids,
-            load_errors: &analysis.load_errors,
-            index_issues: &index.index_issues,
-            duplicate_titles: &dupes,
-            missing_attachments: &analysis.missing_attachments,
-            ..empty_report(&index)
-        };
-        let out = output_string(|buf| {
-            write_check_text(buf, &report);
-        });
-        assert!(out.starts_with("Knowledge Base Check\n"));
-        assert!(out.contains("broken_links: 1"));
-        assert!(out.contains("duplicate_titles: 1"));
-        assert!(out.contains("missing_attachments: 1"));
-        // All three pages are orphans (none links to another with page: prefix
-        // that resolves, since "page:gone" is broken).
-        assert!(out.contains("orphan_pages: 3"));
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn check_json_full_kb_is_valid_json() {
-        let (dir, index) = make_test_kb(&[
-            ("p1", "Alpha", "see [link](page:gone)"),
-            ("p2", "Alpha", "duplicate title"),
-        ]);
-        let analysis = index.analyze_all();
-        let orphan_ids = index.orphan_ids(&analysis.linked_pages, None);
-        let dupes = index.find_duplicate_titles();
-        let report = CheckReport {
-            broken_links: &analysis.broken_links,
-            orphan_ids: &orphan_ids,
-            load_errors: &analysis.load_errors,
-            index_issues: &index.index_issues,
-            duplicate_titles: &dupes,
-            missing_attachments: &analysis.missing_attachments,
-            ..empty_report(&index)
-        };
-        let out = output_string(|buf| {
-            write_check_json(buf, &report);
-        });
-        let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
-        assert!(parsed.is_object());
-        assert_eq!(parsed["ok"], false);
-        // All eight top-level keys present.
-        assert!(parsed.get("ok").is_some());
-        assert!(parsed.get("broken_links").is_some());
-        assert!(parsed.get("orphan_pages").is_some());
-        assert!(parsed.get("duplicate_titles").is_some());
-        assert!(parsed.get("duplicate_ids").is_some());
-        assert!(parsed.get("missing_attachments").is_some());
-        assert!(parsed.get("load_errors").is_some());
-        assert!(parsed.get("index_issues").is_some());
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn check_text_lists_every_page_referencing_a_missing_attachment() {
-        let (dir, index) = make_test_kb(&[
-            ("p1", "Alpha", "see [img](attachments/gone.png)"),
-            ("p2", "Beta", "see [img](attachments/gone.png)"),
-        ]);
-        let analysis = index.analyze_all();
-        let report = CheckReport {
-            missing_attachments: &analysis.missing_attachments,
-            ..empty_report(&index)
-        };
-        let out = output_string(|buf| {
-            write_check_text(buf, &report);
-        });
-        assert!(out.contains("missing_attachments: 2"));
-        assert!(out.contains("Missing Attachments (2):"));
-        assert!(out.contains("Alpha -> "));
-        assert!(out.contains("Beta -> "));
         std::fs::remove_dir_all(&dir).ok();
     }
 

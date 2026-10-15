@@ -20,8 +20,19 @@ fn golden_parse_page_has_content() -> Result<()> {
     let Some(id) = first_page_id(&index) else {
         panic!("expected at least one page in checked-in fixture corpus");
     };
+    assert_eq!(id, "fixture-page-alpha");
     let page = index.load_page(&id)?;
-    assert!(!page.content.is_empty());
+    assert_eq!(
+        serde_json::to_value(&page.content)?,
+        serde_json::json!([
+            {"type": "heading", "level": 1, "text": "alpha heading"},
+            {"type": "paragraph", "text": "alpha paragraph"},
+            {"type": "list", "items": [
+                [{"type": "paragraph", "text": "first item"}],
+                [{"type": "paragraph", "text": "second item"}]
+            ]}
+        ])
+    );
     Ok(())
 }
 
@@ -60,7 +71,9 @@ fn render_smoke_test() -> Result<()> {
         panic!("expected at least one page in checked-in fixture corpus");
     };
     let page = index.load_page(&id)?;
-    let rendered = render_page_to_text(&page);
-    assert!(!rendered.trim().is_empty());
+    assert_eq!(
+        render_page_to_text(&page),
+        "# alpha heading\n\nalpha paragraph\n\n- first item\n- second item\n\n"
+    );
     Ok(())
 }

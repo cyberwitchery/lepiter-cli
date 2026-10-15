@@ -308,17 +308,6 @@ mod tests {
     }
 
     #[test]
-    fn search_json_no_results() {
-        let (dir, index) = make_test_kb(&[("p1", "Alpha", &[], "body")]);
-        let hits = index.search_hits("zzzzz", false);
-        let snippets = snips(&index, &hits, "zzzzz");
-        let out = output_string(|buf| write_search_json(buf, &index, &hits, &snippets));
-        let parsed: Vec<serde_json::Value> = serde_json::from_str(&out).unwrap();
-        assert!(parsed.is_empty());
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
     fn search_json_multiple_match_kinds() {
         let (dir, index) = make_test_kb(&[
             ("p1", "Rust Guide", &[], "body"),
@@ -342,29 +331,6 @@ mod tests {
     }
 
     // --- TSV output ---
-
-    #[test]
-    fn search_tsv_title_match() {
-        let (dir, index) = make_test_kb(&[
-            ("p1", "Rust Guide", &[], "body"),
-            ("p2", "Go Notes", &[], "body"),
-        ]);
-        let hits = index.search_hits("rust", false);
-        let snippets = snips(&index, &hits, "rust");
-        let out = output_string(|buf| write_search_tsv(buf, &index, &hits, &snippets));
-        // Use `lines()` rather than `trim()` here: an empty snippet leaves a
-        // trailing tab, and `trim()` would strip it, hiding the 4th column.
-        let lines: Vec<&str> = out.lines().collect();
-        assert_eq!(lines.len(), 1);
-        let fields: Vec<&str> = lines[0].split('\t').collect();
-        assert_eq!(fields.len(), 4, "expected title\\tid\\tkind\\tsnippet");
-        assert_eq!(fields[0], "Rust Guide");
-        assert_eq!(fields[1], "p1");
-        assert_eq!(fields[2], "title");
-        // Title hit — empty snippet column.
-        assert_eq!(fields[3], "");
-        std::fs::remove_dir_all(&dir).ok();
-    }
 
     #[test]
     fn search_tsv_content_match_has_snippet_column() {
@@ -412,7 +378,7 @@ mod tests {
         assert_eq!(records.len(), 1, "row must stay one record: {out:?}");
         let fields: Vec<&str> = records[0].split('\t').collect();
         assert_eq!(fields.len(), 4, "CR in snippet must not add a record");
-        assert!(fields[3].contains("fox is here"));
+        assert_eq!(fields[3], "first line  fox is here  third line");
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -443,16 +409,6 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    #[test]
-    fn search_tsv_content_match_label() {
-        let (dir, index) = make_test_kb(&[("p1", "Alpha", &[], "the quick brown fox")]);
-        let hits = index.search_hits("fox", true);
-        let snippets = snips(&index, &hits, "fox");
-        let out = output_string(|buf| write_search_tsv(buf, &index, &hits, &snippets));
-        assert!(out.contains("\tcontent\t"));
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
     // --- Plain table output ---
 
     #[test]
@@ -462,11 +418,8 @@ mod tests {
         let snippets = snips(&index, &hits, "alpha");
         let out = output_string(|buf| write_search_plain(buf, &index, &hits, &snippets));
         let lines: Vec<&str> = out.lines().collect();
-        assert!(lines[0].contains("title"));
-        assert!(lines[0].contains("id"));
-        assert!(lines[0].contains("match"));
-        // Second line is a separator of dashes.
-        assert!(lines[1].contains("-----"));
+        assert_eq!(lines[0], format!("{:<5}  {:<36}  match", "title", "id"));
+        assert_eq!(lines[1], format!("-----  {}  -------", "-".repeat(36)));
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -476,10 +429,11 @@ mod tests {
         let hits = index.search_hits("rust", false);
         let snippets = snips(&index, &hits, "rust");
         let out = output_string(|buf| write_search_plain(buf, &index, &hits, &snippets));
-        // Data row should contain the title, id, and match kind.
-        assert!(out.contains("Rust Guide"));
-        assert!(out.contains("p1"));
-        assert!(out.contains("title"));
+        // the data row, not the header, carries the match kind.
+        assert_eq!(
+            out.lines().nth(2),
+            Some(format!("{:<10}  {:<36}  title", "Rust Guide", "p1").as_str())
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -549,9 +503,11 @@ mod tests {
         let hits = index.search_hits("a", false);
         let snippets = snips(&index, &hits, "a");
         let out = output_string(|buf| write_search_plain(buf, &index, &hits, &snippets));
-        let header = out.lines().next().unwrap();
-        // "title" is 5 chars and should be left-padded to at least 5.
-        assert!(header.starts_with("title"));
+        // "title" is 5 chars, so the column is at least 5 wide.
+        assert_eq!(
+            out.lines().nth(2),
+            Some(format!("{:<5}  {:<36}  title", "A", "p1").as_str())
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 }

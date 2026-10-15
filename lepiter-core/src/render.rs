@@ -373,11 +373,10 @@ mod tests {
                 raw: json!({"a":1}),
             },
         ]);
-        assert!(text.contains("para"));
-        assert!(text.contains("```diff pharo"));
-        assert!(text.contains("-a"));
-        assert!(text.contains("+b"));
-        assert!(text.contains("[[unknown: weird]]"));
+        assert_eq!(
+            text,
+            "para\n\n```diff pharo\n# method_pattern: true\n-a\n+b\n```\n\n[[unknown: weird]]\n\n"
+        );
     }
 
     #[test]
@@ -400,8 +399,10 @@ mod tests {
             &mut rewrite,
             BlockEscaping::Escape,
         );
-        assert!(text.contains("see [Topic](topic.md) and [x](alpha.md)"));
-        assert!(text.contains("[go](alpha.md)"));
+        assert_eq!(
+            text,
+            "see [Topic](topic.md) and [x](alpha.md)\n\n[go](alpha.md)\n\n"
+        );
     }
 
     #[test]
@@ -420,10 +421,10 @@ mod tests {
             },
         ];
         // The default renderer must leave every link untouched.
-        let plain = render_nodes_to_text(&nodes);
-        assert!(plain.contains("see [[Topic]]"));
-        assert!(plain.contains("a [x](page:abc) b"));
-        assert!(plain.contains("[go](page:abc)"));
+        assert_eq!(
+            render_nodes_to_text(&nodes),
+            "# see [[Topic]]\n\na [x](page:abc) b\n\n[go](page:abc)\n\n"
+        );
     }
 
     #[test]
@@ -471,14 +472,9 @@ mod tests {
         assert_eq!(escape_block_start("```rust"), "\\```rust");
         assert_eq!(escape_block_start("[[unknown: x]]"), "\\[[unknown: x]]");
         assert_eq!(escape_block_start("\\already"), "\\\\already");
+        assert_eq!(escape_block_start("\\[label](url)"), "\\\\[label](url)");
         assert_eq!(escape_block_start(""), "\\");
         assert_eq!(escape_block_start("  "), "\\  ");
-    }
-
-    #[test]
-    fn line_escaping_leaves_a_standalone_link_to_the_node_renderer() {
-        assert_eq!(escape_block_start("[label](url)"), "[label](url)");
-        assert_eq!(escape_block_start("  [pad](url)  "), "  [pad](url)  ");
     }
 
     #[test]
@@ -493,15 +489,12 @@ mod tests {
             "[label](url) trails off",
             "[unclosed](url",
             "[no target]",
+            // a standalone link is left to the node renderer
+            "[label](url)",
+            "  [pad](url)  ",
         ] {
             assert_eq!(escape_block_start(line), line);
         }
-    }
-
-    #[test]
-    fn escape_block_start_matches_the_importer_on_a_hand_escaped_link() {
-        assert_eq!(escape_block_start("\\[label](url)"), "\\\\[label](url)");
-        assert!(!is_standalone_link("\\[label](url)"));
     }
 
     #[test]
@@ -528,11 +521,53 @@ mod tests {
     }
 
     #[test]
-    fn multi_line_nodes_escape_every_line() {
-        let text = render_escaped(&[Node::Paragraph {
-            text: "intro\n- not a list\n> not a quote".to_string(),
-        }]);
-        assert_eq!(text, "intro\n\\- not a list\n\\> not a quote\n\n");
+    fn text_nodes_escape_what_would_read_back_as_another_block() {
+        let paragraph = |text: &str| Node::Paragraph {
+            text: text.to_string(),
+        };
+        let text = |text: &str| Node::Text {
+            text: text.to_string(),
+        };
+        let cases = [
+            (
+                paragraph("intro\n- not a list\n> not a quote"),
+                "intro\n\\- not a list\n\\> not a quote\n\n",
+            ),
+            // blank lines inside a block
+            (
+                paragraph("para one\n\npara two"),
+                "para one\n\\\npara two\n\n",
+            ),
+            // leading and trailing blank lines
+            (paragraph("\nbody\n"), "\\\nbody\n\\\n\n"),
+            // a text node that is only a link
+            (
+                text("[label](https://example.com)"),
+                "\\[label](https://example.com)\n\n",
+            ),
+            (
+                text("  [pad](https://example.com)  "),
+                "\\  [pad](https://example.com)  \n\n",
+            ),
+            (
+                text("[x](https://en.wikipedia.org/wiki/Foo_(bar))"),
+                "\\[x](https://en.wikipedia.org/wiki/Foo_(bar))\n\n",
+            ),
+            // a link line among others stays a working link
+            (
+                text("intro\n[label](https://example.com)\noutro"),
+                "intro\n[label](https://example.com)\noutro\n\n",
+            ),
+            // carriage returns are written verbatim, though import drops them
+            (paragraph("one\r\ntwo"), "one\r\ntwo\n\n"),
+        ];
+        for (node, expected) in cases {
+            assert_eq!(
+                render_escaped(std::slice::from_ref(&node)),
+                expected,
+                "{node:?}"
+            );
+        }
     }
 
     #[test]
@@ -553,22 +588,6 @@ mod tests {
     }
 
     #[test]
-    fn blank_lines_inside_a_block_are_escaped() {
-        let text = render_escaped(&[Node::Paragraph {
-            text: "para one\n\npara two".to_string(),
-        }]);
-        assert_eq!(text, "para one\n\\\npara two\n\n");
-    }
-
-    #[test]
-    fn trailing_and_leading_blank_lines_are_escaped() {
-        let text = render_escaped(&[Node::Paragraph {
-            text: "\nbody\n".to_string(),
-        }]);
-        assert_eq!(text, "\\\nbody\n\\\n\n");
-    }
-
-    #[test]
     fn whitespace_only_text_node_is_escaped_and_separated() {
         let text = render_escaped(&[
             Node::Text {
@@ -579,26 +598,6 @@ mod tests {
             },
         ]);
         assert_eq!(text, "\\  \n\nafter\n\n");
-    }
-
-    #[test]
-    fn text_node_that_is_only_a_link_is_escaped() {
-        let text = render_escaped(&[Node::Text {
-            text: "[label](https://example.com)".to_string(),
-        }]);
-        assert_eq!(text, "\\[label](https://example.com)\n\n");
-        let padded = render_escaped(&[Node::Text {
-            text: "  [pad](https://example.com)  ".to_string(),
-        }]);
-        assert_eq!(padded, "\\  [pad](https://example.com)  \n\n");
-    }
-
-    #[test]
-    fn a_link_line_among_others_is_left_a_working_link() {
-        let text = render_escaped(&[Node::Text {
-            text: "intro\n[label](https://example.com)\noutro".to_string(),
-        }]);
-        assert_eq!(text, "intro\n[label](https://example.com)\noutro\n\n");
     }
 
     #[test]
@@ -638,44 +637,35 @@ mod tests {
     }
 
     #[test]
-    fn link_node_renders_unescaped() {
-        let text = render_escaped(&[Node::Link {
-            text: "label".to_string(),
-            url: "https://example.com".to_string(),
-        }]);
-        assert_eq!(text, "[label](https://example.com)\n\n");
-    }
-
-    #[test]
-    fn link_node_escapes_what_would_break_the_link() {
-        let text = render_escaped(&[Node::Link {
-            text: "a ] b".to_string(),
-            url: "my file.md".to_string(),
-        }]);
-        assert_eq!(text, "[a \\] b](<my file.md>)\n\n");
-    }
-
-    #[test]
-    fn link_node_brackets_a_url_with_a_control_character() {
-        let text = render_escaped(&[Node::Link {
-            text: "tab".to_string(),
-            url: "a\tb".to_string(),
-        }]);
-        assert_eq!(text, "[tab](<a\tb>)\n\n");
-    }
-
-    #[test]
-    fn link_node_keeps_an_ordinary_url_bare() {
-        for url in [
-            "https://en.wikipedia.org/wiki/Foo_(bar)",
-            "https://example.com/?q=<a>",
-            r"C:\Users\foo",
-        ] {
-            let text = render_escaped(&[Node::Link {
-                text: "x".to_string(),
+    fn link_node_escapes_only_what_would_break_the_link() {
+        let cases = [
+            (
+                "label",
+                "https://example.com",
+                "[label](https://example.com)\n\n",
+            ),
+            ("a ] b", "my file.md", "[a \\] b](<my file.md>)\n\n"),
+            // a control character in the url
+            ("tab", "a\tb", "[tab](<a\tb>)\n\n"),
+            // ordinary urls stay bare
+            (
+                "x",
+                "https://en.wikipedia.org/wiki/Foo_(bar)",
+                "[x](https://en.wikipedia.org/wiki/Foo_(bar))\n\n",
+            ),
+            (
+                "x",
+                "https://example.com/?q=<a>",
+                "[x](https://example.com/?q=<a>)\n\n",
+            ),
+            ("x", r"C:\Users\foo", "[x](C:\\Users\\foo)\n\n"),
+        ];
+        for (text, url, expected) in cases {
+            let rendered = render_escaped(&[Node::Link {
+                text: text.to_string(),
                 url: url.to_string(),
             }]);
-            assert_eq!(text, format!("[x]({url})\n\n"));
+            assert_eq!(rendered, expected, "{text:?} {url:?}");
         }
     }
 
@@ -689,14 +679,6 @@ mod tests {
     }
 
     #[test]
-    fn text_node_that_is_only_a_paren_url_link_is_escaped() {
-        let text = render_escaped(&[Node::Text {
-            text: "[x](https://en.wikipedia.org/wiki/Foo_(bar))".to_string(),
-        }]);
-        assert_eq!(text, "\\[x](https://en.wikipedia.org/wiki/Foo_(bar))\n\n");
-    }
-
-    #[test]
     fn standalone_link_follows_the_scanner() {
         for line in [
             "[x](https://en.wikipedia.org/wiki/Foo_(bar))",
@@ -706,7 +688,13 @@ mod tests {
         ] {
             assert!(is_standalone_link(line), "{line:?}");
         }
-        for line in ["[a](b)(c)", "[[wiki]]", "[a [b](c) d](e)", "[a](<b)"] {
+        for line in [
+            "[a](b)(c)",
+            "[[wiki]]",
+            "[a [b](c) d](e)",
+            "[a](<b)",
+            "\\[label](url)",
+        ] {
             assert!(!is_standalone_link(line), "{line:?}");
         }
     }
@@ -721,97 +709,73 @@ mod tests {
     }
 
     #[test]
-    fn render_emits_carriage_returns_verbatim_though_import_drops_them() {
-        let text = render_escaped(&[Node::Paragraph {
-            text: "one\r\ntwo".to_string(),
-        }]);
-        assert_eq!(text, "one\r\ntwo\n\n");
-    }
-
-    #[test]
-    fn display_render_leaves_block_looking_prose_alone() {
-        let text = render_nodes_to_text(&[Node::Paragraph {
-            text: "intro\n- not a list\n> not a quote\n```not a fence\n[not](a-link-snippet)"
-                .to_string(),
-        }]);
-        assert_eq!(
-            text,
-            "intro\n- not a list\n> not a quote\n```not a fence\n[not](a-link-snippet)\n\n"
-        );
-    }
-
-    #[test]
-    fn display_render_keeps_a_blank_line_blank() {
-        let text = render_nodes_to_text(&[Node::Paragraph {
-            text: "para one\n\npara two".to_string(),
-        }]);
-        assert_eq!(text, "para one\n\npara two\n\n");
-    }
-
-    #[test]
-    fn display_render_does_not_double_a_leading_backslash() {
-        let text = render_nodes_to_text(&[Node::Paragraph {
-            text: "\\newcommand{\\foo}{bar}".to_string(),
-        }]);
-        assert_eq!(text, "\\newcommand{\\foo}{bar}\n\n");
-    }
-
-    #[test]
-    fn display_render_leaves_heading_continuation_lines_alone() {
-        let text = render_nodes_to_text(&[Node::Heading {
-            level: 2,
-            text: "title\n- not a list".to_string(),
-        }]);
-        assert_eq!(text, "## title\n- not a list\n\n");
-    }
-
-    #[test]
-    fn render_list_single_line_items() {
-        let text = render_nodes_to_text(&[Node::List {
-            items: vec![
-                vec![Node::Paragraph {
-                    text: "first".to_string(),
-                }],
-                vec![Node::Paragraph {
-                    text: "second".to_string(),
-                }],
-            ],
-        }]);
-        assert_eq!(text, "- first\n- second\n\n");
-    }
-
-    #[test]
-    fn render_list_item_with_code_block() {
-        let text = render_nodes_to_text(&[Node::List {
-            items: vec![vec![Node::Code {
-                language: Some("py".to_string()),
-                code: "x = 1\ny = 2".to_string(),
-            }]],
-        }]);
-        assert_eq!(text, "- ```py\n  x = 1\n  y = 2\n  ```\n\n");
-    }
-
-    #[test]
-    fn render_list_item_with_multiple_nodes() {
-        let text = render_nodes_to_text(&[Node::List {
-            items: vec![vec![
-                Node::Paragraph {
-                    text: "intro".to_string(),
+    fn display_render_writes_text_as_it_is() {
+        let paragraph = |text: &str| Node::Paragraph {
+            text: text.to_string(),
+        };
+        let cases = [
+            (
+                paragraph(
+                    "intro\n- not a list\n> not a quote\n```not a fence\n[not](a-link-snippet)",
+                ),
+                "intro\n- not a list\n> not a quote\n```not a fence\n[not](a-link-snippet)\n\n",
+            ),
+            (
+                paragraph("para one\n\npara two"),
+                "para one\n\npara two\n\n",
+            ),
+            (
+                paragraph("\\newcommand{\\foo}{bar}"),
+                "\\newcommand{\\foo}{bar}\n\n",
+            ),
+            (
+                Node::Heading {
+                    level: 2,
+                    text: "title\n- not a list".to_string(),
                 },
-                Node::Code {
-                    language: None,
-                    code: "code".to_string(),
-                },
-            ]],
-        }]);
-        // First line starts with "- ", continuation lines with "  "
-        let lines: Vec<&str> = text.trim().lines().collect();
-        assert_eq!(lines[0], "- intro");
-        for line in &lines[1..] {
-            assert!(
-                line.starts_with("  "),
-                "continuation line not indented: {line:?}"
+                "## title\n- not a list\n\n",
+            ),
+        ];
+        for (node, expected) in cases {
+            assert_eq!(
+                render_nodes_to_text(std::slice::from_ref(&node)),
+                expected,
+                "{node:?}"
             );
+        }
+    }
+
+    #[test]
+    fn render_list_items() {
+        let paragraph = |text: &str| Node::Paragraph {
+            text: text.to_string(),
+        };
+        let cases = [
+            (
+                vec![vec![paragraph("first")], vec![paragraph("second")]],
+                "- first\n- second\n\n",
+            ),
+            (
+                vec![vec![Node::Code {
+                    language: Some("py".to_string()),
+                    code: "x = 1\ny = 2".to_string(),
+                }]],
+                "- ```py\n  x = 1\n  y = 2\n  ```\n\n",
+            ),
+            (
+                vec![vec![
+                    paragraph("intro"),
+                    Node::Code {
+                        language: None,
+                        code: "code".to_string(),
+                    },
+                ]],
+                "- intro\n  \n  ```\n  code\n  ```\n\n",
+            ),
+        ];
+        for (items, expected) in cases {
+            let text = render_nodes_to_text(&[Node::List { items }]);
+            assert_eq!(text, expected);
         }
     }
 
@@ -826,12 +790,99 @@ mod tests {
     }
 
     #[test]
-    fn page_content_contains_matches_paragraph() {
-        let page = make_page(vec![Node::Paragraph {
-            text: "the quick brown fox".to_string(),
-        }]);
-        assert!(page_content_contains(&page, "quick"));
-        assert!(!page_content_contains(&page, "lazy"));
+    fn page_content_contains_searches_every_node_kind() {
+        let paragraph = |text: &str| Node::Paragraph {
+            text: text.to_string(),
+        };
+        let cases: Vec<(Vec<Node>, &[&str], &[&str])> = vec![
+            (
+                vec![paragraph("the quick brown fox")],
+                &["quick"],
+                &["lazy"],
+            ),
+            (
+                vec![Node::Heading {
+                    level: 2,
+                    text: "Important Section".to_string(),
+                }],
+                &["important"],
+                &[],
+            ),
+            (
+                vec![Node::Code {
+                    language: Some("rust".to_string()),
+                    code: "fn main() {}".to_string(),
+                }],
+                &["fn main", "rust"],
+                &[],
+            ),
+            (
+                vec![Node::Link {
+                    text: "click here".to_string(),
+                    url: "https://example.com".to_string(),
+                }],
+                &["click", "example.com"],
+                &[],
+            ),
+            (
+                vec![Node::Quote {
+                    text: "to be or not to be".to_string(),
+                }],
+                &["not to be"],
+                &[],
+            ),
+            (
+                vec![Node::List {
+                    items: vec![
+                        vec![paragraph("first item")],
+                        vec![paragraph("second item")],
+                    ],
+                }],
+                &["second"],
+                &["third"],
+            ),
+            (
+                vec![Node::Rewrite {
+                    language: Some("pharo".to_string()),
+                    search: "oldMethod".to_string(),
+                    replace: "newMethod".to_string(),
+                    scope: Some("MyClass".to_string()),
+                    is_method_pattern: None,
+                }],
+                &["oldmethod", "newmethod", "pharo", "myclass"],
+                &[],
+            ),
+            (
+                vec![Node::Unknown {
+                    typ: "wardleyMap".to_string(),
+                    raw: json!({}),
+                }],
+                &["wardley"],
+                &[],
+            ),
+            (
+                vec![Node::Text {
+                    text: "plain text line".to_string(),
+                }],
+                &["plain text"],
+                &[],
+            ),
+            // the first of several nodes matches
+            (
+                vec![paragraph("match here"), paragraph("no match")],
+                &["match here"],
+                &[],
+            ),
+        ];
+        for (nodes, hits, misses) in cases {
+            let page = make_page(nodes);
+            for needle in hits {
+                assert!(page_content_contains(&page, needle), "{needle:?} {page:?}");
+            }
+            for needle in misses {
+                assert!(!page_content_contains(&page, needle), "{needle:?} {page:?}");
+            }
+        }
     }
 
     #[test]
@@ -870,106 +921,8 @@ mod tests {
     }
 
     #[test]
-    fn page_content_contains_matches_heading() {
-        let page = make_page(vec![Node::Heading {
-            level: 2,
-            text: "Important Section".to_string(),
-        }]);
-        assert!(page_content_contains(&page, "important"));
-    }
-
-    #[test]
-    fn page_content_contains_matches_code() {
-        let page = make_page(vec![Node::Code {
-            language: Some("rust".to_string()),
-            code: "fn main() {}".to_string(),
-        }]);
-        assert!(page_content_contains(&page, "fn main"));
-        assert!(page_content_contains(&page, "rust"));
-    }
-
-    #[test]
-    fn page_content_contains_matches_link() {
-        let page = make_page(vec![Node::Link {
-            text: "click here".to_string(),
-            url: "https://example.com".to_string(),
-        }]);
-        assert!(page_content_contains(&page, "click"));
-        assert!(page_content_contains(&page, "example.com"));
-    }
-
-    #[test]
-    fn page_content_contains_matches_quote() {
-        let page = make_page(vec![Node::Quote {
-            text: "to be or not to be".to_string(),
-        }]);
-        assert!(page_content_contains(&page, "not to be"));
-    }
-
-    #[test]
-    fn page_content_contains_matches_list_items() {
-        let page = make_page(vec![Node::List {
-            items: vec![
-                vec![Node::Paragraph {
-                    text: "first item".to_string(),
-                }],
-                vec![Node::Paragraph {
-                    text: "second item".to_string(),
-                }],
-            ],
-        }]);
-        assert!(page_content_contains(&page, "second"));
-        assert!(!page_content_contains(&page, "third"));
-    }
-
-    #[test]
-    fn page_content_contains_matches_rewrite() {
-        let page = make_page(vec![Node::Rewrite {
-            language: Some("pharo".to_string()),
-            search: "oldMethod".to_string(),
-            replace: "newMethod".to_string(),
-            scope: Some("MyClass".to_string()),
-            is_method_pattern: None,
-        }]);
-        assert!(page_content_contains(&page, "oldmethod"));
-        assert!(page_content_contains(&page, "newmethod"));
-        assert!(page_content_contains(&page, "pharo"));
-        assert!(page_content_contains(&page, "myclass"));
-    }
-
-    #[test]
-    fn page_content_contains_matches_unknown_type() {
-        let page = make_page(vec![Node::Unknown {
-            typ: "wardleyMap".to_string(),
-            raw: json!({}),
-        }]);
-        assert!(page_content_contains(&page, "wardley"));
-    }
-
-    #[test]
-    fn page_content_contains_early_termination() {
-        let page = make_page(vec![
-            Node::Paragraph {
-                text: "match here".to_string(),
-            },
-            Node::Paragraph {
-                text: "no match".to_string(),
-            },
-        ]);
-        assert!(page_content_contains(&page, "match here"));
-    }
-
-    #[test]
     fn page_content_contains_empty_content() {
         let page = make_page(vec![]);
         assert!(!page_content_contains(&page, "anything"));
-    }
-
-    #[test]
-    fn page_content_contains_matches_text_node() {
-        let page = make_page(vec![Node::Text {
-            text: "plain text line".to_string(),
-        }]);
-        assert!(page_content_contains(&page, "plain text"));
     }
 }

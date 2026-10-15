@@ -612,76 +612,71 @@ mod tests {
 
     #[test]
     fn parse_node_covers_known_and_unknown_types() {
-        let heading = json!({"__type":"textSnippet","string":"# Title"});
-        assert!(matches!(parse_node(&heading), Node::Heading { .. }));
-
-        let quote = json!({"__type":"blockQuoteSnippet","string":"quoted"});
-        assert!(matches!(parse_node(&quote), Node::Quote { .. }));
-
-        let code = json!({"__type":"pythonSnippet","code":"print(1)"});
-        assert!(matches!(parse_node(&code), Node::Code { .. }));
-
-        let json_code = json!({"__type":"jsonSnippet","code":"{\"key\": 1}"});
-        assert!(matches!(parse_node(&json_code), Node::Code { .. }));
-
-        let yaml_code = json!({"__type":"yamlSnippet","code":"key: value"});
-        assert!(matches!(parse_node(&yaml_code), Node::Code { .. }));
-
-        let link = json!({"__type":"pharoLinkSnippet","string":"link","url":"page:abc"});
-        assert!(matches!(parse_node(&link), Node::Link { .. }));
-
-        let picture = json!({"__type":"pictureSnippet","url":"attachments/x.png","caption":"img"});
-        assert!(matches!(parse_node(&picture), Node::Link { .. }));
-
-        let youtube = json!({"__type":"youtubeSnippet","youtubeUrl":"https://youtu.be/abc"});
-        assert!(matches!(parse_node(&youtube), Node::Link { .. }));
-
-        let element = json!({"__type":"elementSnippet","code":"GtInspector newOn: 42"});
-        assert!(matches!(parse_node(&element), Node::Code { .. }));
-
-        let rewrite =
-            json!({"__type":"pharoRewrite","search":"a","replace":"b","isMethodPattern":true});
-        assert!(matches!(parse_node(&rewrite), Node::Rewrite { .. }));
-
-        let word = json!({"__type":"wordSnippet","wordString":"refactoring"});
-        assert!(matches!(parse_node(&word), Node::Paragraph { .. }));
-
-        let list = json!({
-            "__type":"listSnippet",
-            "children":{"items":[{"__type":"textSnippet","string":"item"}]}
-        });
-        assert!(matches!(parse_node(&list), Node::List { .. }));
-
-        let unknown = json!({"__type":"mysterySnippet","x":1});
-        assert!(matches!(parse_node(&unknown), Node::Unknown { .. }));
-
-        let missing = json!({"x":1});
-        assert!(matches!(parse_node(&missing), Node::Unknown { .. }));
-    }
-
-    #[test]
-    fn infer_language_maps_common_snippet_types() {
-        assert_eq!(
-            infer_language(Some("pharoSnippet")),
-            Some("pharo".to_string())
-        );
-        assert_eq!(
-            infer_language(Some("javascriptSnippet")),
-            Some("javascript".to_string())
-        );
-        assert_eq!(
-            infer_language(Some("jsonSnippet")),
-            Some("json".to_string())
-        );
-        assert_eq!(
-            infer_language(Some("yamlSnippet")),
-            Some("yaml".to_string())
-        );
-        assert_eq!(
-            infer_language(Some("customSnippet")),
-            Some("custom".to_string())
-        );
-        assert_eq!(infer_language(None), None);
+        let cases = [
+            (
+                json!({"__type":"textSnippet","string":"# Title"}),
+                json!({"type":"heading","level":1,"text":"Title"}),
+            ),
+            (
+                json!({"__type":"blockQuoteSnippet","string":"quoted"}),
+                json!({"type":"quote","text":"quoted"}),
+            ),
+            (
+                json!({"__type":"pythonSnippet","code":"print(1)"}),
+                json!({"type":"code","language":"python","code":"print(1)"}),
+            ),
+            (
+                json!({"__type":"jsonSnippet","code":"{\"key\": 1}"}),
+                json!({"type":"code","language":"json","code":"{\"key\": 1}"}),
+            ),
+            (
+                json!({"__type":"yamlSnippet","code":"key: value"}),
+                json!({"type":"code","language":"yaml","code":"key: value"}),
+            ),
+            (
+                json!({"__type":"pharoLinkSnippet","string":"link","url":"page:abc"}),
+                json!({"type":"link","text":"link","url":"page:abc"}),
+            ),
+            (
+                json!({"__type":"pictureSnippet","url":"attachments/x.png","caption":"img"}),
+                json!({"type":"link","text":"img","url":"attachments/x.png"}),
+            ),
+            (
+                json!({"__type":"youtubeSnippet","youtubeUrl":"https://youtu.be/abc"}),
+                json!({"type":"link","text":"youtube","url":"https://youtu.be/abc"}),
+            ),
+            (
+                json!({"__type":"elementSnippet","code":"GtInspector newOn: 42"}),
+                json!({"type":"code","language":"element","code":"GtInspector newOn: 42"}),
+            ),
+            (
+                json!({"__type":"pharoRewrite","search":"a","replace":"b","isMethodPattern":true}),
+                json!({"type":"rewrite","language":"pharo","search":"a","replace":"b","scope":null,"is_method_pattern":true}),
+            ),
+            (
+                json!({"__type":"wordSnippet","wordString":"refactoring"}),
+                json!({"type":"paragraph","text":"refactoring"}),
+            ),
+            (
+                json!({
+                    "__type":"listSnippet",
+                    "children":{"items":[{"__type":"textSnippet","string":"item"}]}
+                }),
+                json!({"type":"list","items":[[{"type":"paragraph","text":"item"}]]}),
+            ),
+            (
+                json!({"__type":"mysterySnippet","x":1}),
+                json!({"type":"unknown","source_type":"mysterySnippet","raw":{"__type":"mysterySnippet","x":1}}),
+            ),
+            (
+                json!({"x":1}),
+                json!({"type":"unknown","source_type":"<missing-type>","raw":{"x":1}}),
+            ),
+        ];
+        for (input, expected) in cases {
+            let node = serde_json::to_value(parse_node(&input)).unwrap();
+            assert_eq!(node, expected, "{input}");
+        }
     }
 
     #[test]
@@ -701,6 +696,7 @@ mod tests {
         }
         // unknown `*Snippet` types still infer via the strip-suffix fallback.
         assert_eq!(infer_language(Some("fooSnippet")).as_deref(), Some("foo"));
+        assert_eq!(infer_language(None), None);
         assert_eq!(language_to_snippet_type("foo"), None);
         assert!(!is_code_snippet("textSnippet"));
     }
@@ -716,7 +712,13 @@ mod tests {
         });
         let mut out = Vec::new();
         parse_item_recursive(&root, &mut out);
-        assert_eq!(out.len(), 2);
+        assert_eq!(
+            serde_json::to_value(&out).unwrap(),
+            json!([
+                {"type":"paragraph","text":"parent"},
+                {"type":"paragraph","text":"child"}
+            ])
+        );
     }
 
     #[test]
@@ -738,18 +740,9 @@ mod tests {
             Node::List { items } => {
                 assert_eq!(items.len(), 1, "one top-level item expected");
                 let item = &items[0];
-                assert!(
-                    item.len() > 1,
-                    "nested child dropped: item holds {} node(s)",
-                    item.len()
-                );
+                assert_eq!(item.len(), 2, "item holds {item:?}");
                 assert!(matches!(&item[0], Node::Paragraph { text } if text == "parent bullet"));
-                assert!(
-                    item[1..]
-                        .iter()
-                        .any(|n| matches!(n, Node::Paragraph { text } if text == "nested bullet")),
-                    "nested bullet content missing from item"
-                );
+                assert!(matches!(&item[1], Node::Paragraph { text } if text == "nested bullet"));
             }
             other => panic!("expected list, got {other:?}"),
         }
@@ -853,7 +846,12 @@ mod tests {
         assert_eq!(meta.id, "id-123");
         assert_eq!(meta.title, "Title");
         assert_eq!(meta.tags, vec!["t1", "t2"]);
-        assert!(meta.updated_at.is_some());
+        assert_eq!(
+            meta.updated_at,
+            Some(chrono::DateTime::parse_from_rfc3339(
+                "2024-01-01T00:00:00+00:00"
+            )?)
+        );
         Ok(())
     }
 
@@ -908,8 +906,10 @@ mod tests {
         let node = parse_node(&item);
         match node {
             Node::Paragraph { text } => {
-                assert!(text.contains("refactoring"));
-                assert!(text.contains("attachments/x/explanation.json"));
+                assert_eq!(
+                    text,
+                    "refactoring\nexplanation: attachments/x/explanation.json"
+                );
             }
             other => panic!("expected paragraph, got {other:?}"),
         }
@@ -952,12 +952,9 @@ mod tests {
         let node = parse_node(&item);
         match node {
             Node::Paragraph { text } => {
-                // Final text should be at most MAX_WORD_SNIPPET_CHARS + 1 (ellipsis)
-                assert!(
-                    text.chars().count() <= MAX_WORD_SNIPPET_CHARS + 1,
-                    "text too long: {} chars",
-                    text.chars().count()
-                );
+                // cut to the budget, the ellipsis counted in it
+                assert_eq!(text.chars().count(), MAX_WORD_SNIPPET_CHARS);
+                assert!(text.ends_with('…'), "{text}");
             }
             other => panic!("expected paragraph, got {other:?}"),
         }

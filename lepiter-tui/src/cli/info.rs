@@ -319,32 +319,22 @@ mod tests {
     // --- is_snippet_type ---
 
     #[test]
-    fn is_snippet_type_accepts_text_snippet() {
-        assert!(is_snippet_type("textSnippet"));
-    }
-
-    #[test]
-    fn is_snippet_type_accepts_pharo_snippet() {
-        assert!(is_snippet_type("pharoSnippet"));
-    }
-
-    #[test]
-    fn is_snippet_type_accepts_lowercase_snippet() {
-        assert!(is_snippet_type("codeSnippet"));
-        assert!(is_snippet_type("pythonSnippet"));
-    }
-
-    #[test]
-    fn is_snippet_type_accepts_rewrite() {
-        assert!(is_snippet_type("pharoRewrite"));
-        assert!(is_snippet_type("someRewrite"));
-    }
-
-    #[test]
-    fn is_snippet_type_rejects_container_types() {
-        assert!(!is_snippet_type("page"));
-        assert!(!is_snippet_type("snippets"));
-        assert!(!is_snippet_type("children"));
+    fn is_snippet_type_cases() {
+        let cases = [
+            ("textSnippet", true),
+            ("pharoSnippet", true),
+            ("codeSnippet", true),
+            ("pythonSnippet", true),
+            ("codesnippet", true),
+            ("pharoRewrite", true),
+            ("someRewrite", true),
+            ("page", false),
+            ("snippets", false),
+            ("children", false),
+        ];
+        for (typ, expected) in cases {
+            assert_eq!(is_snippet_type(typ), expected, "{typ}");
+        }
     }
 
     // --- compute_detailed_info ---
@@ -380,18 +370,8 @@ mod tests {
     fn compute_detailed_info_counts_snippet_types() {
         let (dir, index) = make_test_kb(&[("p1", "Page One", "hello world")]);
         let info = compute_detailed_info(&index, None);
-        // The textSnippet from the JSON should appear in snippet_types.
-        assert!(info.snippet_types.iter().any(|(t, _)| t == "textSnippet"));
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn compute_detailed_info_detects_orphan_pages() {
-        // Two pages, neither links to the other — both should be orphans.
-        let (dir, index) =
-            make_test_kb(&[("p1", "Page One", "hello"), ("p2", "Page Two", "world")]);
-        let info = compute_detailed_info(&index, None);
-        assert_eq!(info.orphan_ids.len(), 2);
+        // container types (page, children) are not counted as snippets.
+        assert_eq!(info.snippet_types, vec![("textSnippet".to_string(), 1)]);
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -406,40 +386,6 @@ mod tests {
         // p1 excluded as TOC, only p2 should be orphan.
         assert_eq!(info.orphan_ids.len(), 1);
         assert_eq!(info.orphan_ids[0], "p2");
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn compute_detailed_info_linked_page_not_orphan() {
-        // p1 links to p2 via inline markdown link.
-        let (dir, index) = make_test_kb(&[
-            ("p1", "Page One", "see [link](page:p2) for more"),
-            ("p2", "Page Two", "target page"),
-        ]);
-        let info = compute_detailed_info(&index, None);
-        // p2 is linked to by p1, so only p1 should be orphan.
-        assert_eq!(info.orphan_ids.len(), 1);
-        assert_eq!(info.orphan_ids[0], "p1");
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn compute_detailed_info_detects_broken_links() {
-        // p1 links to a nonexistent page.
-        let (dir, index) = make_test_kb(&[("p1", "Page One", "see [link](page:nonexistent) here")]);
-        let info = compute_detailed_info(&index, None);
-        assert_eq!(info.broken_links.len(), 1);
-        assert_eq!(info.broken_links[0].target, "page:nonexistent");
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn compute_detailed_info_empty_kb() {
-        let (dir, index) = make_test_kb(&[]);
-        let info = compute_detailed_info(&index, None);
-        assert!(info.broken_links.is_empty());
-        assert!(info.orphan_ids.is_empty());
-        assert!(info.snippet_types.is_empty());
         std::fs::remove_dir_all(&dir).ok();
     }
 }

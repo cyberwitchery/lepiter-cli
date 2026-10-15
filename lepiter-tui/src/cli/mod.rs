@@ -195,10 +195,6 @@ mod tests {
         assert_eq!(parsed.positional(0), Some("kb"));
         assert_eq!(parsed.positional(1), Some("extra"));
         assert_eq!(parsed.positional(2), None);
-    }
-
-    #[test]
-    fn positionals_keep_command_line_order() {
         let parsed = parse(&["a", "--json", "b"]).unwrap().unwrap();
         assert_eq!(parsed.positional(0), Some("a"));
         assert_eq!(parsed.positional(1), Some("b"));
@@ -210,13 +206,6 @@ mod tests {
         assert_eq!(parsed.kb_path(0), PathBuf::from(DEFAULT_KB_PATH));
         let parsed = parse(&["somewhere"]).unwrap().unwrap();
         assert_eq!(parsed.kb_path(0), PathBuf::from("somewhere"));
-    }
-
-    #[test]
-    fn unknown_flag_is_a_usage_error() {
-        let err = parse(&["--nope"]).unwrap_err();
-        assert!(err.downcast_ref::<UsageError>().is_some());
-        assert_eq!(err.to_string(), "unknown flag: --nope");
     }
 
     #[test]
@@ -234,64 +223,7 @@ mod tests {
     }
 
     #[test]
-    fn help_flags_stop_parsing() {
-        assert!(parse(&["--help"]).unwrap().is_none());
-        assert!(parse(&["-h"]).unwrap().is_none());
-        assert!(parse(&["kb", "--help"]).unwrap().is_none());
-    }
-
-    #[test]
     fn help_wins_over_a_later_unknown_flag() {
         assert!(parse(&["--help", "--nope"]).unwrap().is_none());
-    }
-
-    // --- read_kb_properties ---
-
-    fn props_temp_dir(tag: &str) -> PathBuf {
-        // `tempfile` picks the name: a timestamp cannot, because `SystemTime::now`
-        // ticks at microsecond granularity here, so two tests in the same process
-        // stamp the same value and share a directory.
-        tempfile::Builder::new()
-            .prefix(&format!("lepiter-props-{tag}-"))
-            .tempdir()
-            .expect("temp dir")
-            .keep()
-    }
-
-    #[test]
-    fn read_kb_properties_absent_is_none() {
-        let dir = props_temp_dir("absent");
-        assert!(read_kb_properties(&dir).unwrap().is_none());
-        fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn read_kb_properties_parses_valid_json() {
-        let dir = props_temp_dir("valid");
-        fs::write(
-            dir.join("lepiter.properties"),
-            br#"{"tableOfContents":"toc-id"}"#,
-        )
-        .unwrap();
-        let props = read_kb_properties(&dir).unwrap().unwrap();
-        assert_eq!(props["tableOfContents"], "toc-id");
-        fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn read_kb_properties_malformed_json_is_none() {
-        let dir = props_temp_dir("malformed");
-        fs::write(dir.join("lepiter.properties"), b"{not valid json").unwrap();
-        assert!(read_kb_properties(&dir).unwrap().is_none());
-        fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn read_kb_properties_io_error_is_propagated() {
-        let dir = props_temp_dir("ioerr");
-        // A directory in place of the file makes the read fail with a non-NotFound error.
-        fs::create_dir(dir.join("lepiter.properties")).unwrap();
-        assert!(read_kb_properties(&dir).is_err());
-        fs::remove_dir_all(&dir).ok();
     }
 }

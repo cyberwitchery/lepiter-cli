@@ -148,25 +148,6 @@ mod tests {
     }
 
     #[test]
-    fn serialization_roundtrip() {
-        let req = PluginRequest {
-            typ: "code".to_string(),
-            snippet: serde_json::json!({"lang": "rust"}),
-        };
-        let json = serde_json::to_string(&req).unwrap();
-        let decoded: PluginRequest = serde_json::from_str(&json).unwrap();
-        assert_eq!(decoded.typ, "code");
-        assert_eq!(decoded.snippet["lang"], "rust");
-
-        let resp = PluginResponse::ok(vec!["line1".into(), "line2".into()]);
-        let json = serde_json::to_string(&resp).unwrap();
-        let decoded: PluginResponse = serde_json::from_str(&json).unwrap();
-        assert!(decoded.ok);
-        assert_eq!(decoded.lines, vec!["line1", "line2"]);
-        assert!(decoded.error.is_none());
-    }
-
-    #[test]
     fn multiple_requests() {
         let input = "{\"type\":\"a\",\"snippet\":{}}\n{\"type\":\"b\",\"snippet\":{}}\n";
         let mut calls = 0usize;

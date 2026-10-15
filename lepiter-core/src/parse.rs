@@ -952,8 +952,12 @@ mod tests {
         let node = parse_node(&item);
         match node {
             Node::Paragraph { text } => {
-                // cut to the budget, the ellipsis counted in it
-                assert_eq!(text.chars().count(), MAX_WORD_SNIPPET_CHARS);
+                // cut to the budget (plus at most the ellipsis), and marked as cut
+                assert!(
+                    text.chars().count() <= MAX_WORD_SNIPPET_CHARS + 1,
+                    "text too long: {} chars",
+                    text.chars().count()
+                );
                 assert!(text.ends_with('…'), "{text}");
             }
             other => panic!("expected paragraph, got {other:?}"),

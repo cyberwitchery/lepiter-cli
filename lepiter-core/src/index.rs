@@ -2147,7 +2147,7 @@ mod tests {
             };
             let result = index.analyze_links();
             let targets: Vec<&str> = result.edges.iter().map(|e| e.target.as_str()).collect();
-            assert_eq!(targets, ["p3"], "{uuid:?}");
+            assert_eq!(targets, ["p3"], "{db}");
             assert!(result.broken_links.is_empty());
             fs::remove_dir_all(&dir).unwrap();
         }

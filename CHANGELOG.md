@@ -2,6 +2,12 @@
 
 all notable changes to this project are documented in this file.
 
+## Unreleased
+
+### fixed
+- `G` in the page view scrolls so the page's last line sits at the bottom of
+  the view; it used to scroll past the end and leave the view blank.
+
 ## 0.12.1 - 2026-10-14
 
 ### changed

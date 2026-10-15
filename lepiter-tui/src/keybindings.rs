@@ -227,7 +227,7 @@ impl App {
                 | Mode::NewPageTitle => {}
             },
             KeyCode::Char('G') => match self.mode {
-                Mode::Page => self.page_scroll = usize::MAX / 2,
+                Mode::Page => self.page_scroll = self.max_page_scroll(),
                 Mode::List
                 | Mode::Search
                 | Mode::PageSearch
@@ -466,6 +466,7 @@ mod tests {
             parsed_cache: LruCache::new(16),
             rendered_cache: LruCache::new(16),
             page_scroll: 0,
+            page_view_height: 0,
             selected_link: 0,
             search: String::new(),
             search_needle: String::new(),
@@ -813,8 +814,20 @@ mod tests {
     #[test]
     fn page_big_g_scrolls_to_bottom() {
         let mut app = make_app_on_page();
+        let last = app
+            .current_rendered_page()
+            .unwrap()
+            .lines
+            .iter()
+            .map(|line| line.to_string())
+            .rfind(|line| !line.trim().is_empty())
+            .unwrap();
         app.handle_key(key(KeyCode::Char('G')));
-        assert!(app.page_scroll > 0);
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| crate::ui(frame, &mut app)).unwrap();
+        let screen = format!("{:?}", terminal.backend().buffer());
+        assert!(screen.contains(last.trim()), "{last:?} not on screen");
     }
 
     #[test]

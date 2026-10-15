@@ -84,10 +84,10 @@ fn page_annotations_in(text: &str, out: &mut Vec<PageAnnotation>) {
             i = link.range.end;
             continue;
         }
-        if bytes[i..].starts_with(b"{{")
-            && !crate::inline_link::is_escaped(bytes, i)
-            && let Some(len) = text[i + 2..].find("}}")
-        {
+        if bytes[i..].starts_with(b"{{") && !crate::inline_link::is_escaped(bytes, i) {
+            let Some(len) = text[i + 2..].find("}}") else {
+                break;
+            };
             if let Some(body) = text[i + 2..i + 2 + len].strip_prefix("gtPage:") {
                 out.push(parse_page_annotation(body));
             }

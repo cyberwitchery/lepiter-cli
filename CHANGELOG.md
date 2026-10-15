@@ -2,6 +2,16 @@
 
 all notable changes to this project are documented in this file.
 
+## unreleased
+
+### fixed
+- a `[[…]]` or `[label](target)` inside inline code is code, as in Glamorous
+  Toolkit: `check`, `links` and backlinks no longer count it, the reader shows
+  it as code, and `export` and `import` leave it as written
+- `check`, `links` and backlinks count a `{{gtPage:…}}` annotation as a link to
+  the page it names, unless its `db=` names another knowledge base, so a page
+  reached only that way is no longer an orphan
+
 ## 0.12.1 - 2026-10-14
 
 ### changed

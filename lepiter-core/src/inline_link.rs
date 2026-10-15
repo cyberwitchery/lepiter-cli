@@ -55,6 +55,9 @@ pub struct InlineLink<'a> {
 /// A `[`, `]`, `(`, `)`, `<` or `>` preceded by an odd number of backslashes is
 /// literal text and delimits nothing. Labels and targets are reported as raw
 /// slices, so an escape inside one is still spelled with its backslash.
+///
+/// No link starts inside an inline code span (see [`code_span_at`]); a backtick
+/// preceded by an odd number of backslashes opens none.
 pub fn scan_inline_links(text: &str) -> InlineLinks<'_> {
     InlineLinks {
         text,
@@ -102,6 +105,10 @@ impl<'a> Iterator for InlineLinks<'a> {
         let bytes = self.text.as_bytes();
         while self.i < bytes.len() {
             let i = self.i;
+            if let Some(next) = past_backtick_run(self.text, i) {
+                self.i = next;
+                continue;
+            }
             // [[wikilink]]
             if i + 1 < bytes.len()
                 && bytes[i] == b'['
@@ -142,6 +149,34 @@ impl<'a> Iterator for InlineLinks<'a> {
         }
         None
     }
+}
+
+/// the byte range of the inline code span whose backtick run starts at byte
+/// `start`, if it closes: a run of n backticks closes at the next run of exactly n.
+pub fn code_span_at(text: &str, start: usize) -> Option<Range<usize>> {
+    let bytes = text.as_bytes();
+    let run = backtick_run(bytes, start);
+    let mut i = start + run;
+    while run > 0 && i < bytes.len() {
+        let len = backtick_run(bytes, i);
+        if len == run {
+            return Some(start..i + len);
+        }
+        i += len.max(1);
+    }
+    None
+}
+
+/// where a walk resumes from an unescaped backtick run at byte `i`: past its
+/// code span, or past the run when it opens none.
+pub(crate) fn past_backtick_run(text: &str, i: usize) -> Option<usize> {
+    let bytes = text.as_bytes();
+    (bytes.get(i) == Some(&b'`') && !is_escaped(bytes, i))
+        .then(|| code_span_at(text, i).map_or(i + backtick_run(bytes, i), |span| span.end))
+}
+
+fn backtick_run(bytes: &[u8], start: usize) -> usize {
+    bytes[start..].iter().take_while(|&&b| b == b'`').count()
 }
 
 /// Rewrites the inline links in `text`, leaving everything else byte-for-byte
@@ -256,7 +291,7 @@ pub(crate) fn unescape(raw: &str) -> String {
 }
 
 /// Whether the byte at `at` is preceded by an odd number of backslashes.
-fn is_escaped(bytes: &[u8], at: usize) -> bool {
+pub(crate) fn is_escaped(bytes: &[u8], at: usize) -> bool {
     bytes[..at]
         .iter()
         .rev()
@@ -815,6 +850,14 @@ mod tests {
             "[a [b](c) d](e)",
         ] {
             assert!(whole_line_link(line).is_none(), "{line:?}");
+        }
+    }
+
+    #[test]
+    fn a_link_inside_inline_code_is_code() {
+        assert!(scan("`[[a]]` ``[b](c)``").is_empty());
+        for text in ["`[[a]]` [[a]]", r"\`[[a]]` x", "``[[a]]`"] {
+            assert_eq!(scan(text).len(), 1, "{text:?}");
         }
     }
 

@@ -11,7 +11,7 @@
 
 use std::ops::Range;
 
-use lepiter_core::{LinkKind, scan_inline_links};
+use lepiter_core::{LinkKind, code_span_at, scan_inline_links};
 
 /// a parsed fragment of inline markdown.
 #[derive(Debug, Clone, PartialEq)]
@@ -42,17 +42,16 @@ pub enum InlineElement {
 /// link syntax is whatever [`scan_inline_links`] accepts, and targets are
 /// reported as it reports them: never blank, and trimmed unless written as
 /// `<target>`. a link inside a `{{annotation}}` stays part of the annotation.
-/// emphasis markers inside a code span are literal text; links and annotations
+/// emphasis markers and links inside a code span are literal text; annotations
 /// are still recognised there.
 ///
 /// an image is a `[label](target)` link marked by a leading `!`, so every link
 /// rule applies to it; the `!` is literal text when an odd run of backslashes
 /// precedes it or when a `[[wiki-link]]` follows.
 ///
-/// a code span opens on a run of n backticks and closes at the next run of
-/// exactly n, so a span can contain a shorter run. an opening run with no such
-/// closer is literal text and opens nothing. content is taken verbatim: no
-/// leading or trailing space is stripped.
+/// code spans are delimited by [`code_span_at`], so a span can contain a
+/// shorter run, and an opening run with no closer is literal text. content is
+/// taken verbatim: no leading or trailing space is stripped.
 ///
 /// `***`, `**` and `*` open bold-and-italic, bold, and italic, each only when a
 /// run of the same length closes it later, outside any code span, link, or
@@ -123,7 +122,7 @@ pub fn parse_inline(text: &str) -> Vec<InlineElement> {
             } else {
                 emphasis.is_marker(run)
                     && can_open(&chars, i, run)
-                    && emphasis_closer(&chars, &byte_at, &link_ranges, i + run, run).is_some()
+                    && emphasis_closer(text, &chars, &byte_at, &link_ranges, i + run, run).is_some()
             };
             if delimits {
                 flush(&mut out, &mut buf, bold, italic, false);
@@ -146,11 +145,11 @@ pub fn parse_inline(text: &str) -> Vec<InlineElement> {
                 }
             } else {
                 let run = backtick_run(&chars, i);
-                match closing_run(&chars, &byte_at, &link_ranges, i + run, run) {
-                    Some(close_at) => {
+                match code_span_at(text, byte_at[i]) {
+                    Some(span) => {
                         flush(&mut out, &mut buf, bold, italic, false);
                         code = Some(CodeSpan {
-                            close_at,
+                            close_at: char_at(&byte_at, span.end - run),
                             close_len: run,
                         });
                     }
@@ -217,28 +216,9 @@ fn backtick_run(chars: &[char], start: usize) -> usize {
     chars[start..].iter().take_while(|c| **c == '`').count()
 }
 
-/// start of the first run of exactly `len` backticks at or after `from`, taking
-/// no run a scanner link covers.
-fn closing_run(
-    chars: &[char],
-    byte_at: &[usize],
-    link_ranges: &[Range<usize>],
-    from: usize,
-    len: usize,
-) -> Option<usize> {
-    let mut i = from;
-    while i < chars.len() {
-        if chars[i] != '`' {
-            i += 1;
-            continue;
-        }
-        let run = backtick_run(chars, i);
-        if run == len && !link_ranges.iter().any(|range| range.contains(&byte_at[i])) {
-            return Some(i);
-        }
-        i += run;
-    }
-    None
+/// index of the char starting at byte `offset`, or of the first one after it.
+fn char_at(byte_at: &[usize], offset: usize) -> usize {
+    byte_at.partition_point(|at| *at < offset)
 }
 
 /// end of the `{{...}}` annotation opening at `start`, if it closes before
@@ -340,6 +320,7 @@ fn can_close(chars: &[char], start: usize) -> bool {
 /// start of the run that closes an emphasis of `len` asterisks whose content
 /// begins at `from`, skipping what a code span, link, or annotation consumes.
 fn emphasis_closer(
+    text: &str,
     chars: &[char],
     byte_at: &[usize],
     link_ranges: &[Range<usize>],
@@ -357,10 +338,9 @@ fn emphasis_closer(
             continue;
         }
         if chars[i] == '`' {
-            let run = backtick_run(chars, i);
-            i = match closing_run(chars, byte_at, link_ranges, i + run, run) {
-                Some(close) => close + run,
-                None => i + run,
+            i = match code_span_at(text, byte_at[i]) {
+                Some(span) => char_at(byte_at, span.end),
+                None => i + backtick_run(chars, i),
             };
             continue;
         }
@@ -778,12 +758,14 @@ mod tests {
     }
 
     #[test]
-    fn a_code_span_yields_an_image_as_it_yields_a_link() {
+    fn a_code_span_yields_no_image_as_it_yields_no_link() {
         assert_eq!(
             parse_inline("`![a](b.png)`"),
-            vec![InlineElement::Image {
-                alt: "a".into(),
-                target: "b.png".into(),
+            vec![InlineElement::Styled {
+                text: "![a](b.png)".into(),
+                bold: false,
+                italic: false,
+                code: true,
             }]
         );
         assert_eq!(
@@ -1344,16 +1326,12 @@ mod tests {
     }
 
     #[test]
-    fn code_span_still_yields_links_and_annotations() {
+    fn code_span_yields_annotations_but_no_links() {
         assert_eq!(
             parse_inline("`[a](b) {{note}}`"),
             vec![
-                InlineElement::Link {
-                    label: "a".into(),
-                    target: "b".into(),
-                },
                 InlineElement::Styled {
-                    text: " ".into(),
+                    text: "[a](b) ".into(),
                     bold: false,
                     italic: false,
                     code: true,
@@ -1366,21 +1344,15 @@ mod tests {
     }
 
     #[test]
-    fn code_span_keeps_emphasis_literal_around_a_scanner_link() {
+    fn code_span_keeps_emphasis_and_links_literal() {
         assert_eq!(
             parse_inline("`a * [b [c] d](t)`"),
-            vec![
-                InlineElement::Styled {
-                    text: "a * ".into(),
-                    bold: false,
-                    italic: false,
-                    code: true,
-                },
-                InlineElement::Link {
-                    label: "b [c] d".into(),
-                    target: "t".into(),
-                },
-            ]
+            vec![InlineElement::Styled {
+                text: "a * [b [c] d](t)".into(),
+                bold: false,
+                italic: false,
+                code: true,
+            }]
         );
     }
 
@@ -1870,19 +1842,21 @@ mod tests {
     }
 
     #[test]
-    fn a_backtick_inside_a_link_is_not_a_delimiter() {
+    fn a_code_span_opening_before_a_link_hides_it() {
         assert_eq!(
             parse_inline("`[a`](b)"),
             vec![
                 InlineElement::Styled {
-                    text: "`".into(),
+                    text: "[a".into(),
+                    bold: false,
+                    italic: false,
+                    code: true,
+                },
+                InlineElement::Styled {
+                    text: "](b)".into(),
                     bold: false,
                     italic: false,
                     code: false,
-                },
-                InlineElement::Link {
-                    label: "a`".into(),
-                    target: "b".into(),
                 },
             ]
         );

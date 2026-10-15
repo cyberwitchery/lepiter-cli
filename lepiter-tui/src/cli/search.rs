@@ -308,6 +308,17 @@ mod tests {
     }
 
     #[test]
+    fn search_json_no_results() {
+        let (dir, index) = make_test_kb(&[("p1", "Alpha", &[], "body")]);
+        let hits = index.search_hits("zzzzz", false);
+        let snippets = snips(&index, &hits, "zzzzz");
+        let out = output_string(|buf| write_search_json(buf, &index, &hits, &snippets));
+        let parsed: Vec<serde_json::Value> = serde_json::from_str(&out).unwrap();
+        assert!(parsed.is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn search_json_multiple_match_kinds() {
         let (dir, index) = make_test_kb(&[
             ("p1", "Rust Guide", &[], "body"),
@@ -331,6 +342,29 @@ mod tests {
     }
 
     // --- TSV output ---
+
+    #[test]
+    fn search_tsv_title_match() {
+        let (dir, index) = make_test_kb(&[
+            ("p1", "Rust Guide", &[], "body"),
+            ("p2", "Go Notes", &[], "body"),
+        ]);
+        let hits = index.search_hits("rust", false);
+        let snippets = snips(&index, &hits, "rust");
+        let out = output_string(|buf| write_search_tsv(buf, &index, &hits, &snippets));
+        // Use `lines()` rather than `trim()` here: an empty snippet leaves a
+        // trailing tab, and `trim()` would strip it, hiding the 4th column.
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 1);
+        let fields: Vec<&str> = lines[0].split('\t').collect();
+        assert_eq!(fields.len(), 4, "expected title\\tid\\tkind\\tsnippet");
+        assert_eq!(fields[0], "Rust Guide");
+        assert_eq!(fields[1], "p1");
+        assert_eq!(fields[2], "title");
+        // Title hit — empty snippet column.
+        assert_eq!(fields[3], "");
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     #[test]
     fn search_tsv_content_match_has_snippet_column() {

@@ -458,6 +458,38 @@ mod search {
     }
 
     #[test]
+    fn full_text_json_includes_matching_snippet() {
+        // "paragraph" only appears in rendered content, so the content hit
+        // should carry a snippet quoting the surrounding text.
+        let out = run(&[
+            "search",
+            "--full-text",
+            "--json",
+            "paragraph",
+            &fixtures_path_str(),
+        ]);
+        assert!(out.status.success());
+        let json: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+        let hit = &json.as_array().unwrap()[0];
+        assert_eq!(hit["kind"], "content");
+        let snippet = hit["snippet"].as_str().expect("snippet should be a string");
+        assert!(
+            snippet.contains("paragraph"),
+            "snippet should quote the match, got: {snippet}"
+        );
+    }
+
+    #[test]
+    fn title_match_json_has_empty_snippet() {
+        let out = run(&["search", "--json", "alpha", &fixtures_path_str()]);
+        assert!(out.status.success());
+        let json: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+        let hit = &json.as_array().unwrap()[0];
+        assert_eq!(hit["kind"], "title");
+        assert_eq!(hit["snippet"], "", "title hit should have an empty snippet");
+    }
+
+    #[test]
     fn full_text_snippet_holds_block_looking_prose_verbatim() {
         let root = write_text_snippet_kb(
             "search-verbatim",
@@ -483,6 +515,35 @@ mod search {
         );
 
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn full_text_plain_shows_indented_snippet() {
+        let out = run(&["search", "--full-text", "paragraph", &fixtures_path_str()]);
+        assert!(out.status.success());
+        let text = stdout(&out);
+        // The snippet appears on its own line, indented, beneath the match row.
+        assert!(
+            text.lines()
+                .any(|l| l.starts_with("    ") && l.contains("paragraph")),
+            "expected an indented snippet line, got: {text}"
+        );
+    }
+
+    #[test]
+    fn json_results_include_tags() {
+        let out = run(&["search", "--json", "alpha", &fixtures_path_str()]);
+        let json: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+        let hit = &json.as_array().unwrap()[0];
+        assert!(hit["tags"].is_array());
+        let tags: Vec<&str> = hit["tags"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t.as_str().unwrap())
+            .collect();
+        assert!(tags.contains(&"fixture"));
+        assert!(tags.contains(&"alpha"));
     }
 
     #[test]
@@ -1090,6 +1151,18 @@ mod check {
     }
 
     // Tests using the broken-links fixture KB.
+
+    #[test]
+    fn json_output_has_expected_fields() {
+        let out = run(&["check", "--json", &fixtures_path_str()]);
+        let text = stdout(&out);
+        let json: serde_json::Value =
+            serde_json::from_str(&text).expect("check --json should produce valid JSON");
+        assert!(json["broken_links"].is_array());
+        assert!(json["orphan_pages"].is_array());
+        assert!(json["load_errors"].is_array());
+        assert!(json["index_issues"].is_array());
+    }
 
     fn broken_links_dir() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))

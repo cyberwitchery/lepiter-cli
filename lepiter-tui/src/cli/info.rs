@@ -376,6 +376,16 @@ mod tests {
     }
 
     #[test]
+    fn compute_detailed_info_detects_orphan_pages() {
+        // Two pages, neither links to the other — both should be orphans.
+        let (dir, index) =
+            make_test_kb(&[("p1", "Page One", "hello"), ("p2", "Page Two", "world")]);
+        let info = compute_detailed_info(&index, None);
+        assert_eq!(info.orphan_ids.len(), 2);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn compute_detailed_info_excludes_toc_from_orphans() {
         // Two pages, neither links to the other. "p1" is the TOC page.
         let (dir, index) = make_test_kb(&[

@@ -688,6 +688,38 @@ mod tests {
     }
 
     #[test]
+    fn check_text_full_kb_with_all_issue_types() {
+        let (dir, index) = make_test_kb(&[
+            ("p1", "Alpha", "see [link](page:gone)"),
+            ("p2", "Alpha", "duplicate title"),
+            ("p3", "Beta", "see [img](attachments/missing.png)"),
+        ]);
+        let analysis = index.analyze_all();
+        let orphan_ids = index.orphan_ids(&analysis.linked_pages, None);
+        let dupes = index.find_duplicate_titles();
+        let report = CheckReport {
+            broken_links: &analysis.broken_links,
+            orphan_ids: &orphan_ids,
+            load_errors: &analysis.load_errors,
+            index_issues: &index.index_issues,
+            duplicate_titles: &dupes,
+            missing_attachments: &analysis.missing_attachments,
+            ..empty_report(&index)
+        };
+        let out = output_string(|buf| {
+            write_check_text(buf, &report);
+        });
+        assert!(out.starts_with("Knowledge Base Check\n"));
+        assert!(out.contains("broken_links: 1"));
+        assert!(out.contains("duplicate_titles: 1"));
+        assert!(out.contains("missing_attachments: 1"));
+        // All three pages are orphans (none links to another with page: prefix
+        // that resolves, since "page:gone" is broken).
+        assert!(out.contains("orphan_pages: 3"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn check_json_lists_every_page_referencing_a_missing_attachment() {
         let (dir, index) = make_test_kb(&[
             ("p1", "Alpha", "see [img](attachments/gone.png)"),

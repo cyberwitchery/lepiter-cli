@@ -108,6 +108,15 @@ mod tests {
     // --- JSON output ---
 
     #[test]
+    fn list_json_contains_all_pages() {
+        let (dir, index) = make_test_kb(&[("p1", "Alpha", "body"), ("p2", "Beta", "body")]);
+        let out = output_string(|buf| write_list_json(buf, &index));
+        let parsed: Vec<serde_json::Value> = serde_json::from_str(&out).unwrap();
+        assert_eq!(parsed.len(), 2);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn list_json_sorted_by_title() {
         let (dir, index) = make_test_kb(&[
             ("p1", "Zebra", "body"),
@@ -121,6 +130,28 @@ mod tests {
             .map(|v| v["title"].as_str().unwrap())
             .collect();
         assert_eq!(titles, vec!["Alpha", "Middle", "Zebra"]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn list_json_includes_id_and_title_fields() {
+        let (dir, index) = make_test_kb(&[("p1", "Alpha", "body")]);
+        let out = output_string(|buf| write_list_json(buf, &index));
+        let parsed: Vec<serde_json::Value> = serde_json::from_str(&out).unwrap();
+        assert_eq!(parsed[0]["id"], "p1");
+        assert_eq!(parsed[0]["title"], "Alpha");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn list_json_excludes_internal_fields() {
+        let (dir, index) = make_test_kb(&[("p1", "Alpha", "body")]);
+        let out = output_string(|buf| write_list_json(buf, &index));
+        let parsed: Vec<serde_json::Value> = serde_json::from_str(&out).unwrap();
+        // Lowercase internal fields must not appear.
+        assert!(parsed[0].get("id_lower").is_none());
+        assert!(parsed[0].get("title_lower").is_none());
+        assert!(parsed[0].get("tags_lower").is_none());
         std::fs::remove_dir_all(&dir).ok();
     }
 

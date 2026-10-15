@@ -227,4 +227,13 @@ mod tests {
             assert_eq!(collect_page_links(&nodes), expected, "{nodes:?}");
         }
     }
+
+    #[test]
+    fn collect_page_links_inline_image_in_paragraph() {
+        let nodes = vec![Node::Paragraph {
+            text: "see ![alt](attachments/x.png) here".into(),
+        }];
+        let links = collect_page_links(&nodes);
+        assert_eq!(links, vec![("alt".into(), "attachments/x.png".into())]);
+    }
 }

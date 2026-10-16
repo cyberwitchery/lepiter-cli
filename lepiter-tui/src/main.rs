@@ -96,9 +96,10 @@ struct App {
     parsed_cache: LruCache<String, Arc<Page>>,
     rendered_cache: LruCache<String, RenderedPage>,
     page_scroll: usize,
-    /// text rows the page view had at the last draw, so scrolling to the
-    /// bottom can stop with the last line on screen.
-    page_view_height: usize,
+    /// the largest scroll offset the page view allowed at its last draw: the
+    /// wrapped height of the page minus the rows on screen. `None` before the
+    /// first draw.
+    page_max_scroll: Option<usize>,
     selected_link: usize,
     search: String,
     search_needle: String,
@@ -135,7 +136,7 @@ impl App {
             parsed_cache: LruCache::new(max_parsed_cache),
             rendered_cache: LruCache::new(max_rendered_cache),
             page_scroll: 0,
-            page_view_height: 0,
+            page_max_scroll: None,
             selected_link: 0,
             search: String::new(),
             search_needle: String::new(),
@@ -455,26 +456,17 @@ impl App {
     }
 
     fn scroll_page(&mut self, delta: isize) {
-        // Clamp page_scroll to content length before applying delta, so a
-        // scroll past the end can be brought back with small deltas.
-        if let Some(max) = self
-            .opened
-            .as_ref()
-            .and_then(|id| self.rendered_cache.peek(id))
-            .map(|p| p.lines.len())
-        {
+        // Clamp page_scroll to the bottom before applying delta, so a scroll
+        // past the end can be brought back with small deltas. The last draw
+        // knows the wrapped height; before it, fall back to the source lines.
+        let max = self
+            .page_max_scroll
+            .or_else(|| self.current_rendered_page().map(|page| page.lines.len()));
+        if let Some(max) = max {
             self.page_scroll = self.page_scroll.min(max);
         }
         let next = self.page_scroll as isize + delta;
         self.page_scroll = next.max(0) as usize;
-    }
-
-    /// the scroll offset that puts the page's last line at the bottom of the
-    /// page view.
-    fn max_page_scroll(&self) -> usize {
-        self.current_rendered_page().map_or(0, |page| {
-            page.lines.len().saturating_sub(self.page_view_height)
-        })
     }
 
     fn current_rendered_page(&self) -> Option<&RenderedPage> {
@@ -944,10 +936,6 @@ fn render_page_view(frame: &mut Frame, app: &mut App) {
         .direction(Direction::Vertical)
         .constraints(constraints)
         .split(frame.area());
-    // the page block draws a border on every side.
-    app.page_view_height = usize::from(chunks[1].height.saturating_sub(2));
-    app.page_scroll = app.page_scroll.min(app.max_page_scroll());
-
     let header = if let Some(page) = app.current_rendered_page() {
         format!("{} [{}]", page.title, page.id)
     } else {
@@ -983,8 +971,15 @@ fn render_page_view(frame: &mut Frame, app: &mut App) {
                 .title("Page")
                 .border_style(Style::default().fg(Color::Blue)),
         )
-        .wrap(Wrap { trim: false })
-        .scroll((app.page_scroll.min(u16::MAX as usize) as u16, 0));
+        .wrap(Wrap { trim: false });
+    // scrolling counts wrapped screen rows, so the bottom is the wrapped height
+    // (block borders included) less the rows the view has.
+    let max_scroll = paragraph
+        .line_count(chunks[1].width)
+        .saturating_sub(usize::from(chunks[1].height));
+    app.page_max_scroll = Some(max_scroll);
+    app.page_scroll = app.page_scroll.min(max_scroll);
+    let paragraph = paragraph.scroll((app.page_scroll.min(u16::MAX as usize) as u16, 0));
     frame.render_widget(paragraph, chunks[1]);
 
     let mut footer = if !app.page_search_needle.is_empty() {

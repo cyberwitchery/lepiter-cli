@@ -983,6 +983,10 @@ mod tests {
             index.resolve_page_id_by_title("Alpha"),
             TitleResolution::Unique("id-1".to_string())
         );
+        assert_eq!(
+            index.resolve_page_id_by_title("ALPHA"),
+            TitleResolution::Unique("id-1".to_string())
+        );
         assert!(matches!(
             index.resolve_page_id_by_title("alp"),
             TitleResolution::Ambiguous(_)
@@ -1053,40 +1057,35 @@ mod tests {
             database_id: None,
         };
 
-        assert!(matches!(
-            index.classify_link_target("8a505fa0-2222-3333-4444-555555555555"),
-            LinkTargetKind::InternalPage(_)
-        ));
-        assert!(matches!(
-            index.classify_link_target("title:alpha"),
-            LinkTargetKind::InternalPage(_)
-        ));
-        assert!(matches!(
-            index.classify_link_target("go to 8a505fa0-2222-3333-4444-555555555555 now"),
-            LinkTargetKind::InternalPage(_)
-        ));
-        assert!(matches!(
-            index.classify_link_target("attachments/image.png"),
-            LinkTargetKind::AttachmentPath(_)
-        ));
-        assert!(matches!(
-            index.classify_link_target("https://example.com"),
-            LinkTargetKind::ExternalUrl(_)
-        ));
-        assert!(matches!(
-            index.classify_link_target("not a thing"),
-            LinkTargetKind::Unknown(_)
-        ));
-        // page: prefix falls back to title resolution
-        assert!(matches!(
-            index.classify_link_target("page:Alpha"),
-            LinkTargetKind::InternalPage(_)
-        ));
-        // page: prefix with unknown title stays Unknown
-        assert!(matches!(
-            index.classify_link_target("page:Nonexistent"),
-            LinkTargetKind::Unknown(_)
-        ));
+        let id = "8a505fa0-2222-3333-4444-555555555555";
+        let internal = || LinkTargetKind::InternalPage(id.to_string());
+        let cases: &[(&str, LinkTargetKind)] = &[
+            (id, internal()),
+            ("title:alpha", internal()),
+            ("go to 8a505fa0-2222-3333-4444-555555555555 now", internal()),
+            (
+                "attachments/image.png",
+                LinkTargetKind::AttachmentPath(PathBuf::from("/kb/attachments/image.png")),
+            ),
+            (
+                "https://example.com",
+                LinkTargetKind::ExternalUrl("https://example.com".to_string()),
+            ),
+            (
+                "not a thing",
+                LinkTargetKind::Unknown("not a thing".to_string()),
+            ),
+            // page: prefix falls back to title resolution
+            ("page:Alpha", internal()),
+            // page: prefix with unknown title stays Unknown
+            (
+                "page:Nonexistent",
+                LinkTargetKind::Unknown("page:Nonexistent".to_string()),
+            ),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(&index.classify_link_target(input), expected, "{input:?}");
+        }
     }
 
     #[test]
@@ -1094,32 +1093,6 @@ mod tests {
         let (dir, index) = make_kb_on_disk(&[("p1", "Alpha", &[], "hello world")]);
         assert!(index.search_hits("", false).is_empty());
         assert!(index.search_hits("  ", true).is_empty());
-        fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn search_hits_matches_title_case_insensitively() {
-        let (dir, index) = make_kb_on_disk(&[
-            ("p1", "Alpha Guide", &[], "nothing special"),
-            ("p2", "Beta Notes", &[], "nothing special"),
-        ]);
-        let hits = index.search_hits("alpha", false);
-        assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].id, "p1");
-        assert_eq!(hits[0].kind, SearchMatchKind::Title);
-        fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn search_hits_matches_tags() {
-        let (dir, index) = make_kb_on_disk(&[
-            ("p1", "Page One", &["rust", "cli"], "body"),
-            ("p2", "Page Two", &["pharo"], "body"),
-        ]);
-        let hits = index.search_hits("rust", false);
-        assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].id, "p1");
-        assert_eq!(hits[0].kind, SearchMatchKind::Tag);
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -1141,15 +1114,6 @@ mod tests {
     }
 
     #[test]
-    fn search_hits_title_match_takes_priority_over_content() {
-        let (dir, index) = make_kb_on_disk(&[("p1", "Fox Guide", &[], "the fox jumps")]);
-        let hits = index.search_hits("fox", true);
-        assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].kind, SearchMatchKind::Title);
-        fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
     fn search_hits_same_score_sorted_alphabetically() {
         let (dir, index) = make_kb_on_disk(&[
             ("p1", "Zebra", &["common"], "body"),
@@ -1160,53 +1124,6 @@ mod tests {
         let ids: Vec<&str> = hits.iter().map(|h| h.id.as_str()).collect();
         // all tag matches → same score → alphabetical by title
         assert_eq!(ids, vec!["p2", "p3", "p1"]);
-        fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn search_hits_title_ranked_above_tag() {
-        let (dir, index) = make_kb_on_disk(&[
-            ("p1", "Page One", &["rust"], "body"),
-            ("p2", "Rust Guide", &[], "body"),
-        ]);
-        let hits = index.search_hits("rust", false);
-        assert_eq!(hits.len(), 2);
-        // title match first
-        assert_eq!(hits[0].id, "p2");
-        assert_eq!(hits[0].kind, SearchMatchKind::Title);
-        // tag match second
-        assert_eq!(hits[1].id, "p1");
-        assert_eq!(hits[1].kind, SearchMatchKind::Tag);
-        fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn search_hits_title_ranked_above_content() {
-        let (dir, index) = make_kb_on_disk(&[
-            ("p1", "Alpha", &[], "the word rust appears here"),
-            ("p2", "Rust Guide", &[], "no match in body"),
-        ]);
-        let hits = index.search_hits("rust", true);
-        assert_eq!(hits.len(), 2);
-        assert_eq!(hits[0].id, "p2");
-        assert_eq!(hits[0].kind, SearchMatchKind::Title);
-        assert_eq!(hits[1].id, "p1");
-        assert_eq!(hits[1].kind, SearchMatchKind::Content);
-        fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn search_hits_tag_ranked_above_content() {
-        let (dir, index) = make_kb_on_disk(&[
-            ("p1", "Alpha", &[], "the word rust appears here"),
-            ("p2", "Beta", &["rust"], "no match in body"),
-        ]);
-        let hits = index.search_hits("rust", true);
-        assert_eq!(hits.len(), 2);
-        assert_eq!(hits[0].id, "p2");
-        assert_eq!(hits[0].kind, SearchMatchKind::Tag);
-        assert_eq!(hits[1].id, "p1");
-        assert_eq!(hits[1].kind, SearchMatchKind::Content);
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -1292,16 +1209,6 @@ mod tests {
     }
 
     #[test]
-    fn classify_link_target_empty_is_unknown() {
-        let (dir, index) = make_kb_on_disk(&[("p1", "Alpha", &[], "body")]);
-        assert!(matches!(
-            index.classify_link_target(""),
-            LinkTargetKind::Unknown(_)
-        ));
-        fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
     fn classify_link_target_title_fallback() {
         let (dir, index) = make_kb_on_disk(&[("p1", "My Special Page", &[], "body")]);
         assert!(matches!(
@@ -1312,58 +1219,40 @@ mod tests {
     }
 
     #[test]
-    fn classify_link_target_mixed_case_urls() {
+    fn classify_link_target_blank_padded_and_scheme_inputs() {
         let (dir, index) = make_kb_on_disk(&[("p1", "Alpha", &[], "body")]);
-        assert!(matches!(
-            index.classify_link_target("HTTPS://EXAMPLE.COM"),
-            LinkTargetKind::ExternalUrl(_)
-        ));
-        assert!(matches!(
-            index.classify_link_target("Http://Example.Com"),
-            LinkTargetKind::ExternalUrl(_)
-        ));
-        assert!(matches!(
-            index.classify_link_target("MAILTO:user@host.com"),
-            LinkTargetKind::ExternalUrl(_)
-        ));
-        fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn classify_link_target_whitespace_only_is_unknown() {
-        let (dir, index) = make_kb_on_disk(&[("p1", "Alpha", &[], "body")]);
-        assert!(matches!(
-            index.classify_link_target("   "),
-            LinkTargetKind::Unknown(_)
-        ));
-        assert!(matches!(
-            index.classify_link_target("\t\n"),
-            LinkTargetKind::Unknown(_)
-        ));
-        fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn classify_link_target_trims_whitespace_around_url() {
-        let (dir, index) = make_kb_on_disk(&[("p1", "Alpha", &[], "body")]);
-        assert!(matches!(
-            index.classify_link_target("  https://example.com  "),
-            LinkTargetKind::ExternalUrl(_)
-        ));
-        fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn classify_link_target_unusual_schemes() {
-        let (dir, index) = make_kb_on_disk(&[("p1", "Alpha", &[], "body")]);
-        assert!(matches!(
-            index.classify_link_target("ftp://files.example.com"),
-            LinkTargetKind::ExternalUrl(_)
-        ));
-        assert!(matches!(
-            index.classify_link_target("ssh://git.example.com"),
-            LinkTargetKind::ExternalUrl(_)
-        ));
+        let cases: &[(&str, LinkTargetKind)] = &[
+            ("", LinkTargetKind::Unknown(String::new())),
+            ("   ", LinkTargetKind::Unknown("   ".to_string())),
+            ("\t\n", LinkTargetKind::Unknown("\t\n".to_string())),
+            (
+                "  https://example.com  ",
+                LinkTargetKind::ExternalUrl("https://example.com".to_string()),
+            ),
+            (
+                "HTTPS://EXAMPLE.COM",
+                LinkTargetKind::ExternalUrl("HTTPS://EXAMPLE.COM".to_string()),
+            ),
+            (
+                "Http://Example.Com",
+                LinkTargetKind::ExternalUrl("Http://Example.Com".to_string()),
+            ),
+            (
+                "MAILTO:user@host.com",
+                LinkTargetKind::ExternalUrl("MAILTO:user@host.com".to_string()),
+            ),
+            (
+                "ftp://files.example.com",
+                LinkTargetKind::ExternalUrl("ftp://files.example.com".to_string()),
+            ),
+            (
+                "ssh://git.example.com",
+                LinkTargetKind::ExternalUrl("ssh://git.example.com".to_string()),
+            ),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(&index.classify_link_target(input), expected, "{input:?}");
+        }
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -1382,16 +1271,6 @@ mod tests {
     }
 
     #[test]
-    fn resolve_page_id_by_title_case_insensitive_exact() {
-        let (dir, index) = make_kb_on_disk(&[("p1", "Alpha", &[], "body")]);
-        assert_eq!(
-            index.resolve_page_id_by_title("ALPHA"),
-            TitleResolution::Unique("p1".to_string())
-        );
-        fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
     fn filter_page_ids_no_match_returns_empty() {
         let (dir, index) = make_kb_on_disk(&[("p1", "Alpha", &[], "body")]);
         assert!(index.filter_page_ids("zzzzz").is_empty());
@@ -1399,28 +1278,20 @@ mod tests {
     }
 
     #[test]
-    fn open_empty_directory_returns_empty_index() -> anyhow::Result<()> {
-        let dir = temp_dir_path("empty-kb");
-        fs::create_dir_all(&dir)?;
-        let index = KnowledgeBase::open(&dir)?;
-        fs::remove_dir_all(&dir)?;
+    fn open_without_lepiter_files_returns_empty_index() -> anyhow::Result<()> {
+        let cases: &[&[(&str, &[u8])]] = &[&[], &[("readme.txt", b"hello"), ("data.json", b"{}")]];
+        for files in cases {
+            let dir = temp_dir_path("non-lepiter");
+            fs::create_dir_all(&dir)?;
+            for (name, body) in *files {
+                fs::write(dir.join(name), body)?;
+            }
+            let index = KnowledgeBase::open(&dir)?;
+            fs::remove_dir_all(&dir)?;
 
-        assert!(index.pages.is_empty());
-        assert!(index.index_issues.is_empty());
-        Ok(())
-    }
-
-    #[test]
-    fn open_skips_non_lepiter_files() -> anyhow::Result<()> {
-        let dir = temp_dir_path("non-lepiter");
-        fs::create_dir_all(&dir)?;
-        fs::write(dir.join("readme.txt"), b"hello")?;
-        fs::write(dir.join("data.json"), b"{}")?;
-        let index = KnowledgeBase::open(&dir)?;
-        fs::remove_dir_all(&dir)?;
-
-        assert!(index.pages.is_empty());
-        assert!(index.index_issues.is_empty());
+            assert!(index.pages.is_empty(), "{files:?}");
+            assert!(index.index_issues.is_empty(), "{files:?}");
+        }
         Ok(())
     }
 
@@ -1448,6 +1319,14 @@ mod tests {
 
         assert!(index.pages.is_empty());
         assert_eq!(index.index_issues.len(), 1);
+        assert!(index.index_issues[0].path.ends_with("array.lepiter"));
+        assert!(
+            index.index_issues[0]
+                .message
+                .contains("failed to decode page metadata"),
+            "{}",
+            index.index_issues[0].message
+        );
         Ok(())
     }
 
@@ -1585,64 +1464,6 @@ mod tests {
         ]);
         index.build_backlinks();
         assert_eq!(index.backlinks_for("p3"), &["p2", "p1"]);
-        fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn update_backlinks_for_adds_new_links() {
-        let (dir, mut index) = make_kb_on_disk(&[
-            ("p1", "Alpha", &[], "no links"),
-            ("p2", "Beta", &[], "nothing"),
-        ]);
-        index.build_backlinks();
-        assert!(index.backlinks_for("p2").is_empty());
-
-        // Simulate editing p1 to add a link to Beta.
-        let content = json!({
-            "uid": {"uuid": "p1"},
-            "pageType": {"title": "Alpha"},
-            "children": {"items": [
-                {"__type": "textSnippet", "string": "now links to [[Beta]]"}
-            ]}
-        });
-        fs::write(
-            dir.join("p1.lepiter"),
-            serde_json::to_vec(&content).unwrap(),
-        )
-        .unwrap();
-
-        index.update_backlinks_for("p1");
-        assert_eq!(index.backlinks_for("p2"), &["p1"]);
-
-        fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn update_backlinks_for_removes_stale_links() {
-        let (dir, mut index) = make_kb_on_disk(&[
-            ("p1", "Alpha", &[], "see [[Beta]]"),
-            ("p2", "Beta", &[], "nothing"),
-        ]);
-        index.build_backlinks();
-        assert_eq!(index.backlinks_for("p2"), &["p1"]);
-
-        // Edit p1 to remove the link.
-        let content = json!({
-            "uid": {"uuid": "p1"},
-            "pageType": {"title": "Alpha"},
-            "children": {"items": [
-                {"__type": "textSnippet", "string": "no links anymore"}
-            ]}
-        });
-        fs::write(
-            dir.join("p1.lepiter"),
-            serde_json::to_vec(&content).unwrap(),
-        )
-        .unwrap();
-
-        index.update_backlinks_for("p1");
-        assert!(index.backlinks_for("p2").is_empty());
-
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -1798,20 +1619,11 @@ mod tests {
         let mut index = KnowledgeBase::open(&dir).unwrap();
         assert!(index.sorted_ids.is_empty());
 
-        let meta = PageMeta {
-            id: "new-page".to_string(),
-            id_lower: "new-page".to_string(),
-            title: "My Page".to_string(),
-            title_lower: "my page".to_string(),
-            path: dir.join("new-page.lepiter"),
-            updated_at: None,
-            tags: Vec::new(),
-            tags_lower: Vec::new(),
-        };
-        index.register_page(meta);
-        assert_eq!(index.sorted_ids.len(), 1);
-        assert_eq!(index.sorted_ids[0], "new-page");
-        assert!(index.pages.contains_key("new-page"));
+        index.register_page(meta_with_title("alpha", "Alpha"));
+        index.register_page(meta_with_title("gamma", "Gamma"));
+        index.register_page(meta_with_title("beta", "Beta"));
+        assert_eq!(index.sorted_ids, vec!["alpha", "beta", "gamma"]);
+        assert!(index.pages.contains_key("beta"));
 
         fs::remove_dir_all(&dir).unwrap();
     }
@@ -1942,45 +1754,6 @@ mod tests {
     }
 
     #[test]
-    fn build_link_graph_collects_edges() {
-        let (dir, index) = make_kb_on_disk(&[
-            ("p1", "Alpha", &[], "see [[Beta]]"),
-            ("p2", "Beta", &[], "links to [a](page:p1) and [[Gamma]]"),
-            ("p3", "Gamma", &[], "no links here"),
-        ]);
-        let graph = index.build_link_graph();
-        assert_eq!(graph.edges.len(), 3);
-        let pairs: Vec<(&str, &str)> = graph
-            .edges
-            .iter()
-            .map(|e| (e.source.as_str(), e.target.as_str()))
-            .collect();
-        assert!(pairs.contains(&("p1", "p2")));
-        assert!(pairs.contains(&("p2", "p1")));
-        assert!(pairs.contains(&("p2", "p3")));
-        fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn build_link_graph_excludes_self_links() {
-        let (dir, index) = make_kb_on_disk(&[("p1", "Alpha", &[], "see [[Alpha]]")]);
-        let graph = index.build_link_graph();
-        assert!(graph.edges.is_empty());
-        fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn build_link_graph_deduplicates() {
-        let (dir, index) = make_kb_on_disk(&[
-            ("p1", "Alpha", &[], "[[Beta]] and [[Beta]] again"),
-            ("p2", "Beta", &[], "nothing"),
-        ]);
-        let graph = index.build_link_graph();
-        assert_eq!(graph.edges.len(), 1);
-        fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
     fn link_graph_ego_filters_by_page() {
         let (dir, index) = make_kb_on_disk(&[
             ("p1", "Alpha", &[], "see [[Beta]]"),
@@ -2025,29 +1798,6 @@ mod tests {
         assert_eq!(result.broken_links.len(), 1);
         assert_eq!(result.broken_links[0].source_id, "p1");
         assert_eq!(result.broken_links[0].target, "page:nonexistent");
-        assert!(result.load_errors.is_empty());
-        fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn analyze_links_tracks_linked_pages() {
-        let (dir, index) = make_kb_on_disk(&[
-            ("p1", "Page One", &[], "see [link](page:p2) for more"),
-            ("p2", "Page Two", &[], "target page"),
-        ]);
-        let result = index.analyze_links();
-        assert!(result.linked_pages.contains("p2"));
-        assert!(!result.linked_pages.contains("p1"));
-        assert!(result.broken_links.is_empty());
-        fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn analyze_links_empty_kb() {
-        let (dir, index) = make_kb_on_disk(&[]);
-        let result = index.analyze_links();
-        assert!(result.broken_links.is_empty());
-        assert!(result.linked_pages.is_empty());
         assert!(result.load_errors.is_empty());
         fs::remove_dir_all(&dir).unwrap();
     }
@@ -2192,10 +1942,16 @@ mod tests {
 
     #[test]
     fn find_duplicate_titles_none_when_unique() {
-        let (dir, index) =
-            make_kb_on_disk(&[("p1", "Alpha", &[], "body"), ("p2", "Beta", &[], "body")]);
-        assert!(index.find_duplicate_titles().is_empty());
-        fs::remove_dir_all(&dir).unwrap();
+        type Pages<'a> = &'a [(&'a str, &'a str, &'a [&'a str], &'a str)];
+        let cases: &[Pages] = &[
+            &[],
+            &[("p1", "Alpha", &[], "body"), ("p2", "Beta", &[], "body")],
+        ];
+        for pages in cases {
+            let (dir, index) = make_kb_on_disk(pages);
+            assert!(index.find_duplicate_titles().is_empty(), "{pages:?}");
+            fs::remove_dir_all(&dir).unwrap();
+        }
     }
 
     #[test]
@@ -2238,23 +1994,9 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
-    #[test]
-    fn find_duplicate_titles_empty_kb() {
-        let (dir, index) = make_kb_on_disk(&[]);
-        assert!(index.find_duplicate_titles().is_empty());
-        fs::remove_dir_all(&dir).unwrap();
-    }
-
     // -----------------------------------------------------------------------
     // find_missing_attachments
     // -----------------------------------------------------------------------
-
-    #[test]
-    fn find_missing_attachments_none_when_no_refs() {
-        let (dir, index) = make_kb_on_disk(&[("p1", "Alpha", &[], "no attachment refs")]);
-        assert!(index.find_missing_attachments().is_empty());
-        fs::remove_dir_all(&dir).unwrap();
-    }
 
     #[test]
     fn find_missing_attachments_detects_missing_file() {
@@ -2264,18 +2006,6 @@ mod tests {
         assert_eq!(missing.len(), 1);
         assert_eq!(missing[0].source_id, "p1");
         assert_eq!(missing[0].target, "attachments/missing.png");
-        fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn find_missing_attachments_ignores_existing_file() {
-        let (dir, index) =
-            make_kb_on_disk(&[("p1", "Alpha", &[], "see [img](attachments/present.png)")]);
-        let att_dir = dir.join("attachments");
-        fs::create_dir_all(&att_dir).unwrap();
-        fs::write(att_dir.join("present.png"), b"data").unwrap();
-        let missing = index.find_missing_attachments();
-        assert!(missing.is_empty());
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -2297,42 +2027,15 @@ mod tests {
     }
 
     #[test]
-    fn find_missing_attachments_reports_every_referencing_page() {
-        let (dir, index) = make_kb_on_disk(&[
-            ("p1", "Alpha", &[], "see [img](attachments/missing.png)"),
-            ("p2", "Beta", &[], "see [img](attachments/missing.png)"),
-        ]);
-        let missing = index.find_missing_attachments();
-        assert_eq!(missing.len(), 2);
-        let sources: Vec<&str> = missing.iter().map(|m| m.source_id.as_str()).collect();
-        assert_eq!(sources, vec!["p1", "p2"]);
-        fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn find_missing_attachments_deduplicates_within_a_page() {
-        let (dir, index) = make_kb_on_disk(&[(
-            "p1",
-            "Alpha",
-            &[],
-            "see [a](attachments/missing.png) and [b](attachments/missing.png)",
-        )]);
-        let missing = index.find_missing_attachments();
-        assert_eq!(missing.len(), 1);
-        assert_eq!(missing[0].source_id, "p1");
-        fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
     fn find_missing_attachments_ignores_non_attachment_links() {
-        let (dir, index) = make_kb_on_disk(&[(
-            "p1",
-            "Alpha",
-            &[],
+        for body in [
+            "no attachment refs",
             "see [link](page:p2) and [ext](https://example.com)",
-        )]);
-        assert!(index.find_missing_attachments().is_empty());
-        fs::remove_dir_all(&dir).unwrap();
+        ] {
+            let (dir, index) = make_kb_on_disk(&[("p1", "Alpha", &[], body)]);
+            assert!(index.find_missing_attachments().is_empty(), "{body:?}");
+            fs::remove_dir_all(&dir).unwrap();
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -2365,39 +2068,6 @@ mod tests {
         assert!(result.linked_pages.contains("p2"));
         assert!(!result.linked_pages.contains("p1"));
         assert!(result.broken_links.is_empty());
-        assert!(result.missing_attachments.is_empty());
-        fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn analyze_all_empty_kb() {
-        let (dir, index) = make_kb_on_disk(&[]);
-        let result = index.analyze_all();
-        assert!(result.broken_links.is_empty());
-        assert!(result.linked_pages.is_empty());
-        assert!(result.load_errors.is_empty());
-        assert!(result.missing_attachments.is_empty());
-        fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn analyze_all_captures_load_errors() {
-        let (dir, index) = make_kb_on_disk(&[("p1", "Page One", &[], "hello")]);
-        fs::write(dir.join("p1.lepiter"), b"NOT VALID JSON").unwrap();
-        let result = index.analyze_all();
-        assert_eq!(result.load_errors.len(), 1);
-        assert_eq!(result.load_errors[0].page_id, "p1");
-        fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn analyze_all_skips_existing_attachments() {
-        let (dir, index) =
-            make_kb_on_disk(&[("p1", "Alpha", &[], "see [img](attachments/present.png)")]);
-        let att_dir = dir.join("attachments");
-        fs::create_dir_all(&att_dir).unwrap();
-        fs::write(att_dir.join("present.png"), b"data").unwrap();
-        let result = index.analyze_all();
         assert!(result.missing_attachments.is_empty());
         fs::remove_dir_all(&dir).unwrap();
     }

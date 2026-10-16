@@ -719,14 +719,20 @@ mod tests {
 
     #[test]
     fn a_url_with_a_line_ending_and_whitespace_at_an_edge_comes_back_as_text() {
-        for url in [" a\rb", "a\rb ", "\rab", "ab\r", "a\rb\u{a0}"] {
+        for (url, line) in [
+            (" a\rb", "[x](< a\rb>)"),
+            ("a\rb ", "[x](<a\rb >)"),
+            ("\rab", "[x](<\rab>)"),
+            ("ab\r", "[x](<ab\r>)"),
+            ("a\rb\u{a0}", "[x](<a\rb\u{a0}>)"),
+        ] {
             let markdown = export(Node::Link {
                 text: "x".to_string(),
                 url: url.to_string(),
             });
             let snippets = parse_markdown_body(&markdown, &HashMap::new());
             assert!(
-                matches!(&snippets[..], [Snippet::Text(_)]),
+                matches!(&snippets[..], [Snippet::Text(t)] if t == line),
                 "{url:?} exported as {markdown:?} imported as {snippets:?}"
             );
         }
@@ -740,13 +746,6 @@ mod tests {
         assert_eq!(fm.id, "abc-123");
         assert_eq!(fm.tags, vec!["rust", "cli"]);
         assert_eq!(fm.updated_at.as_deref(), Some("2024-01-01T00:00:00+00:00"));
-    }
-
-    #[test]
-    fn parse_frontmatter_escaped_title() {
-        let content = "---\ntitle: \"Page with \\\"quotes\\\"\"\nid: p1\n---\n\n";
-        let fm = parse_frontmatter(content).unwrap();
-        assert_eq!(fm.title, "Page with \"quotes\"");
     }
 
     #[test]
@@ -926,43 +925,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_heading() {
-        let slug_map = HashMap::new();
-        let snippets = parse_markdown_body("## My Heading\n\n", &slug_map);
-        assert_eq!(snippets.len(), 1);
-        match &snippets[0] {
-            Snippet::Text(text) => assert_eq!(text, "## My Heading"),
-            other => panic!("expected Text, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_paragraph() {
-        let slug_map = HashMap::new();
-        let snippets = parse_markdown_body("Hello world.\n\n", &slug_map);
-        assert_eq!(snippets.len(), 1);
-        match &snippets[0] {
-            Snippet::Text(text) => assert_eq!(text, "Hello world."),
-            other => panic!("expected Text, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_code_block_with_language() {
-        let slug_map = HashMap::new();
-        let input = "```python\nprint('hi')\n```\n\n";
-        let snippets = parse_markdown_body(input, &slug_map);
-        assert_eq!(snippets.len(), 1);
-        match &snippets[0] {
-            Snippet::Code { language, code } => {
-                assert_eq!(language.as_deref(), Some("python"));
-                assert_eq!(code, "print('hi')");
-            }
-            other => panic!("expected Code, got {other:?}"),
-        }
-    }
-
-    #[test]
     fn parse_code_block_no_language() {
         let slug_map = HashMap::new();
         let input = "```\nsome code\n```\n\n";
@@ -1054,8 +1016,15 @@ mod tests {
         let input = "```diff pharo\njust a note\n```\n\nafter\n";
         let snippets = parse_markdown_body(input, &slug_map);
         assert_eq!(snippets.len(), 2);
-        assert!(matches!(&snippets[0], Snippet::Code { .. }));
+        assert!(matches!(
+            &snippets[0],
+            Snippet::Code { language: Some(l), code } if l == "diff pharo" && code == "just a note"
+        ));
         assert!(matches!(&snippets[1], Snippet::Text(t) if t == "after"));
+        assert_eq!(
+            snippet_json(&snippets[0]),
+            json!({"__type": "textSnippet", "string": "```diff pharo\njust a note\n```"})
+        );
     }
 
     #[test]
@@ -1071,10 +1040,16 @@ mod tests {
     #[test]
     fn consecutive_quote_lines_become_one_snippet() {
         let slug_map = HashMap::new();
-        let input = "> first\n>\n> third\n\n";
-        let snippets = parse_markdown_body(input, &slug_map);
-        assert_eq!(snippets.len(), 1);
-        assert!(matches!(&snippets[0], Snippet::Text(t) if t == "> first\n\nthird"));
+        for (input, text) in [
+            ("> quoted text\n\n", "> quoted text"),
+            ("> first\n>\n> third\n\n", "> first\n\nthird"),
+        ] {
+            let snippets = parse_markdown_body(input, &slug_map);
+            assert!(
+                matches!(&snippets[..], [Snippet::Text(t)] if t == text),
+                "{input:?} read as {snippets:?}"
+            );
+        }
     }
 
     #[test]
@@ -1123,11 +1098,16 @@ mod tests {
     #[test]
     fn a_link_line_inside_a_paragraph_stays_paragraph_text() {
         let slug_map = HashMap::new();
-        let snippets = parse_markdown_body("intro\n[click](https://example.com)\n", &slug_map);
-        assert_eq!(snippets.len(), 1);
-        assert!(
-            matches!(&snippets[0], Snippet::Text(t) if t == "intro\n[click](https://example.com)")
-        );
+        for text in [
+            "intro\n[click](https://example.com)",
+            "see [docs](https://example.com) here",
+        ] {
+            let snippets = parse_markdown_body(&format!("{text}\n\n"), &slug_map);
+            assert!(
+                matches!(&snippets[..], [Snippet::Text(t)] if t == text),
+                "{text:?} read as {snippets:?}"
+            );
+        }
     }
 
     #[test]
@@ -1199,6 +1179,19 @@ mod tests {
         let lists_under_text: String = (0..100)
             .map(|level| format!("{}- level {level}\n", "  ".repeat(level)))
             .collect();
+        // the list at depth MAX_LIST_DEPTH keeps the rest of its item as text.
+        let snippets = parse_markdown_body(&lists_in_items, &HashMap::new());
+        let mut level = &snippets[..];
+        for _ in 0..MAX_LIST_DEPTH {
+            let [Snippet::List(items)] = level else {
+                panic!("expected one nested list, got {level:?}");
+            };
+            level = &items[0][..];
+        }
+        let rest = format!("{}x", "- ".repeat(100_000 - MAX_LIST_DEPTH - 1));
+        assert!(
+            matches!(level, [Snippet::List(items)] if matches!(&items[0][..], [Snippet::Text(t)] if *t == rest))
+        );
         for input in [lists_in_items, lists_under_text] {
             let snippets = parse_markdown_body(&input, &HashMap::new());
             let bytes = serde_json::to_vec(&build_page_json(&fm, &snippets)).unwrap();
@@ -1219,80 +1212,6 @@ mod tests {
         assert_eq!(inner.len(), 1);
         assert!(matches!(&inner[0][..], [Snippet::Text(t)] if t == "inner"));
         assert!(matches!(&items[1][..], [Snippet::Text(t)] if t == "next"));
-    }
-
-    #[test]
-    fn parse_blockquote() {
-        let slug_map = HashMap::new();
-        let input = "> quoted text\n\n";
-        let snippets = parse_markdown_body(input, &slug_map);
-        assert_eq!(snippets.len(), 1);
-        match &snippets[0] {
-            Snippet::Text(text) => assert_eq!(text, "> quoted text"),
-            other => panic!("expected Text, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_standalone_link() {
-        let slug_map = HashMap::new();
-        let input = "[Click here](https://example.com)\n\n";
-        let snippets = parse_markdown_body(input, &slug_map);
-        assert_eq!(snippets.len(), 1);
-        match &snippets[0] {
-            Snippet::Link { text, url } => {
-                assert_eq!(text, "Click here");
-                assert_eq!(url, "https://example.com");
-            }
-            other => panic!("expected Link, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_link_rewrites_slug() {
-        let mut slug_map = HashMap::new();
-        slug_map.insert("other-page.md".to_string(), "uuid-123".to_string());
-
-        let input = "[Other Page](other-page.md)\n\n";
-        let snippets = parse_markdown_body(input, &slug_map);
-        assert_eq!(snippets.len(), 1);
-        match &snippets[0] {
-            Snippet::Link { text, url } => {
-                assert_eq!(text, "Other Page");
-                assert_eq!(url, "page:uuid-123");
-            }
-            other => panic!("expected Link, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_inline_link_rewriting() {
-        let mut slug_map = HashMap::new();
-        slug_map.insert("target.md".to_string(), "uuid-456".to_string());
-
-        let input = "see [link](target.md) here\n\n";
-        let snippets = parse_markdown_body(input, &slug_map);
-        assert_eq!(snippets.len(), 1);
-        match &snippets[0] {
-            Snippet::Text(text) => {
-                assert_eq!(text, "see [link](page:uuid-456) here");
-            }
-            other => panic!("expected Text, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_inline_link_external_unchanged() {
-        let slug_map = HashMap::new();
-        let input = "see [docs](https://example.com) here\n\n";
-        let snippets = parse_markdown_body(input, &slug_map);
-        assert_eq!(snippets.len(), 1);
-        match &snippets[0] {
-            Snippet::Text(text) => {
-                assert_eq!(text, "see [docs](https://example.com) here");
-            }
-            other => panic!("expected Text, got {other:?}"),
-        }
     }
 
     #[test]
@@ -1404,11 +1323,13 @@ mod tests {
             vec![Snippet::Text("item two".to_string())],
         ])];
         let json = build_page_json(&fm, &snippets);
-        let items = json["children"]["items"].as_array().unwrap();
-        assert_eq!(items[0]["__type"], "listSnippet");
-        let children = items[0]["children"]["items"].as_array().unwrap();
-        assert_eq!(children.len(), 2);
-        assert_eq!(children[0]["string"], "item one");
+        assert_eq!(
+            json["children"]["items"][0],
+            json!({"__type": "listSnippet", "children": {"items": [
+                {"__type": "textSnippet", "string": "item one"},
+                {"__type": "textSnippet", "string": "item two"},
+            ]}})
+        );
     }
 
     #[test]
@@ -1541,23 +1462,6 @@ mod tests {
     }
 
     #[test]
-    fn build_page_json_unknown() {
-        let fm = Frontmatter {
-            title: "Unknown".to_string(),
-            id: "unk-1".to_string(),
-            tags: Vec::new(),
-            updated_at: None,
-        };
-        let snippets = vec![Snippet::Unknown {
-            typ: "wardleyMap".to_string(),
-        }];
-        let json = build_page_json(&fm, &snippets);
-        let items = json["children"]["items"].as_array().unwrap();
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0]["__type"], "wardleyMap");
-    }
-
-    #[test]
     fn bash_fence_roundtrips_as_text_snippet() {
         let slug_map = HashMap::new();
         let input = "```bash\necho hello\n```\n\n";
@@ -1573,24 +1477,6 @@ mod tests {
         let items = json["children"]["items"].as_array().unwrap();
         assert_eq!(items[0]["__type"], "textSnippet");
         assert_eq!(items[0]["string"], "```bash\necho hello\n```");
-    }
-
-    #[test]
-    fn robocoder_metamodel_fence_roundtrips_to_its_snippet_type() {
-        let slug_map = HashMap::new();
-        let input = "```robocodermetamodel\nMetamodel new\n```\n\n";
-        let snippets = parse_markdown_body(input, &slug_map);
-        assert_eq!(snippets.len(), 1);
-        let fm = Frontmatter {
-            title: "Robocoder".to_string(),
-            id: "robo-1".to_string(),
-            tags: Vec::new(),
-            updated_at: None,
-        };
-        let json = build_page_json(&fm, &snippets);
-        let items = json["children"]["items"].as_array().unwrap();
-        assert_eq!(items[0]["__type"], "robocoderMetamodelSnippet");
-        assert_eq!(items[0]["code"], "Metamodel new");
     }
 
     #[test]

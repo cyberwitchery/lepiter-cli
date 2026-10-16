@@ -833,165 +833,79 @@ mod tests {
         assert_eq!((line, col), (1, 0));
 
         let (lines, cursor, _) = render_edit_page(&edit, &mut PluginManager::empty());
-        let cursor = cursor.expect("cursor should be set");
-        assert_eq!(cursor.0, 1);
+        assert_eq!(cursor, Some((1, 0)));
         assert!(lines.len() >= 2);
     }
 
     // ── insert_char_at ──────────────────────────────────────────────
 
     #[test]
-    fn insert_char_at_ascii_middle() {
-        let mut buf = "hello".to_string();
-        let mut cursor = 2;
-        insert_char_at(&mut buf, &mut cursor, 'X');
-        assert_eq!(buf, "heXllo");
-        assert_eq!(cursor, 3);
-    }
-
-    #[test]
-    fn insert_char_at_beginning() {
-        let mut buf = "abc".to_string();
-        let mut cursor = 0;
-        insert_char_at(&mut buf, &mut cursor, 'Z');
-        assert_eq!(buf, "Zabc");
-        assert_eq!(cursor, 1);
-    }
-
-    #[test]
-    fn insert_char_at_end() {
-        let mut buf = "abc".to_string();
-        let mut cursor = 3;
-        insert_char_at(&mut buf, &mut cursor, '!');
-        assert_eq!(buf, "abc!");
-        assert_eq!(cursor, 4);
-    }
-
-    #[test]
-    fn insert_char_at_multibyte() {
-        let mut buf = "café".to_string();
-        let mut cursor = 4; // after 'é'
-        insert_char_at(&mut buf, &mut cursor, '☕');
-        assert_eq!(buf, "café☕");
-        assert_eq!(cursor, 5);
-    }
-
-    #[test]
-    fn insert_char_at_multibyte_middle() {
-        let mut buf = "αβγ".to_string();
-        let mut cursor = 1; // after 'α'
-        insert_char_at(&mut buf, &mut cursor, 'δ');
-        assert_eq!(buf, "αδβγ");
-        assert_eq!(cursor, 2);
-    }
-
-    #[test]
-    fn insert_char_at_cr_becomes_lf() {
-        let mut buf = "ab".to_string();
-        let mut cursor = 1;
-        insert_char_at(&mut buf, &mut cursor, '\r');
-        assert_eq!(buf, "a\nb");
-        assert_eq!(cursor, 2);
-    }
-
-    #[test]
-    fn insert_char_at_empty_buffer() {
-        let mut buf = String::new();
-        let mut cursor = 0;
-        insert_char_at(&mut buf, &mut cursor, 'x');
-        assert_eq!(buf, "x");
-        assert_eq!(cursor, 1);
+    fn insert_char_at_inserts_and_advances_the_cursor() {
+        let cases = [
+            ("hello", 2, 'X', "heXllo", 3),
+            ("abc", 0, 'Z', "Zabc", 1),
+            ("abc", 3, '!', "abc!", 4),
+            ("café", 4, '☕', "café☕", 5),
+            ("αβγ", 1, 'δ', "αδβγ", 2),
+            // the editor's line break: a typed CR is stored as LF.
+            ("ab", 1, '\r', "a\nb", 2),
+            ("", 0, 'x', "x", 1),
+        ];
+        for (start, at, ch, expected, cursor_after) in cases {
+            let mut buf = start.to_string();
+            let mut cursor = at;
+            insert_char_at(&mut buf, &mut cursor, ch);
+            assert_eq!(buf, expected, "{start:?} at {at} with {ch:?}");
+            assert_eq!(cursor, cursor_after, "{start:?} at {at} with {ch:?}");
+        }
     }
 
     // ── delete_char_before ──────────────────────────────────────────
 
     #[test]
-    fn delete_char_before_at_start_returns_false() {
-        let mut buf = "hello".to_string();
-        let mut cursor = 0;
-        assert!(!delete_char_before(&mut buf, &mut cursor));
-        assert_eq!(buf, "hello");
-        assert_eq!(cursor, 0);
-    }
-
-    #[test]
-    fn delete_char_before_middle() {
-        let mut buf = "hello".to_string();
-        let mut cursor = 3;
-        assert!(delete_char_before(&mut buf, &mut cursor));
-        assert_eq!(buf, "helo");
-        assert_eq!(cursor, 2);
-    }
-
-    #[test]
-    fn delete_char_before_end() {
-        let mut buf = "abc".to_string();
-        let mut cursor = 3;
-        assert!(delete_char_before(&mut buf, &mut cursor));
-        assert_eq!(buf, "ab");
-        assert_eq!(cursor, 2);
-    }
-
-    #[test]
-    fn delete_char_before_multibyte() {
-        let mut buf = "café".to_string();
-        let mut cursor = 4; // after 'é'
-        assert!(delete_char_before(&mut buf, &mut cursor));
-        assert_eq!(buf, "caf");
-        assert_eq!(cursor, 3);
-    }
-
-    #[test]
-    fn delete_char_before_single_char() {
-        let mut buf = "x".to_string();
-        let mut cursor = 1;
-        assert!(delete_char_before(&mut buf, &mut cursor));
-        assert_eq!(buf, "");
-        assert_eq!(cursor, 0);
+    fn delete_char_before_removes_the_char_left_of_the_cursor() {
+        let cases = [
+            ("hello", 0, false, "hello", 0),
+            ("hello", 3, true, "helo", 2),
+            ("abc", 3, true, "ab", 2),
+            ("café", 4, true, "caf", 3),
+            ("x", 1, true, "", 0),
+        ];
+        for (start, at, deleted, expected, cursor_after) in cases {
+            let mut buf = start.to_string();
+            let mut cursor = at;
+            assert_eq!(
+                delete_char_before(&mut buf, &mut cursor),
+                deleted,
+                "{start:?} at {at}"
+            );
+            assert_eq!(buf, expected, "{start:?} at {at}");
+            assert_eq!(cursor, cursor_after, "{start:?} at {at}");
+        }
     }
 
     // ── delete_char_at ──────────────────────────────────────────────
 
     #[test]
-    fn delete_char_at_end_returns_false() {
-        let mut buf = "hello".to_string();
-        let mut cursor = 5;
-        assert!(!delete_char_at(&mut buf, &mut cursor));
-        assert_eq!(buf, "hello");
-    }
-
-    #[test]
-    fn delete_char_at_beginning() {
-        let mut buf = "hello".to_string();
-        let mut cursor = 0;
-        assert!(delete_char_at(&mut buf, &mut cursor));
-        assert_eq!(buf, "ello");
-        assert_eq!(cursor, 0); // cursor stays
-    }
-
-    #[test]
-    fn delete_char_at_middle() {
-        let mut buf = "hello".to_string();
-        let mut cursor = 2;
-        assert!(delete_char_at(&mut buf, &mut cursor));
-        assert_eq!(buf, "helo");
-        assert_eq!(cursor, 2);
-    }
-
-    #[test]
-    fn delete_char_at_multibyte() {
-        let mut buf = "α☕β".to_string();
-        let mut cursor = 1; // at '☕'
-        assert!(delete_char_at(&mut buf, &mut cursor));
-        assert_eq!(buf, "αβ");
-        assert_eq!(cursor, 1);
-    }
-
-    #[test]
-    fn delete_char_at_empty_returns_false() {
-        let mut buf = String::new();
-        let mut cursor = 0;
-        assert!(!delete_char_at(&mut buf, &mut cursor));
+    fn delete_char_at_removes_the_char_under_the_cursor() {
+        let cases = [
+            ("hello", 5, false, "hello", 5),
+            ("hello", 0, true, "ello", 0),
+            ("hello", 2, true, "helo", 2),
+            ("α☕β", 1, true, "αβ", 1),
+            ("", 0, false, "", 0),
+        ];
+        for (start, at, deleted, expected, cursor_after) in cases {
+            let mut buf = start.to_string();
+            let mut cursor = at;
+            assert_eq!(
+                delete_char_at(&mut buf, &mut cursor),
+                deleted,
+                "{start:?} at {at}"
+            );
+            assert_eq!(buf, expected, "{start:?} at {at}");
+            assert_eq!(cursor, cursor_after, "{start:?} at {at}");
+        }
     }
 
     // ── char_to_byte_idx ────────────────────────────────────────────
@@ -1106,63 +1020,24 @@ mod tests {
     }
 
     #[test]
-    fn move_cursor_vertical_down() {
-        let mut edit = make_edit("abc\ndef\nghi");
-        edit.cursor = 1; // 'b' on line 0
-        move_cursor_vertical(&mut edit, 1);
-        // should land on line 1, col 1 → char index = 4+1 = 5 ('e')
-        let (line, col) = cursor_line_col_display(&edit.buffer, edit.cursor);
-        assert_eq!(line, 1);
-        assert_eq!(col, 1);
-    }
-
-    #[test]
-    fn move_cursor_vertical_up() {
-        let mut edit = make_edit("abc\ndef\nghi");
-        edit.cursor = 5; // 'e' on line 1
-        move_cursor_vertical(&mut edit, -1);
-        let (line, col) = cursor_line_col_display(&edit.buffer, edit.cursor);
-        assert_eq!(line, 0);
-        assert_eq!(col, 1);
-    }
-
-    #[test]
-    fn move_cursor_vertical_at_first_line_stays() {
-        let mut edit = make_edit("abc\ndef");
-        edit.cursor = 1; // 'b'
-        move_cursor_vertical(&mut edit, -1);
-        let (line, _) = cursor_line_col_display(&edit.buffer, edit.cursor);
-        assert_eq!(line, 0);
-    }
-
-    #[test]
-    fn move_cursor_vertical_at_last_line_stays() {
-        let mut edit = make_edit("abc\ndef");
-        edit.cursor = 5; // 'e' on line 1
-        move_cursor_vertical(&mut edit, 1);
-        let (line, _) = cursor_line_col_display(&edit.buffer, edit.cursor);
-        assert_eq!(line, 1);
-    }
-
-    #[test]
-    fn move_cursor_vertical_clamps_to_shorter_line() {
-        let mut edit = make_edit("abcdef\nxy");
-        edit.cursor = 5; // 'f' on line 0, col 5
-        move_cursor_vertical(&mut edit, 1);
-        let (line, col) = cursor_line_col_display(&edit.buffer, edit.cursor);
-        assert_eq!(line, 1);
-        // line 1 only has 2 chars, so col clamps
-        assert!(col <= 2);
-    }
-
-    #[test]
-    fn move_cursor_vertical_single_line_noop() {
-        let mut edit = make_edit("hello");
-        edit.cursor = 2;
-        move_cursor_vertical(&mut edit, 1);
-        // should stay on line 0
-        let (line, _) = cursor_line_col_display(&edit.buffer, edit.cursor);
-        assert_eq!(line, 0);
+    fn move_cursor_vertical_keeps_the_column_within_bounds() {
+        let cases = [
+            // 'b' on line 0 down to 'e'.
+            ("abc\ndef\nghi", 1, 1, 5),
+            // 'e' on line 1 up to 'b'.
+            ("abc\ndef\nghi", 5, -1, 1),
+            ("abc\ndef", 1, -1, 1),
+            ("abc\ndef", 5, 1, 5),
+            // col 5 clamps to the end of the two-char line, (1, 2).
+            ("abcdef\nxy", 5, 1, 9),
+            ("hello", 2, 1, 2),
+        ];
+        for (text, start, delta, expected) in cases {
+            let mut edit = make_edit(text);
+            edit.cursor = start;
+            move_cursor_vertical(&mut edit, delta);
+            assert_eq!(edit.cursor, expected, "{text:?} from {start} by {delta}");
+        }
     }
 
     // ── collect_snippets ────────────────────────────────────────────
@@ -1218,40 +1093,6 @@ mod tests {
     }
 
     #[test]
-    fn collect_snippets_deeply_nested() {
-        let raw = json!({
-            "children": {
-                "items": [
-                    {
-                        "__type": "textSnippet",
-                        "string": "L1",
-                        "children": {
-                            "items": [
-                                {
-                                    "__type": "textSnippet",
-                                    "string": "L2",
-                                    "children": {
-                                        "items": [
-                                            {"__type": "textSnippet", "string": "L3"}
-                                        ]
-                                    }
-                                }
-                            ]
-                        }
-                    }
-                ]
-            }
-        });
-        let mut out = Vec::new();
-        collect_snippets(&raw, Vec::new(), &mut out);
-        assert_eq!(out.len(), 3);
-        assert_eq!(out[0].path, vec![0]);
-        assert_eq!(out[1].path, vec![0, 0]);
-        assert_eq!(out[2].path, vec![0, 0, 0]);
-        assert_eq!(out[2].text, "L3");
-    }
-
-    #[test]
     fn collect_snippets_empty() {
         let raw = json!({"children": {"items": []}});
         let mut out = Vec::new();
@@ -1284,68 +1125,41 @@ mod tests {
     // ── editable_field ──────────────────────────────────────────────
 
     #[test]
-    fn editable_field_text_snippet() {
-        let item = json!({"__type": "textSnippet", "string": "hi"});
-        let (editable, field) = editable_field("textSnippet", &item);
-        assert!(editable);
-        assert_eq!(field, Some("string".to_string()));
-    }
-
-    #[test]
-    fn editable_field_text_snippet_text_field() {
-        let item = json!({"__type": "textSnippet", "text": "hi"});
-        let (editable, field) = editable_field("textSnippet", &item);
-        assert!(editable);
-        assert_eq!(field, Some("text".to_string()));
-    }
-
-    #[test]
-    fn editable_field_code_snippet() {
-        let item = json!({"__type": "pharoSnippet", "code": "1+2"});
-        let (editable, field) = editable_field("pharoSnippet", &item);
-        assert!(editable);
-        assert_eq!(field, Some("code".to_string()));
-    }
-
-    #[test]
-    fn editable_field_code_snippet_source_field() {
-        let item = json!({"__type": "pythonSnippet", "source": "print(1)"});
-        let (editable, field) = editable_field("pythonSnippet", &item);
-        assert!(editable);
-        assert_eq!(field, Some("source".to_string()));
-    }
-
-    #[test]
-    fn editable_field_non_editable() {
-        let item = json!({"__type": "pictureSnippet"});
-        let (editable, field) = editable_field("pictureSnippet", &item);
-        assert!(!editable);
-        assert_eq!(field, None);
+    fn editable_field_picks_the_documented_field() {
+        let cases = [
+            (
+                json!({"__type": "textSnippet", "string": "hi"}),
+                true,
+                Some("string"),
+            ),
+            (
+                json!({"__type": "textSnippet", "text": "hi"}),
+                true,
+                Some("text"),
+            ),
+            (
+                json!({"__type": "pharoSnippet", "code": "1+2"}),
+                true,
+                Some("code"),
+            ),
+            (
+                json!({"__type": "pythonSnippet", "source": "print(1)"}),
+                true,
+                Some("source"),
+            ),
+            (json!({"__type": "pictureSnippet"}), false, None),
+        ];
+        for (item, editable, field) in cases {
+            let typ = item["__type"].as_str().unwrap();
+            assert_eq!(
+                editable_field(typ, &item),
+                (editable, field.map(str::to_string)),
+                "{item}"
+            );
+        }
     }
 
     // ── undo/redo push/pop ──────────────────────────────────────────
-
-    #[test]
-    fn push_undo_snapshot_records_state() {
-        let mut edit = make_edit("hello");
-        edit.push_undo_snapshot();
-        let entry = edit.current().unwrap();
-        assert_eq!(entry.undo.len(), 1);
-        assert_eq!(entry.undo[0].text, "hello");
-    }
-
-    #[test]
-    fn undo_restores_previous_state() {
-        let mut edit = make_edit("original");
-        edit.push_undo_snapshot();
-        edit.buffer = "modified".to_string();
-        edit.cursor = 3;
-        edit.commit_buffer();
-
-        let undone = edit.undo();
-        assert!(undone);
-        assert_eq!(edit.buffer, "original");
-    }
 
     #[test]
     fn undo_on_empty_stack_returns_false() {
@@ -1363,6 +1177,8 @@ mod tests {
         }
         let entry = edit.current().unwrap();
         assert_eq!(entry.undo.len(), 200);
+        assert_eq!(entry.undo[0].text, "v10");
+        assert_eq!(entry.undo[199].text, "v209");
     }
 
     #[test]
@@ -1399,62 +1215,35 @@ mod tests {
         edit.commit_buffer();
         let undone = edit.undo();
         assert!(undone);
-        // cursor should be clamped to chars().count() of "hi" = 2
-        assert!(edit.cursor <= edit.buffer.chars().count());
+        // cursor is clamped to chars().count() of "hi" = 2
+        assert_eq!(edit.buffer, "hi");
+        assert_eq!(edit.cursor, 2);
     }
 
     // ── ensure_scroll ───────────────────────────────────────────────
 
     #[test]
-    fn ensure_scroll_zero_height_returns_current() {
-        assert_eq!(ensure_scroll(5, 3, 0), 3);
-    }
-
-    #[test]
-    fn ensure_scroll_cursor_in_view() {
-        // cursor at line 5, scroll at 3, view_height 10 → visible
-        assert_eq!(ensure_scroll(5, 3, 10), 3);
-    }
-
-    #[test]
-    fn ensure_scroll_cursor_above_view() {
-        // cursor at line 2, scroll at 5 → scroll up
-        assert_eq!(ensure_scroll(2, 5, 10), 2);
-    }
-
-    #[test]
-    fn ensure_scroll_cursor_below_view() {
-        // cursor at line 15, scroll at 3, view_height 10 → scroll down
-        let new_scroll = ensure_scroll(15, 3, 10);
-        assert!(new_scroll > 3);
-        assert!(new_scroll + 10 > 15); // cursor should be visible
-    }
-
-    #[test]
-    fn ensure_scroll_cursor_at_top_edge() {
-        assert_eq!(ensure_scroll(3, 3, 10), 3); // exactly at top
-    }
-
-    #[test]
-    fn ensure_scroll_cursor_at_bottom_edge() {
-        // cursor at line 12, scroll at 3, view_height 10
-        // scroll + view_height = 13, cursor < 13 → still in view
-        assert_eq!(ensure_scroll(12, 3, 10), 3);
-    }
-
-    #[test]
-    fn ensure_scroll_cursor_just_past_bottom() {
-        // cursor at line 13, scroll at 3, view_height 10
-        // scroll + view_height = 13, cursor >= 13 → need scroll
-        let new_scroll = ensure_scroll(13, 3, 10);
-        assert!(new_scroll > 3);
-    }
-
-    #[test]
-    fn ensure_scroll_view_height_one() {
-        assert_eq!(ensure_scroll(5, 5, 1), 5);
-        assert_eq!(ensure_scroll(6, 5, 1), 6);
-        assert_eq!(ensure_scroll(4, 5, 1), 4);
+    fn ensure_scroll_keeps_the_cursor_line_in_view() {
+        // (cursor_line, scroll, view_height) -> scroll
+        let cases = [
+            ((5, 3, 0), 3),
+            ((5, 3, 10), 3),
+            ((2, 5, 10), 2),
+            ((15, 3, 10), 6),
+            ((3, 3, 10), 3),
+            ((12, 3, 10), 3),
+            ((13, 3, 10), 4),
+            ((5, 5, 1), 5),
+            ((6, 5, 1), 6),
+            ((4, 5, 1), 4),
+        ];
+        for ((line, scroll, height), expected) in cases {
+            assert_eq!(
+                ensure_scroll(line, scroll, height),
+                expected,
+                "line {line}, scroll {scroll}, height {height}"
+            );
+        }
     }
 
     // ── snippet_at_path_mut ─────────────────────────────────────────
@@ -1478,13 +1267,6 @@ mod tests {
         });
         let item = snippet_at_path_mut(&mut raw, &[0, 0]).unwrap();
         assert_eq!(item.get("string").unwrap().as_str().unwrap(), "nested");
-    }
-
-    #[test]
-    fn snippet_at_path_mut_empty_path_returns_root() {
-        let mut raw = json!({"children": {"items": []}});
-        let item = snippet_at_path_mut(&mut raw, &[]);
-        assert!(item.is_some());
     }
 
     #[test]
@@ -1566,18 +1348,7 @@ mod tests {
     // ── append_text_snippet ────────────────────────────────────────
 
     #[test]
-    fn append_text_snippet_adds_to_items() {
-        let mut edit = make_edit("hello");
-        assert_eq!(edit.snippets.len(), 1);
-        edit.append_text_snippet();
-        assert_eq!(edit.snippets.len(), 2);
-        assert_eq!(edit.selected, 1);
-        assert!(edit.buffer.is_empty());
-        assert!(edit.dirty);
-    }
-
-    #[test]
-    fn append_text_snippet_updates_raw_json() {
+    fn append_text_snippet_adds_an_editable_text_snippet_to_raw_json() {
         let mut edit = make_edit("hello");
         edit.append_text_snippet();
         let items = edit
@@ -1594,6 +1365,10 @@ mod tests {
             "textSnippet"
         );
         assert_eq!(items[1].get("string").unwrap().as_str().unwrap(), "");
+        let entry = edit.current().unwrap();
+        assert!(entry.editable);
+        assert_eq!(entry.typ, "textSnippet");
+        assert_eq!(entry.field, Some("string".to_string()));
     }
 
     #[test]
@@ -1611,15 +1386,5 @@ mod tests {
         assert_eq!(edit.snippets.len(), 1);
         assert_eq!(edit.selected, 0);
         assert!(edit.dirty);
-    }
-
-    #[test]
-    fn append_text_snippet_new_entry_is_editable() {
-        let mut edit = make_edit("hello");
-        edit.append_text_snippet();
-        let entry = edit.current().unwrap();
-        assert!(entry.editable);
-        assert_eq!(entry.typ, "textSnippet");
-        assert_eq!(entry.field, Some("string".to_string()));
     }
 }

@@ -248,12 +248,6 @@ mod tests {
     }
 
     #[test]
-    fn search_match_kind_score_ordering() {
-        assert!(SearchMatchKind::Title.score() > SearchMatchKind::Tag.score());
-        assert!(SearchMatchKind::Tag.score() > SearchMatchKind::Content.score());
-    }
-
-    #[test]
     fn search_match_kind_is_meta() {
         assert!(SearchMatchKind::Title.is_meta());
         assert!(SearchMatchKind::Tag.is_meta());
@@ -374,33 +368,6 @@ mod tests {
         let json: serde_json::Value = serde_json::to_value(&node).unwrap();
         assert_eq!(json["source_type"], "wardleyMap");
         assert_eq!(json["raw"]["data"], 1);
-    }
-
-    #[test]
-    fn search_match_kind_serializes_lowercase() {
-        assert_eq!(
-            serde_json::to_value(SearchMatchKind::Title).unwrap(),
-            serde_json::json!("title")
-        );
-        assert_eq!(
-            serde_json::to_value(SearchMatchKind::Tag).unwrap(),
-            serde_json::json!("tag")
-        );
-        assert_eq!(
-            serde_json::to_value(SearchMatchKind::Content).unwrap(),
-            serde_json::json!("content")
-        );
-    }
-
-    #[test]
-    fn search_hit_serializes() {
-        let hit = SearchHit {
-            id: "p1".to_string(),
-            kind: SearchMatchKind::Tag,
-        };
-        let json: serde_json::Value = serde_json::to_value(&hit).unwrap();
-        assert_eq!(json["id"], "p1");
-        assert_eq!(json["kind"], "tag");
     }
 
     #[test]

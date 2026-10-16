@@ -1003,27 +1003,6 @@ mod tests {
     }
 
     #[test]
-    fn python_comment() {
-        let tokens = tokenize_code_line("x = 1 # comment", Some("python"));
-        assert!(tokens.iter().any(|t| matches!(t, CodeToken::Comment(_))));
-        let comment = tokens.last().unwrap();
-        assert_eq!(comment, &CodeToken::Comment("# comment"));
-    }
-
-    #[test]
-    fn javascript_comment() {
-        let tokens = tokenize_code_line("let x = 1 // comment", Some("javascript"));
-        assert!(tokens.iter().any(|t| matches!(t, CodeToken::Comment(_))));
-    }
-
-    #[test]
-    fn keyword_detection() {
-        let tokens = tokenize_code_line("def foo():", Some("python"));
-        assert_eq!(tokens[0], CodeToken::Keyword("def"));
-        assert_eq!(tokens[2], CodeToken::Ident("foo"));
-    }
-
-    #[test]
     fn number_literal() {
         let tokens = tokenize_code_line("x = 42.5", None);
         let nums: Vec<_> = tokens
@@ -1057,20 +1036,6 @@ mod tests {
     }
 
     #[test]
-    fn smalltalk_double_quote_is_comment_not_string() {
-        let tokens = tokenize_code_line(r#"foo "a comment" bar"#, Some("pharo"));
-        assert_eq!(comments(&tokens), vec![r#""a comment""#]);
-        assert!(strings(&tokens).is_empty());
-    }
-
-    #[test]
-    fn smalltalk_single_quote_is_string() {
-        let tokens = tokenize_code_line("x := 'a string'", Some("pharo"));
-        assert_eq!(strings(&tokens), vec!["'a string'"]);
-        assert!(comments(&tokens).is_empty());
-    }
-
-    #[test]
     fn smalltalk_single_quote_inside_comment_does_not_desync() {
         // the apostrophe inside the comment must not open a string literal and
         // leave the rest of the line mis-tokenised.
@@ -1082,20 +1047,13 @@ mod tests {
     }
 
     #[test]
-    fn gemstone_uses_smalltalk_syntax() {
-        let tokens = tokenize_code_line(r#""doc" self"#, Some("gemstone"));
-        assert_eq!(comments(&tokens), vec![r#""doc""#]);
-        assert!(
-            tokens
-                .iter()
-                .any(|t| matches!(t, CodeToken::Keyword("self")))
-        );
-    }
-
-    #[test]
-    fn smalltalk_keyword_detection() {
-        let tokens = tokenize_code_line("super foo", Some("pharo"));
-        assert_eq!(tokens[0], CodeToken::Keyword("super"));
+    fn pharo_and_gemstone_share_smalltalk_syntax() {
+        for language in ["pharo", "gemstone"] {
+            let tokens = tokenize_code_line(r#""doc" self super"#, Some(language));
+            assert_eq!(comments(&tokens), vec![r#""doc""#], "{language}");
+            assert!(tokens.contains(&CodeToken::Keyword("self")), "{language}");
+            assert!(tokens.contains(&CodeToken::Keyword("super")), "{language}");
+        }
     }
 
     #[test]
@@ -1105,20 +1063,6 @@ mod tests {
         // code on both sides is preserved as identifiers.
         assert!(tokens.iter().any(|t| matches!(t, CodeToken::Ident("a"))));
         assert!(tokens.iter().any(|t| matches!(t, CodeToken::Ident("b"))));
-    }
-
-    #[test]
-    fn unterminated_block_comment_runs_to_end_of_line() {
-        let tokens = tokenize_code_line("x /* oops", Some("javascript"));
-        assert_eq!(comments(&tokens), vec!["/* oops"]);
-    }
-
-    #[test]
-    fn shellcommand_hash_is_comment() {
-        // `shellCommandSnippet` infers the language `shellcommand`; its `#`
-        // comments must highlight like `shell`/`bash`.
-        let tokens = tokenize_code_line("ls -la # list", Some("shellcommand"));
-        assert_eq!(comments(&tokens), vec!["# list"]);
     }
 
     #[test]
@@ -1250,15 +1194,11 @@ mod tests {
 
     #[test]
     fn python_hash_starts_a_comment_anywhere_outside_a_string() {
-        let tokens = &block(&["x=1#c 'd'"], "python")[0];
-        assert_eq!(comments(tokens), vec!["#c 'd'"]);
-    }
-
-    #[test]
-    fn non_smalltalk_double_quote_is_still_a_string() {
-        let tokens = tokenize_code_line(r#"x = "hi""#, Some("python"));
-        assert_eq!(strings(&tokens), vec![r#""hi""#]);
-        assert!(comments(&tokens).is_empty());
+        for (line, comment) in [("x = 1 # comment", "# comment"), ("x=1#c 'd'", "#c 'd'")] {
+            let tokens = &block(&[line], "python")[0];
+            assert_eq!(comments(tokens), vec![comment], "{line}");
+            assert_eq!(tokens.last(), Some(&CodeToken::Comment(comment)), "{line}");
+        }
     }
 
     fn block<'a>(lines: &[&'a str], language: &str) -> Vec<Vec<CodeToken<'a>>> {

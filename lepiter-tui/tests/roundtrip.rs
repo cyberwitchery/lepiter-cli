@@ -126,79 +126,194 @@ fn corpus_pages_survive_the_roundtrip() {
     assert_roundtrips(&corpus_dir());
 }
 
+/// each case is a page of its own (id and title are the case name) in one
+/// knowledge base, so one export and one import cover them all;
+/// `assert_roundtrips` names the page that failed.
 #[test]
-fn code_snippet_containing_a_fence_survives() {
-    let kb = kb_with_snippets(json!([{
-        "__type": "pythonSnippet",
-        "code": "doc = '''\n```\nnested fence\n```\n'''\nprint(doc)",
-    }]));
-    assert_roundtrips(kb.path());
-}
-
-#[test]
-fn multi_line_text_snippet_stays_one_snippet() {
-    let kb = kb_with_snippets(json!([
-        { "__type": "textSnippet", "string": "para line one\npara line two" },
-    ]));
-    assert_roundtrips(kb.path());
-}
-
-#[test]
-fn multi_line_heading_stays_one_snippet() {
-    let kb = kb_with_snippets(json!([
-        { "__type": "textSnippet", "string": "# heading\ntrailing prose" },
-    ]));
-    assert_roundtrips(kb.path());
-}
-
-#[test]
-fn multi_line_quote_stays_one_snippet() {
-    let kb = kb_with_snippets(json!([
-        { "__type": "textSnippet", "string": "> quote line one\nquote line two" },
-    ]));
-    assert_roundtrips(kb.path());
-}
-
-#[test]
-fn prose_that_looks_like_a_list_stays_prose() {
-    let kb = kb_with_snippets(json!([
-        { "__type": "textSnippet", "string": "- looks like a list but is prose" },
-    ]));
-    assert_roundtrips(kb.path());
-}
-
-#[test]
-fn prose_that_looks_like_an_unknown_marker_stays_prose() {
-    let kb = kb_with_snippets(json!([
-        { "__type": "textSnippet", "string": "[[unknown: notReallyASnippet]]" },
-    ]));
-    assert_roundtrips(kb.path());
-}
-
-#[test]
-fn text_snippet_with_a_blank_line_stays_one_snippet() {
-    let kb = kb_with_snippets(json!([
-        { "__type": "textSnippet", "string": "para one\n\npara two" },
-    ]));
-    assert_roundtrips(kb.path());
-}
-
-#[test]
-fn text_snippet_keeps_its_leading_and_trailing_blank_lines() {
-    let kb = kb_with_snippets(json!([
-        { "__type": "textSnippet", "string": "\nbody\n" },
-    ]));
-    assert_roundtrips(kb.path());
-}
-
-#[test]
-fn blank_text_snippets_survive_next_to_their_neighbours() {
-    let kb = kb_with_snippets(json!([
-        { "__type": "textSnippet", "string": "before" },
-        { "__type": "textSnippet", "string": "" },
-        { "__type": "textSnippet", "string": "   " },
-        { "__type": "textSnippet", "string": "after" },
-    ]));
+fn snippet_cases_survive_the_roundtrip() {
+    let cases: Vec<(&str, Value)> = vec![
+        (
+            "code_snippet_containing_a_fence_survives",
+            json!([{
+                "__type": "pythonSnippet",
+                "code": "doc = '''\n```\nnested fence\n```\n'''\nprint(doc)",
+            }]),
+        ),
+        (
+            "multi_line_text_snippet_stays_one_snippet",
+            json!([
+                { "__type": "textSnippet", "string": "para line one\npara line two" },
+            ]),
+        ),
+        (
+            "multi_line_heading_stays_one_snippet",
+            json!([
+                { "__type": "textSnippet", "string": "# heading\ntrailing prose" },
+            ]),
+        ),
+        (
+            "multi_line_quote_stays_one_snippet",
+            json!([
+                { "__type": "textSnippet", "string": "> quote line one\nquote line two" },
+            ]),
+        ),
+        (
+            "prose_that_looks_like_a_list_stays_prose",
+            json!([
+                { "__type": "textSnippet", "string": "- looks like a list but is prose" },
+            ]),
+        ),
+        (
+            "prose_that_looks_like_an_unknown_marker_stays_prose",
+            json!([
+                { "__type": "textSnippet", "string": "[[unknown: notReallyASnippet]]" },
+            ]),
+        ),
+        (
+            "text_snippet_with_a_blank_line_stays_one_snippet",
+            json!([
+                { "__type": "textSnippet", "string": "para one\n\npara two" },
+            ]),
+        ),
+        (
+            "text_snippet_keeps_its_leading_and_trailing_blank_lines",
+            json!([
+                { "__type": "textSnippet", "string": "\nbody\n" },
+            ]),
+        ),
+        (
+            "blank_text_snippets_survive_next_to_their_neighbours",
+            json!([
+                { "__type": "textSnippet", "string": "before" },
+                { "__type": "textSnippet", "string": "" },
+                { "__type": "textSnippet", "string": "   " },
+                { "__type": "textSnippet", "string": "after" },
+            ]),
+        ),
+        (
+            "list_item_paragraph_keeps_its_code_block_child",
+            json!([list(json!([{
+                "__type": "textSnippet",
+                "string": "intro",
+                "children": { "items": [
+                    { "__type": "pythonSnippet", "code": "print('hi')\n\nprint('bye')" },
+                ] }
+            }]))]),
+        ),
+        (
+            "list_item_quote_survives",
+            json!([list(json!([
+                { "__type": "textSnippet", "string": "> first\n\nthird" },
+                {
+                    "__type": "textSnippet",
+                    "string": "intro",
+                    "children": { "items": [
+                        { "__type": "textSnippet", "string": "> quoted" },
+                    ] }
+                },
+            ]))]),
+        ),
+        (
+            "list_item_nested_list_survives",
+            json!([list(json!([
+                {
+                    "__type": "textSnippet",
+                    "string": "outer",
+                    "children": { "items": [list(json!([
+                        {
+                            "__type": "textSnippet",
+                            "string": "inner one",
+                            "children": { "items": [
+                                { "__type": "pythonSnippet", "code": "print('deep')" },
+                            ] }
+                        },
+                        { "__type": "textSnippet", "string": "inner two" },
+                    ]))] }
+                },
+                list(json!([
+                    { "__type": "textSnippet", "string": "a" },
+                    { "__type": "textSnippet", "string": "b" },
+                ])),
+            ]))]),
+        ),
+        (
+            "list_item_unknown_snippet_survives_next_to_prose_spelling_its_marker",
+            json!([list(json!([
+                { "__type": "wardleyMap" },
+                { "__type": "textSnippet", "string": "[[unknown: wardleyMap]]" },
+            ]))]),
+        ),
+        (
+            "prose_lines_after_the_first_that_look_like_blocks_stay_prose",
+            json!([
+                { "__type": "textSnippet", "string": "intro\n- not a list\n> not a quote\n```\nnot code\n```" },
+            ]),
+        ),
+        (
+            "guard_code_snippet_containing_a_longer_fence_survives",
+            json!([{
+                "__type": "jsonSnippet",
+                "code": "outer\n````\ninner\n````\ndone",
+            }]),
+        ),
+        (
+            "guard_prose_that_looks_like_a_fence_stays_prose",
+            json!([
+                { "__type": "textSnippet", "string": "```rust\nnot really a code snippet\n```" },
+            ]),
+        ),
+        (
+            "guard_prose_that_starts_with_a_backslash_survives",
+            json!([
+                { "__type": "textSnippet", "string": "\\- already escaped by hand" },
+                { "__type": "textSnippet", "string": "\\newcommand{\\foo}{bar}" },
+            ]),
+        ),
+        (
+            "guard_link_snippet_still_comes_back_as_a_link",
+            json!([
+                { "__type": "linkSnippet", "string": "label", "url": "https://example.com" },
+            ]),
+        ),
+        (
+            "guard_rewrite_block_survives_alongside_a_code_snippet",
+            json!([
+                {
+                    "__type": "pharoRewrite",
+                    "search": "children isNil ifTrue: [ ^ self ].",
+                    "replace": "children ifNil: [ ^ self ].",
+                    "isMethodPattern": false,
+                    "scope": "#(#('searchMethods' '') )",
+                },
+                { "__type": "pythonSnippet", "code": "print('after the rewrite')" },
+            ]),
+        ),
+        (
+            "guard_adjacent_text_snippets_stay_separate",
+            json!([
+                { "__type": "textSnippet", "string": "first snippet" },
+                { "__type": "textSnippet", "string": "second snippet" },
+                { "__type": "textSnippet", "string": "third snippet" },
+            ]),
+        ),
+        (
+            "guard_list_followed_by_prose_stays_split",
+            json!([
+                {
+                    "__type": "listSnippet",
+                    "children": { "items": [
+                        { "__type": "textSnippet", "string": "first item" },
+                        { "__type": "textSnippet", "string": "second item" },
+                    ] }
+                },
+                { "__type": "textSnippet", "string": "prose after the list" },
+            ]),
+        ),
+    ];
+    let kb = tempfile::tempdir().expect("tempdir");
+    for (name, items) in cases {
+        write_page(kb.path(), name, name, items);
+    }
     assert_roundtrips(kb.path());
 }
 
@@ -218,58 +333,6 @@ fn list_item_code_keeps_its_backslashes_and_page_links() {
 }
 
 #[test]
-fn list_item_paragraph_keeps_its_code_block_child() {
-    let kb = kb_with_snippets(json!([list(json!([{
-        "__type": "textSnippet",
-        "string": "intro",
-        "children": { "items": [
-            { "__type": "pythonSnippet", "code": "print('hi')\n\nprint('bye')" },
-        ] }
-    }]))]));
-    assert_roundtrips(kb.path());
-}
-
-#[test]
-fn list_item_quote_survives() {
-    let kb = kb_with_snippets(json!([list(json!([
-        { "__type": "textSnippet", "string": "> first\n\nthird" },
-        {
-            "__type": "textSnippet",
-            "string": "intro",
-            "children": { "items": [
-                { "__type": "textSnippet", "string": "> quoted" },
-            ] }
-        },
-    ]))]));
-    assert_roundtrips(kb.path());
-}
-
-#[test]
-fn list_item_nested_list_survives() {
-    let kb = kb_with_snippets(json!([list(json!([
-        {
-            "__type": "textSnippet",
-            "string": "outer",
-            "children": { "items": [list(json!([
-                {
-                    "__type": "textSnippet",
-                    "string": "inner one",
-                    "children": { "items": [
-                        { "__type": "pythonSnippet", "code": "print('deep')" },
-                    ] }
-                },
-                { "__type": "textSnippet", "string": "inner two" },
-            ]))] }
-        },
-        list(json!([
-            { "__type": "textSnippet", "string": "a" },
-            { "__type": "textSnippet", "string": "b" },
-        ])),
-    ]))]));
-    assert_roundtrips(kb.path());
-}
-
-#[test]
 fn list_item_link_snippet_and_link_only_paragraph_stay_apart() {
     let kb = kb_with_snippets(json!([list(json!([
         { "__type": "linkSnippet", "string": "label", "url": "https://example.com" },
@@ -280,51 +343,6 @@ fn list_item_link_snippet_and_link_only_paragraph_stay_apart() {
         markdown.contains("- [label](https://example.com)\n- \\[label](https://example.com)\n"),
         "a link snippet and a link-only paragraph are written alike:\n{markdown}"
     );
-    assert_roundtrips(kb.path());
-}
-
-#[test]
-fn list_item_unknown_snippet_survives_next_to_prose_spelling_its_marker() {
-    let kb = kb_with_snippets(json!([list(json!([
-        { "__type": "wardleyMap" },
-        { "__type": "textSnippet", "string": "[[unknown: wardleyMap]]" },
-    ]))]));
-    assert_roundtrips(kb.path());
-}
-
-#[test]
-fn prose_lines_after_the_first_that_look_like_blocks_stay_prose() {
-    let kb = kb_with_snippets(json!([
-        { "__type": "textSnippet", "string": "intro\n- not a list\n> not a quote\n```\nnot code\n```" },
-    ]));
-    assert_roundtrips(kb.path());
-}
-
-// guards
-
-#[test]
-fn guard_code_snippet_containing_a_longer_fence_survives() {
-    let kb = kb_with_snippets(json!([{
-        "__type": "jsonSnippet",
-        "code": "outer\n````\ninner\n````\ndone",
-    }]));
-    assert_roundtrips(kb.path());
-}
-
-#[test]
-fn guard_prose_that_looks_like_a_fence_stays_prose() {
-    let kb = kb_with_snippets(json!([
-        { "__type": "textSnippet", "string": "```rust\nnot really a code snippet\n```" },
-    ]));
-    assert_roundtrips(kb.path());
-}
-
-#[test]
-fn guard_prose_that_starts_with_a_backslash_survives() {
-    let kb = kb_with_snippets(json!([
-        { "__type": "textSnippet", "string": "\\- already escaped by hand" },
-        { "__type": "textSnippet", "string": "\\newcommand{\\foo}{bar}" },
-    ]));
     assert_roundtrips(kb.path());
 }
 
@@ -362,14 +380,6 @@ fn guard_list_item_that_is_a_link_stays_a_list_item() {
 }
 
 #[test]
-fn guard_link_snippet_still_comes_back_as_a_link() {
-    let kb = kb_with_snippets(json!([
-        { "__type": "linkSnippet", "string": "label", "url": "https://example.com" },
-    ]));
-    assert_roundtrips(kb.path());
-}
-
-#[test]
 fn guard_prose_with_a_link_line_among_others_stays_prose() {
     let kb = kb_with_snippets(json!([
         { "__type": "textSnippet", "string": "intro\n[label](https://example.com)\noutro" },
@@ -379,45 +389,5 @@ fn guard_prose_with_a_link_line_among_others_stays_prose() {
         markdown.contains("intro\n[label](https://example.com)\noutro\n"),
         "a link line inside a paragraph was escaped into literal text:\n{markdown}"
     );
-    assert_roundtrips(kb.path());
-}
-
-#[test]
-fn guard_rewrite_block_survives_alongside_a_code_snippet() {
-    let kb = kb_with_snippets(json!([
-        {
-            "__type": "pharoRewrite",
-            "search": "children isNil ifTrue: [ ^ self ].",
-            "replace": "children ifNil: [ ^ self ].",
-            "isMethodPattern": false,
-            "scope": "#(#('searchMethods' '') )",
-        },
-        { "__type": "pythonSnippet", "code": "print('after the rewrite')" },
-    ]));
-    assert_roundtrips(kb.path());
-}
-
-#[test]
-fn guard_adjacent_text_snippets_stay_separate() {
-    let kb = kb_with_snippets(json!([
-        { "__type": "textSnippet", "string": "first snippet" },
-        { "__type": "textSnippet", "string": "second snippet" },
-        { "__type": "textSnippet", "string": "third snippet" },
-    ]));
-    assert_roundtrips(kb.path());
-}
-
-#[test]
-fn guard_list_followed_by_prose_stays_split() {
-    let kb = kb_with_snippets(json!([
-        {
-            "__type": "listSnippet",
-            "children": { "items": [
-                { "__type": "textSnippet", "string": "first item" },
-                { "__type": "textSnippet", "string": "second item" },
-            ] }
-        },
-        { "__type": "textSnippet", "string": "prose after the list" },
-    ]));
     assert_roundtrips(kb.path());
 }

@@ -195,10 +195,6 @@ mod tests {
         assert_eq!(parsed.positional(0), Some("kb"));
         assert_eq!(parsed.positional(1), Some("extra"));
         assert_eq!(parsed.positional(2), None);
-    }
-
-    #[test]
-    fn positionals_keep_command_line_order() {
         let parsed = parse(&["a", "--json", "b"]).unwrap().unwrap();
         assert_eq!(parsed.positional(0), Some("a"));
         assert_eq!(parsed.positional(1), Some("b"));

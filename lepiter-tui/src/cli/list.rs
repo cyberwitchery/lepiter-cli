@@ -201,9 +201,15 @@ mod tests {
         let (dir, index) = make_test_kb(&[("p1", "Alpha", "body")]);
         let out = output_string(|buf| write_list_plain(buf, &index));
         let lines: Vec<&str> = out.lines().collect();
-        assert!(lines[0].contains("title"));
-        assert!(lines[0].contains("id"));
-        assert!(lines[1].contains("-----"));
+        assert_eq!(
+            lines[0].split_whitespace().collect::<Vec<_>>(),
+            ["title", "id"]
+        );
+        assert!(
+            lines[1].chars().all(|c| c == '-' || c == ' ') && lines[1].contains('-'),
+            "{}",
+            lines[1]
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -249,9 +255,8 @@ mod tests {
     fn list_plain_title_width_clamped_to_min_5() {
         let (dir, index) = make_test_kb(&[("p1", "A", "body")]);
         let out = output_string(|buf| write_list_plain(buf, &index));
-        let header = out.lines().next().unwrap();
-        // "title" is 5 chars, column should be at least 5 wide.
-        assert!(header.starts_with("title"));
+        // "title" is 5 chars, so the column is at least 5 wide.
+        assert_eq!(out.lines().nth(2), Some("A      p1"));
         std::fs::remove_dir_all(&dir).ok();
     }
 }

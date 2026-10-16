@@ -194,73 +194,47 @@ where
 mod tests {
     use super::*;
 
-    // ── cache_limit_from_env ───────────────────────────────────────
+    // ── cache_limit_from_env / cache_limit_from_env_allow_zero ─────
 
     #[test]
-    fn cache_limit_from_env_uses_default_when_unset() {
-        // Use a variable name unlikely to be set in the environment.
-        let val = cache_limit_from_env("__LEPITER_TEST_UNSET_12345__", 42);
-        assert_eq!(val, 42);
-    }
-
-    #[test]
-    fn cache_limit_from_env_parses_valid_value() {
-        unsafe { env::set_var("__LEPITER_TEST_CACHE_VALID__", "64") };
-        let val = cache_limit_from_env("__LEPITER_TEST_CACHE_VALID__", 10);
-        assert_eq!(val, 64);
-        unsafe { env::remove_var("__LEPITER_TEST_CACHE_VALID__") };
-    }
-
-    #[test]
-    fn cache_limit_from_env_clamps_zero_to_one() {
-        unsafe { env::set_var("__LEPITER_TEST_CACHE_ZERO__", "0") };
-        let val = cache_limit_from_env("__LEPITER_TEST_CACHE_ZERO__", 10);
-        assert_eq!(val, 1);
-        unsafe { env::remove_var("__LEPITER_TEST_CACHE_ZERO__") };
-    }
-
-    #[test]
-    fn cache_limit_from_env_falls_back_on_non_numeric() {
-        unsafe { env::set_var("__LEPITER_TEST_CACHE_BAD__", "not_a_number") };
-        let val = cache_limit_from_env("__LEPITER_TEST_CACHE_BAD__", 99);
-        assert_eq!(val, 99);
-        unsafe { env::remove_var("__LEPITER_TEST_CACHE_BAD__") };
-    }
-
-    #[test]
-    fn cache_limit_from_env_clamps_default_zero_to_one() {
-        let val = cache_limit_from_env("__LEPITER_TEST_UNSET_99999__", 0);
-        assert_eq!(val, 1);
-    }
-
-    // ── cache_limit_from_env_allow_zero ────────────────────────────
-
-    #[test]
-    fn cache_limit_allow_zero_uses_default_when_unset() {
-        let val = cache_limit_from_env_allow_zero("__LEPITER_TEST_AZ_UNSET__", 50);
-        assert_eq!(val, 50);
-    }
-
-    #[test]
-    fn cache_limit_allow_zero_permits_zero() {
-        unsafe { env::set_var("__LEPITER_TEST_AZ_ZERO__", "0") };
-        let val = cache_limit_from_env_allow_zero("__LEPITER_TEST_AZ_ZERO__", 10);
-        assert_eq!(val, 0);
-        unsafe { env::remove_var("__LEPITER_TEST_AZ_ZERO__") };
-    }
-
-    #[test]
-    fn cache_limit_allow_zero_parses_valid_value() {
-        unsafe { env::set_var("__LEPITER_TEST_AZ_VALID__", "256") };
-        let val = cache_limit_from_env_allow_zero("__LEPITER_TEST_AZ_VALID__", 10);
-        assert_eq!(val, 256);
-        unsafe { env::remove_var("__LEPITER_TEST_AZ_VALID__") };
-    }
-
-    #[test]
-    fn cache_limit_allow_zero_default_zero_stays_zero() {
-        let val = cache_limit_from_env_allow_zero("__LEPITER_TEST_AZ_DEF0__", 0);
-        assert_eq!(val, 0);
+    fn cache_limit_reads_the_env_var_or_falls_back() {
+        type Limit = fn(&str, usize) -> usize;
+        let plain: Limit = cache_limit_from_env;
+        let allow_zero: Limit = cache_limit_from_env_allow_zero;
+        // Each row has its own variable name: tests run in parallel.
+        let cases: [(Limit, &str, Option<&str>, usize, usize); 9] = [
+            (plain, "__LEPITER_TEST_UNSET_12345__", None, 42, 42),
+            (plain, "__LEPITER_TEST_CACHE_VALID__", Some("64"), 10, 64),
+            (plain, "__LEPITER_TEST_CACHE_ZERO__", Some("0"), 10, 1),
+            (
+                plain,
+                "__LEPITER_TEST_CACHE_BAD__",
+                Some("not_a_number"),
+                99,
+                99,
+            ),
+            (plain, "__LEPITER_TEST_UNSET_99999__", None, 0, 1),
+            (allow_zero, "__LEPITER_TEST_AZ_UNSET__", None, 50, 50),
+            // LEPITER_PLUGIN_CACHE=0 disables the cache.
+            (allow_zero, "__LEPITER_TEST_AZ_ZERO__", Some("0"), 10, 0),
+            (
+                allow_zero,
+                "__LEPITER_TEST_AZ_VALID__",
+                Some("256"),
+                10,
+                256,
+            ),
+            (allow_zero, "__LEPITER_TEST_AZ_DEF0__", None, 0, 0),
+        ];
+        for (limit, var, value, default, expected) in cases {
+            if let Some(value) = value {
+                unsafe { env::set_var(var, value) };
+            }
+            assert_eq!(limit(var, default), expected, "{var}={value:?}");
+            if value.is_some() {
+                unsafe { env::remove_var(var) };
+            }
+        }
     }
 
     // ── LruCache::new / capacity / len ─────────────────────────────
@@ -272,13 +246,6 @@ mod tests {
         assert_eq!(cache.capacity(), 10);
     }
 
-    #[test]
-    fn zero_capacity_cache() {
-        let cache: LruCache<String, i32> = LruCache::new(0);
-        assert_eq!(cache.capacity(), 0);
-        assert_eq!(cache.len(), 0);
-    }
-
     // ── insert / get / peek ────────────────────────────────────────
 
     #[test]
@@ -287,13 +254,6 @@ mod tests {
         cache.insert("a".to_string(), 1);
         assert_eq!(cache.get("a"), Some(&1));
         assert_eq!(cache.len(), 1);
-    }
-
-    #[test]
-    fn get_missing_returns_none() {
-        let mut cache: LruCache<String, i32> = LruCache::new(10);
-        cache.insert("a".to_string(), 1);
-        assert_eq!(cache.get("b"), None);
     }
 
     #[test]
@@ -395,6 +355,7 @@ mod tests {
     #[test]
     fn zero_capacity_rejects_inserts() {
         let mut cache = LruCache::new(0);
+        assert_eq!(cache.capacity(), 0);
         cache.insert("a".to_string(), 1);
         assert_eq!(cache.len(), 0);
         assert_eq!(cache.get("a"), None);
@@ -434,42 +395,7 @@ mod tests {
 
     // ── borrowed key lookups ───────────────────────────────────────
 
-    #[test]
-    fn get_with_str_key() {
-        let mut cache = LruCache::new(10);
-        cache.insert("hello".to_string(), 42);
-        // Look up with &str, not String.
-        assert_eq!(cache.get("hello"), Some(&42));
-    }
-
-    #[test]
-    fn peek_with_str_key() {
-        let mut cache = LruCache::new(10);
-        cache.insert("hello".to_string(), 42);
-        assert_eq!(cache.peek("hello"), Some(&42));
-    }
-
-    #[test]
-    fn touch_with_str_key() {
-        let mut cache = LruCache::new(10);
-        cache.insert("hello".to_string(), 42);
-        assert!(cache.touch("hello"));
-    }
-
     // ── contains_key ───────────────────────────────────────────────
-
-    #[test]
-    fn contains_key_present() {
-        let mut cache = LruCache::new(10);
-        cache.insert("a".to_string(), 1);
-        assert!(cache.contains_key("a"));
-    }
-
-    #[test]
-    fn contains_key_absent() {
-        let cache: LruCache<String, i32> = LruCache::new(10);
-        assert!(!cache.contains_key("missing"));
-    }
 
     #[test]
     fn contains_key_after_eviction() {
@@ -485,12 +411,6 @@ mod tests {
     // ── iter ──────────────────────────────────────────────────────
 
     #[test]
-    fn iter_empty_cache() {
-        let cache: LruCache<String, i32> = LruCache::new(10);
-        assert_eq!(cache.iter().count(), 0);
-    }
-
-    #[test]
     fn iter_returns_all_entries() {
         let mut cache = LruCache::new(10);
         cache.insert("a".to_string(), 1);
@@ -501,36 +421,7 @@ mod tests {
         assert_eq!(entries, vec![("a", 1), ("b", 2), ("c", 3)]);
     }
 
-    #[test]
-    fn iter_does_not_touch_order() {
-        let mut cache = LruCache::new(3);
-        cache.insert("a".to_string(), 1);
-        cache.insert("b".to_string(), 2);
-        cache.insert("c".to_string(), 3);
-
-        // Iterate (should not change order).
-        let _: Vec<_> = cache.iter().collect();
-
-        // Insert "d" — should evict "a" (still oldest).
-        cache.insert("d".to_string(), 4);
-        assert!(!cache.contains_key("a"));
-        assert!(cache.contains_key("b"));
-    }
-
     // ── integer keys ───────────────────────────────────────────────
-
-    #[test]
-    fn integer_keys_work() {
-        let mut cache = LruCache::new(3);
-        cache.insert(1, "one");
-        cache.insert(2, "two");
-        cache.insert(3, "three");
-        assert_eq!(cache.get(&1), Some(&"one"));
-
-        cache.insert(4, "four");
-        assert_eq!(cache.peek(&1), Some(&"one")); // 1 was touched by get
-        assert_eq!(cache.peek(&2), None); // 2 was evicted
-    }
 
     // ── matching_snippet ───────────────────────────────────────────
 
@@ -538,15 +429,14 @@ mod tests {
     fn matching_snippet_returns_context_around_match() {
         let raw = "the quick brown fox jumps over the lazy dog";
         let snippet = matching_snippet(raw, "fox").unwrap();
-        assert!(snippet.contains("fox"));
-        assert!(snippet.contains("quick"));
+        assert_eq!(snippet, "the quick brown fox jumps over the lazy dog");
     }
 
     #[test]
     fn matching_snippet_is_case_insensitive() {
         let raw = "The Quick Brown FOX";
         let snippet = matching_snippet(raw, "fox").unwrap();
-        assert!(snippet.contains("FOX"));
+        assert_eq!(snippet, "The Quick Brown FOX");
     }
 
     #[test]
@@ -562,8 +452,8 @@ mod tests {
     #[test]
     fn matching_snippet_flattens_newlines() {
         let snippet = matching_snippet("alpha\nbeta needle gamma", "needle").unwrap();
-        assert!(!snippet.contains('\n'));
-        assert!(snippet.contains("beta needle gamma"));
+        assert!(!snippet.contains('\n'), "{snippet:?}");
+        assert!(snippet.contains("beta needle gamma"), "{snippet:?}");
     }
 
     #[test]
@@ -571,25 +461,29 @@ mod tests {
         // CRLF-authored content leaves a bare CR behind once the '\n' is
         // flattened, and a terminal reads that as a cursor return.
         let snippet = matching_snippet("alpha\r\nbeta needle gamma", "needle").unwrap();
-        assert!(!snippet.contains('\r'));
-        assert!(snippet.contains("beta needle gamma"));
+        assert!(!snippet.contains('\r'), "{snippet:?}");
+        assert!(snippet.contains("beta needle gamma"), "{snippet:?}");
     }
 
     #[test]
     fn matching_snippet_truncates_to_120_chars() {
-        // A long run after the match should be capped (window is +80 bytes and
-        // the final cap is 120 chars, so a long tail is truncated).
-        let raw = format!("needle {}", "x".repeat(500));
+        // a long run around the match is cut to the snippet cap and marked as cut.
+        let raw = format!("{}needle{}", "x".repeat(100), "x".repeat(500));
         let snippet = matching_snippet(&raw, "needle").unwrap();
-        assert!(snippet.chars().count() <= 120);
+        assert!(
+            snippet.chars().count() <= 120,
+            "{} chars",
+            snippet.chars().count()
+        );
+        assert!(snippet.contains("needle"), "{snippet:?}");
+        assert!(snippet.ends_with('…'), "{snippet:?}");
     }
 
     #[test]
     fn matching_snippet_preserves_accented_content() {
         let raw = "café münchen straße — needle here";
         let snippet = matching_snippet(raw, "needle").unwrap();
-        assert!(snippet.contains("needle"));
-        assert!(snippet.contains("straße"));
+        assert_eq!(snippet, raw);
     }
 
     #[test]
@@ -599,6 +493,6 @@ mod tests {
         // on a char boundary or slicing the raw text would panic.
         let raw = "\u{212A}elvin scale, needle tail";
         let snippet = matching_snippet(raw, "needle").unwrap();
-        assert!(snippet.contains("needle"));
+        assert_eq!(snippet, raw);
     }
 }

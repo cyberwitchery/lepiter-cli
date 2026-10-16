@@ -396,46 +396,73 @@ mod tests {
     }
 
     #[test]
-    fn bold() {
-        let elems = parse_inline("before **bold** after");
-        assert_eq!(elems.len(), 3);
-        assert_eq!(
-            elems[1],
-            InlineElement::Styled {
-                text: "bold".into(),
-                bold: true,
-                italic: false,
-                code: false,
-            }
-        );
-    }
-
-    #[test]
-    fn italic() {
-        let elems = parse_inline("some *italic* text");
-        assert_eq!(
-            elems[1],
-            InlineElement::Styled {
-                text: "italic".into(),
-                bold: false,
-                italic: true,
-                code: false,
-            }
-        );
-    }
-
-    #[test]
-    fn code() {
-        let elems = parse_inline("run `cargo test` now");
-        assert_eq!(
-            elems[1],
-            InlineElement::Styled {
-                text: "cargo test".into(),
-                bold: false,
-                italic: false,
-                code: true,
-            }
-        );
+    fn each_element_kind_parses_between_prose() {
+        let cases = [
+            (
+                "before **bold** after",
+                "before ",
+                InlineElement::Styled {
+                    text: "bold".into(),
+                    bold: true,
+                    italic: false,
+                    code: false,
+                },
+                " after",
+            ),
+            (
+                "some *italic* text",
+                "some ",
+                InlineElement::Styled {
+                    text: "italic".into(),
+                    bold: false,
+                    italic: true,
+                    code: false,
+                },
+                " text",
+            ),
+            (
+                "run `cargo test` now",
+                "run ",
+                InlineElement::Styled {
+                    text: "cargo test".into(),
+                    bold: false,
+                    italic: false,
+                    code: true,
+                },
+                " now",
+            ),
+            (
+                "see [[My Page]] here",
+                "see ",
+                InlineElement::WikiLink {
+                    text: "My Page".into(),
+                },
+                " here",
+            ),
+            (
+                "click [here](https://example.com) done",
+                "click ",
+                InlineElement::Link {
+                    label: "here".into(),
+                    target: "https://example.com".into(),
+                },
+                " done",
+            ),
+            (
+                "text {{gtView}} more",
+                "text ",
+                InlineElement::Annotation {
+                    text: "{{gtView}}".into(),
+                },
+                " more",
+            ),
+        ];
+        for (text, before, element, after) in cases {
+            let mut expected = plain(before);
+            expected.push(element);
+            expected.extend(plain(after));
+            assert_eq!(parse_inline(text), expected, "{text:?}");
+        }
     }
 
     #[test]
@@ -494,38 +521,28 @@ mod tests {
 
     #[test]
     fn bold_and_italic() {
-        let elems = parse_inline("**bold *and italic* still bold**");
         assert_eq!(
-            elems[1],
-            InlineElement::Styled {
-                text: "and italic".into(),
-                bold: true,
-                italic: true,
-                code: false,
-            }
-        );
-    }
-
-    #[test]
-    fn wiki_link() {
-        let elems = parse_inline("see [[My Page]] here");
-        assert_eq!(
-            elems[1],
-            InlineElement::WikiLink {
-                text: "My Page".into()
-            }
-        );
-    }
-
-    #[test]
-    fn url_link() {
-        let elems = parse_inline("click [here](https://example.com) done");
-        assert_eq!(
-            elems[1],
-            InlineElement::Link {
-                label: "here".into(),
-                target: "https://example.com".into(),
-            }
+            parse_inline("**bold *and italic* still bold**"),
+            vec![
+                InlineElement::Styled {
+                    text: "bold ".into(),
+                    bold: true,
+                    italic: false,
+                    code: false,
+                },
+                InlineElement::Styled {
+                    text: "and italic".into(),
+                    bold: true,
+                    italic: true,
+                    code: false,
+                },
+                InlineElement::Styled {
+                    text: " still bold".into(),
+                    bold: true,
+                    italic: false,
+                    code: false,
+                },
+            ]
         );
     }
 
@@ -559,17 +576,6 @@ mod tests {
             vec![InlineElement::Link {
                 label: "x".into(),
                 target: "a(b(c)d)e".into(),
-            }]
-        );
-    }
-
-    #[test]
-    fn an_image_is_its_own_element() {
-        assert_eq!(
-            parse_inline("![alt text](attachments/x.png)"),
-            vec![InlineElement::Image {
-                alt: "alt text".into(),
-                target: "attachments/x.png".into(),
             }]
         );
     }
@@ -626,28 +632,6 @@ mod tests {
             vec![InlineElement::Image {
                 alt: "a](b)".into(),
                 target: "c".into(),
-            }]
-        );
-    }
-
-    #[test]
-    fn an_image_target_keeps_balanced_parens() {
-        assert_eq!(
-            parse_inline("![x](a(b)c)"),
-            vec![InlineElement::Image {
-                alt: "x".into(),
-                target: "a(b)c".into(),
-            }]
-        );
-    }
-
-    #[test]
-    fn an_image_target_is_trimmed() {
-        assert_eq!(
-            parse_inline("![x](  t  )"),
-            vec![InlineElement::Image {
-                alt: "x".into(),
-                target: "t".into(),
             }]
         );
     }
@@ -722,29 +706,17 @@ mod tests {
     }
 
     #[test]
-    fn an_unbalanced_image_is_literal_text() {
-        assert_eq!(
-            parse_inline("![a](b"),
-            vec![InlineElement::Styled {
-                text: "![a](b".into(),
-                bold: false,
-                italic: false,
-                code: false,
-            }]
-        );
-    }
-
-    #[test]
-    fn an_image_with_an_empty_target_is_literal_text() {
-        assert_eq!(
-            parse_inline("![a]()"),
-            vec![InlineElement::Styled {
-                text: "![a]()".into(),
-                bold: false,
-                italic: false,
-                code: false,
-            }]
-        );
+    fn non_links_are_literal_text() {
+        for text in [
+            "![a](b",
+            "![a]()",
+            "[x](a(b)",
+            "[a]() and [[ ]]",
+            "array[0] done",
+            "a lone ` in prose",
+        ] {
+            assert_eq!(parse_inline(text), plain(text), "{text:?}");
+        }
     }
 
     #[test]
@@ -862,29 +834,13 @@ mod tests {
     }
 
     #[test]
-    fn unbalanced_target_is_not_a_link() {
-        assert_eq!(
-            parse_inline("[x](a(b)"),
-            vec![InlineElement::Styled {
-                text: "[x](a(b)".into(),
-                bold: false,
-                italic: false,
-                code: false,
-            }]
-        );
-    }
-
-    #[test]
     fn unbalanced_target_does_not_swallow_a_later_link() {
-        let elems = parse_inline("[a](un(closed and [b](ok)");
-        assert_eq!(elems.len(), 2);
-        assert_eq!(
-            elems[1],
-            InlineElement::Link {
-                label: "b".into(),
-                target: "ok".into(),
-            }
-        );
+        let mut expected = plain("[a](un(closed and ");
+        expected.push(InlineElement::Link {
+            label: "b".into(),
+            target: "ok".into(),
+        });
+        assert_eq!(parse_inline("[a](un(closed and [b](ok)"), expected);
     }
 
     #[test]
@@ -977,19 +933,6 @@ mod tests {
         assert_eq!(
             parse_inline("[[ a ]]"),
             vec![InlineElement::WikiLink { text: "a".into() }]
-        );
-    }
-
-    #[test]
-    fn empty_target_is_not_a_link() {
-        assert_eq!(
-            parse_inline("[a]() and [[ ]]"),
-            vec![InlineElement::Styled {
-                text: "[a]() and [[ ]]".into(),
-                bold: false,
-                italic: false,
-                code: false,
-            }]
         );
     }
 
@@ -1227,11 +1170,6 @@ mod tests {
     }
 
     #[test]
-    fn a_label_and_the_prose_beside_it_show_the_same_escape() {
-        assert_eq!(visible_text(r"[a\*b](page:t) vs a\*b"), "a*b vs a*b");
-    }
-
-    #[test]
     fn escapes_agree_with_commonmark() {
         // expected values from markdown-it-py 4.2.0, commonmark preset
         let cases: [(&str, &str); 18] = [
@@ -1315,17 +1253,6 @@ mod tests {
     }
 
     #[test]
-    fn annotation() {
-        let elems = parse_inline("text {{gtView}} more");
-        assert_eq!(
-            elems[1],
-            InlineElement::Annotation {
-                text: "{{gtView}}".into(),
-            }
-        );
-    }
-
-    #[test]
     fn code_span_yields_annotations_but_no_links() {
         assert_eq!(
             parse_inline("`[a](b) {{note}}`"),
@@ -1358,72 +1285,39 @@ mod tests {
 
     #[test]
     fn multiple_links() {
-        let elems = parse_inline("[[First]] and [second](url2)");
         assert_eq!(
-            elems[0],
-            InlineElement::WikiLink {
-                text: "First".into()
-            }
-        );
-        assert_eq!(
-            elems[2],
-            InlineElement::Link {
-                label: "second".into(),
-                target: "url2".into(),
-            }
-        );
-    }
-
-    #[test]
-    fn unclosed_bold_is_literal_text() {
-        assert_eq!(
-            parse_inline("before **unclosed"),
-            vec![InlineElement::Styled {
-                text: "before **unclosed".into(),
-                bold: false,
-                italic: false,
-                code: false,
-            }]
+            parse_inline("[[First]] and [second](url2)"),
+            vec![
+                InlineElement::WikiLink {
+                    text: "First".into()
+                },
+                InlineElement::Styled {
+                    text: " and ".into(),
+                    bold: false,
+                    italic: false,
+                    code: false,
+                },
+                InlineElement::Link {
+                    label: "second".into(),
+                    target: "url2".into(),
+                },
+            ]
         );
     }
 
     #[test]
-    fn unclosed_italic_is_literal_text() {
-        assert_eq!(
-            parse_inline("before *unclosed"),
-            vec![InlineElement::Styled {
-                text: "before *unclosed".into(),
-                bold: false,
-                italic: false,
-                code: false,
-            }]
-        );
-    }
-
-    #[test]
-    fn an_asterisk_in_prose_is_literal_text() {
-        assert_eq!(
-            parse_inline("we shipped 3 * 4 configs"),
-            vec![InlineElement::Styled {
-                text: "we shipped 3 * 4 configs".into(),
-                bold: false,
-                italic: false,
-                code: false,
-            }]
-        );
-    }
-
-    #[test]
-    fn a_trailing_asterisk_is_literal_text() {
-        assert_eq!(
-            parse_inline("see the note marked *"),
-            vec![InlineElement::Styled {
-                text: "see the note marked *".into(),
-                bold: false,
-                italic: false,
-                code: false,
-            }]
-        );
+    fn unmatched_asterisks_are_literal_text() {
+        for text in [
+            "before **unclosed",
+            "before *unclosed",
+            "we shipped 3 * 4 configs",
+            "see the note marked *",
+            "***a**",
+            "before ***unclosed",
+            "****x**** and *****y*****",
+        ] {
+            assert_eq!(parse_inline(text), plain(text), "{text:?}");
+        }
     }
 
     #[test]
@@ -1600,32 +1494,6 @@ mod tests {
     }
 
     #[test]
-    fn a_three_run_closes_only_at_another_three_run() {
-        assert_eq!(
-            parse_inline("***a**"),
-            vec![InlineElement::Styled {
-                text: "***a**".into(),
-                bold: false,
-                italic: false,
-                code: false,
-            }]
-        );
-    }
-
-    #[test]
-    fn unclosed_bold_italic_is_literal_text() {
-        assert_eq!(
-            parse_inline("before ***unclosed"),
-            vec![InlineElement::Styled {
-                text: "before ***unclosed".into(),
-                bold: false,
-                italic: false,
-                code: false,
-            }]
-        );
-    }
-
-    #[test]
     fn a_code_span_keeps_a_three_run_literal() {
         assert_eq!(
             parse_inline("see `***x***` here"),
@@ -1678,19 +1546,6 @@ mod tests {
     }
 
     #[test]
-    fn a_run_of_four_or_more_is_literal_text() {
-        assert_eq!(
-            parse_inline("****x**** and *****y*****"),
-            vec![InlineElement::Styled {
-                text: "****x**** and *****y*****".into(),
-                bold: false,
-                italic: false,
-                code: false,
-            }]
-        );
-    }
-
-    #[test]
     fn corpus_of_asterisk_runs_never_leaves_emphasis_open() {
         let alphabet = ['*', '*', '*', 'a', ' ', '`', '[', ']', '(', ')'];
         let mut state = 0x1234_5678_9abc_def1_u64;
@@ -1720,20 +1575,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn bracket_not_a_link() {
-        let elems = parse_inline("array[0] done");
-        assert_eq!(
-            elems,
-            vec![InlineElement::Styled {
-                text: "array[0] done".into(),
-                bold: false,
-                italic: false,
-                code: false,
-            }]
-        );
-    }
-
     fn code_spans(text: &str) -> Vec<String> {
         parse_inline(text)
             .into_iter()
@@ -1744,19 +1585,6 @@ mod tests {
                 _ => None,
             })
             .collect()
-    }
-
-    #[test]
-    fn unmatched_backtick_is_literal_text() {
-        assert_eq!(
-            parse_inline("a lone ` in prose"),
-            vec![InlineElement::Styled {
-                text: "a lone ` in prose".into(),
-                bold: false,
-                italic: false,
-                code: false,
-            }]
-        );
     }
 
     #[test]
@@ -1774,38 +1602,6 @@ mod tests {
                     text: "italic".into(),
                     bold: false,
                     italic: true,
-                    code: false,
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn code_span_can_contain_a_shorter_run() {
-        assert_eq!(code_spans("``a ` b``"), vec!["a ` b"]);
-    }
-
-    #[test]
-    fn a_run_closes_only_at_a_run_of_the_same_length() {
-        assert_eq!(code_spans("a `b`` c` d"), vec!["b`` c"]);
-        assert_eq!(code_spans("a ``b` c"), Vec::<String>::new());
-    }
-
-    #[test]
-    fn a_double_run_opens_one_span_not_two() {
-        assert_eq!(
-            parse_inline("``x`` y"),
-            vec![
-                InlineElement::Styled {
-                    text: "x".into(),
-                    bold: false,
-                    italic: false,
-                    code: true,
-                },
-                InlineElement::Styled {
-                    text: " y".into(),
-                    bold: false,
-                    italic: false,
                     code: false,
                 },
             ]

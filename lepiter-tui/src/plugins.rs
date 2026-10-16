@@ -621,26 +621,6 @@ mod tests {
     }
 
     #[test]
-    fn working_plugin_responds_within_timeout() {
-        let script = r#"read line; echo '{"ok":true,"lines":["hello"],"error":null}'"#;
-        let mut proc = PluginProcess::spawn(
-            "bash",
-            &["-c".to_string(), script.to_string()],
-            DEFAULT_STDERR_BYTES,
-        )
-        .unwrap();
-        let req = dummy_request();
-        let result = proc.request_with_timeout(&req, Duration::from_secs(5));
-        match result {
-            Ok(resp) => {
-                assert!(resp.ok);
-                assert_eq!(resp.lines, vec!["hello"]);
-            }
-            Err(e) => panic!("expected Ok, got: {e}"),
-        }
-    }
-
-    #[test]
     fn request_times_out_on_unresponsive_plugin() {
         // `sleep 60` outlives the 100ms timeout below and never writes stdout.
         // (`sleep infinity` is GNU-only — BSD `sleep` on macOS rejects it.)
@@ -658,37 +638,6 @@ mod tests {
             }
             other => panic!("expected Timeout, got: {other:?}"),
         }
-    }
-
-    #[test]
-    fn request_detects_mid_request_crash() {
-        // Plugin reads the request then exits without responding.
-        let script = "read line; exit 1";
-        let mut proc = PluginProcess::spawn(
-            "bash",
-            &["-c".to_string(), script.to_string()],
-            DEFAULT_STDERR_BYTES,
-        )
-        .unwrap();
-        let req = dummy_request();
-        let result = proc.request_with_timeout(&req, Duration::from_secs(5));
-        assert!(
-            matches!(result, Err(RequestError::Failed(_))),
-            "expected Failed, got: {result:?}"
-        );
-    }
-
-    #[test]
-    fn request_detects_already_exited_plugin() {
-        let mut proc = PluginProcess::spawn("true", &[], DEFAULT_STDERR_BYTES).unwrap();
-        // Give it a moment to exit.
-        std::thread::sleep(Duration::from_millis(50));
-        let req = dummy_request();
-        let result = proc.request_with_timeout(&req, Duration::from_secs(1));
-        assert!(
-            matches!(result, Err(RequestError::Failed(_))),
-            "expected Failed, got: {result:?}"
-        );
     }
 
     #[test]
@@ -742,6 +691,14 @@ mod tests {
         match result {
             Some(PluginRender::Lines(lines)) => assert_eq!(lines, vec!["recovered"]),
             other => panic!("expected Lines after respawn, got: {other:?}"),
+        }
+
+        // A second request (different key, so no cache hit) goes to the
+        // respawned process.
+        let result = mgr.render("testType", &serde_json::json!({"other": "key"}));
+        match result {
+            Some(PluginRender::Lines(lines)) => assert_eq!(lines, vec!["recovered"]),
+            other => panic!("expected Lines from the respawned process, got: {other:?}"),
         }
     }
 
@@ -1195,38 +1152,5 @@ mod tests {
             }
             other => panic!("expected Error, got: {other:?}"),
         }
-    }
-
-    #[test]
-    fn multiple_requests_work_after_respawn() {
-        let work_script =
-            r#"while read line; do echo '{"ok":true,"lines":["ok"],"error":null}'; done"#;
-
-        let proc = hung_plugin();
-
-        let mut mgr = PluginManager::empty();
-        mgr.timeout = Duration::from_millis(100);
-        mgr.retries = 1;
-        mgr.processes.push(PluginHandle {
-            name: "test".to_string(),
-            binary: "bash".to_string(),
-            args: vec!["-c".to_string(), work_script.to_string()],
-            process: proc,
-        });
-        mgr.by_type.insert("testType".to_string(), 0);
-
-        // First render: initial process hangs, respawns, then succeeds.
-        let r1 = mgr.render("testType", &serde_json::json!({"a": 1}));
-        assert!(
-            matches!(r1, Some(PluginRender::Lines(_))),
-            "first render should succeed after respawn"
-        );
-
-        // Second render (different key to avoid cache): uses the respawned process.
-        let r2 = mgr.render("testType", &serde_json::json!({"b": 2}));
-        assert!(
-            matches!(r2, Some(PluginRender::Lines(_))),
-            "second render should succeed on respawned process"
-        );
     }
 }

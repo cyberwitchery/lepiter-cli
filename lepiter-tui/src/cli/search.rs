@@ -412,7 +412,7 @@ mod tests {
         assert_eq!(records.len(), 1, "row must stay one record: {out:?}");
         let fields: Vec<&str> = records[0].split('\t').collect();
         assert_eq!(fields.len(), 4, "CR in snippet must not add a record");
-        assert!(fields[3].contains("fox is here"));
+        assert!(fields[3].contains("fox is here"), "{}", fields[3]);
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -443,16 +443,6 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    #[test]
-    fn search_tsv_content_match_label() {
-        let (dir, index) = make_test_kb(&[("p1", "Alpha", &[], "the quick brown fox")]);
-        let hits = index.search_hits("fox", true);
-        let snippets = snips(&index, &hits, "fox");
-        let out = output_string(|buf| write_search_tsv(buf, &index, &hits, &snippets));
-        assert!(out.contains("\tcontent\t"));
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
     // --- Plain table output ---
 
     #[test]
@@ -462,11 +452,15 @@ mod tests {
         let snippets = snips(&index, &hits, "alpha");
         let out = output_string(|buf| write_search_plain(buf, &index, &hits, &snippets));
         let lines: Vec<&str> = out.lines().collect();
-        assert!(lines[0].contains("title"));
-        assert!(lines[0].contains("id"));
-        assert!(lines[0].contains("match"));
-        // Second line is a separator of dashes.
-        assert!(lines[1].contains("-----"));
+        assert_eq!(
+            lines[0].split_whitespace().collect::<Vec<_>>(),
+            ["title", "id", "match"]
+        );
+        assert!(
+            lines[1].chars().all(|c| c == '-' || c == ' ') && lines[1].contains('-'),
+            "{}",
+            lines[1]
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -476,10 +470,11 @@ mod tests {
         let hits = index.search_hits("rust", false);
         let snippets = snips(&index, &hits, "rust");
         let out = output_string(|buf| write_search_plain(buf, &index, &hits, &snippets));
-        // Data row should contain the title, id, and match kind.
-        assert!(out.contains("Rust Guide"));
-        assert!(out.contains("p1"));
-        assert!(out.contains("title"));
+        // the data row, not the header, carries the match kind.
+        let row = out.lines().nth(2).unwrap();
+        assert!(row.starts_with("Rust Guide"), "{row}");
+        assert!(row.contains("p1"), "{row}");
+        assert!(row.trim_end().ends_with("title"), "{row}");
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -549,9 +544,10 @@ mod tests {
         let hits = index.search_hits("a", false);
         let snippets = snips(&index, &hits, "a");
         let out = output_string(|buf| write_search_plain(buf, &index, &hits, &snippets));
-        let header = out.lines().next().unwrap();
-        // "title" is 5 chars and should be left-padded to at least 5.
-        assert!(header.starts_with("title"));
+        // "title" is 5 chars, so the column is at least 5 wide.
+        // "A" padded to the 5-wide column, then the id.
+        let row = out.lines().nth(2).unwrap();
+        assert!(row.starts_with("A      p1"), "{row}");
         std::fs::remove_dir_all(&dir).ok();
     }
 }

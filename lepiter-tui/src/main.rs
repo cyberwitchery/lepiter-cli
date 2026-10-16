@@ -964,18 +964,18 @@ fn render_page_view(frame: &mut Frame, app: &mut App) {
         Text::from(vec![Line::raw("Press Enter on a page from the list")])
     };
 
-    let paragraph = Paragraph::new(text)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Page")
-                .border_style(Style::default().fg(Color::Blue)),
-        )
-        .wrap(Wrap { trim: false });
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title("Page")
+        .border_style(Style::default().fg(Color::Blue));
+    let inner = block.inner(chunks[1]);
+    let paragraph = Paragraph::new(text).block(block).wrap(Wrap { trim: false });
     // scrolling counts wrapped screen rows, so the bottom is the wrapped height
-    // (block borders included) less the rows the view has.
+    // less the rows the view has. line_count adds the block's top and bottom
+    // but wraps at the width it is given, so it gets the width inside the
+    // side borders and the outer height.
     let max_scroll = paragraph
-        .line_count(chunks[1].width)
+        .line_count(inner.width)
         .saturating_sub(usize::from(chunks[1].height));
     app.page_max_scroll = Some(max_scroll);
     app.page_scroll = app.page_scroll.min(max_scroll);

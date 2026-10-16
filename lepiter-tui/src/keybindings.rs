@@ -830,29 +830,33 @@ mod tests {
 
     #[test]
     fn page_scrolling_reaches_the_bottom_of_wrapped_text() {
-        // two source lines that wrap to more rows than a 40x12 page view shows.
-        let mut app = make_app_on_page();
-        let id = app.opened.clone().unwrap();
-        let mut page = app.current_rendered_page().unwrap().clone();
-        page.lines = vec![
-            ratatui::text::Line::raw("wrapped words ".repeat(15)),
-            ratatui::text::Line::raw("BOTTOM_SENTINEL"),
-        ];
-        page.links.clear();
-        app.rendered_cache.insert(id, page);
+        // a first source line that wraps to more rows than a 40x12 page view
+        // shows: at word boundaries, and as one unbroken run that only fits
+        // the 38 columns inside the borders, not the 40 outside them.
+        for first in ["wrapped words ".repeat(15), "x".repeat(240)] {
+            let mut app = make_app_on_page();
+            let id = app.opened.clone().unwrap();
+            let mut page = app.current_rendered_page().unwrap().clone();
+            page.lines = vec![
+                ratatui::text::Line::raw(first.clone()),
+                ratatui::text::Line::raw("BOTTOM_SENTINEL"),
+            ];
+            page.links.clear();
+            app.rendered_cache.insert(id, page);
 
-        for keys in [vec![KeyCode::Char('G')], vec![KeyCode::Char('j'); 100]] {
-            app.page_scroll = 0;
-            assert!(!draw(&mut app, 40, 12).contains("BOTTOM_SENTINEL"));
-            for code in &keys {
-                app.handle_key(key(*code));
+            for keys in [vec![KeyCode::Char('G')], vec![KeyCode::Char('j'); 100]] {
+                app.page_scroll = 0;
+                assert!(!draw(&mut app, 40, 12).contains("BOTTOM_SENTINEL"));
+                for code in &keys {
+                    app.handle_key(key(*code));
+                }
+                let screen = draw(&mut app, 40, 12);
+                assert!(screen.contains("BOTTOM_SENTINEL"), "{first:.20}: {keys:?}");
+                // and the view can come back up at once.
+                let bottom = app.page_scroll;
+                app.handle_key(key(KeyCode::Char('k')));
+                assert_eq!(app.page_scroll, bottom - 1, "{first:.20}: {keys:?}");
             }
-            let screen = draw(&mut app, 40, 12);
-            assert!(screen.contains("BOTTOM_SENTINEL"), "{keys:?}");
-            // and the view can come back up at once.
-            let bottom = app.page_scroll;
-            app.handle_key(key(KeyCode::Char('k')));
-            assert_eq!(app.page_scroll, bottom - 1, "{keys:?}");
         }
     }
 

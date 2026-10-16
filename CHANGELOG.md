@@ -4,9 +4,23 @@ all notable changes to this project are documented in this file.
 
 ## Unreleased
 
+### changed
+- re-importing a markdown export written by 0.12.1 or earlier keeps a link
+  inside inline code pointing at the exported `.md` file: those versions
+  rewrote it on export, and `import` now leaves inline code as written
+
 ### fixed
+- a `[[…]]` or `[label](target)` inside inline code is code, as in Glamorous
+  Toolkit: `check`, `links` and backlinks no longer count it, the reader shows
+  it as code, and `export` and `import` leave it as written
+- inline code ends at a line break, as in Glamorous Toolkit, so the reader no
+  longer shows the lines between a backtick and a matching one on a later line
+  as code
+- `check`, `links` and backlinks count a `{{gtPage:…}}` annotation as a link to
+  the page it names, unless its `db=` names another knowledge base, so a page
+  reached only that way is no longer an orphan
 - `G` in the page view scrolls so the page's last line sits at the bottom of
-  the view; it used to scroll past the end and leave the view blank.
+  the view; it used to scroll past the end and leave the view blank
 
 ## 0.12.1 - 2026-10-14
 

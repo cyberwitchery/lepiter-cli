@@ -48,7 +48,9 @@ pub use index::{
     BrokenLink, DuplicateId, DuplicateTitle, KnowledgeBase, KnowledgeBaseIndex, LinkAnalysisResult,
     LinkEdge, LinkGraph, MissingAttachment, PageLoadError,
 };
-pub use inline_link::{InlineLink, InlineLinks, LinkKind, rewrite_inline_links, scan_inline_links};
+pub use inline_link::{
+    InlineLink, InlineLinks, LinkKind, code_span_at, rewrite_inline_links, scan_inline_links,
+};
 pub use model::{
     AttachmentError, AttachmentResolver, LinkTargetKind, Node, Page, PageId, PageMeta, ParseIssue,
     ResolvedAttachment, SearchHit, SearchMatchKind, TitleResolution,

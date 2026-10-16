@@ -10,13 +10,14 @@ use walkdir::WalkDir;
 use serde::Serialize;
 
 use crate::model::{
-    AttachmentResolver, LinkTargetKind, Page, PageId, PageMeta, ParseIssue, SearchHit,
+    AttachmentResolver, LinkTargetKind, Node, Page, PageId, PageMeta, ParseIssue, SearchHit,
     SearchMatchKind, TitleResolution,
 };
 use crate::parse::{parse_item_recursive, parse_page_meta};
 use crate::render::page_content_contains;
 use crate::util::{
-    extract_attachment_relative, extract_link_targets, extract_uuid_like, is_external_target,
+    PageAnnotation, extract_attachment_relative, extract_link_targets, extract_page_annotations,
+    extract_uuid_like, is_external_target, uid_from_base36, uid_from_uuid, uuid_from_uid,
 };
 
 /// Indexed knowledge base metadata with lazy page loading.
@@ -41,6 +42,8 @@ pub struct KnowledgeBaseIndex {
     /// Ids claimed by more than one `.lepiter` file, captured during [`KnowledgeBase::open`]
     /// before the collision is lost to `pages`.
     pub duplicate_ids: Vec<DuplicateId>,
+    /// this knowledge base's uid, from `lepiter.properties`.
+    database_id: Option<u128>,
 }
 
 /// Entry point for opening a Lepiter knowledge base directory.
@@ -99,6 +102,10 @@ impl KnowledgeBase {
         let sorted_ids = compute_sorted_ids(&pages);
         let title_index = compute_title_index(&pages, &sorted_ids);
         let duplicate_ids = collect_duplicate_ids(id_paths);
+        let database_id = std::fs::read(root.join("lepiter.properties"))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+            .and_then(|props| uid_from_uuid(props.get("uuid")?.as_str()?));
 
         Ok(KnowledgeBaseIndex {
             root,
@@ -109,6 +116,7 @@ impl KnowledgeBase {
             backlinks: HashMap::new(),
             forward_links: HashMap::new(),
             duplicate_ids,
+            database_id,
         })
     }
 }
@@ -372,6 +380,45 @@ impl KnowledgeBaseIndex {
         }
     }
 
+    /// what a `{{gtPage:…}}` annotation links to, or `None` when it names another
+    /// knowledge base. a title resolves as written, untrimmed.
+    fn classify_page_annotation(
+        &self,
+        annotation: &PageAnnotation,
+    ) -> Option<(String, LinkTargetKind)> {
+        if let Some(db) = &annotation.db
+            && self
+                .database_id
+                .is_none_or(|own| uid_from_base36(db) != Some(own))
+        {
+            return None;
+        }
+        if let Some(name) = &annotation.name {
+            let kind = match self.resolve_exact_from_index(&name.to_lowercase()) {
+                Some(TitleResolution::Unique(id)) => LinkTargetKind::InternalPage(id),
+                _ => LinkTargetKind::Unknown(name.clone()),
+            };
+            return Some((name.clone(), kind));
+        }
+        let id = annotation.id.as_ref()?;
+        let kind = uid_from_base36(id)
+            .map(uuid_from_uid)
+            .filter(|page_id| self.pages.contains_key(page_id))
+            .map_or_else(
+                || LinkTargetKind::Unknown(id.clone()),
+                LinkTargetKind::InternalPage,
+            );
+        Some((id.clone(), kind))
+    }
+
+    /// the `{{gtPage:…}}` annotations in `nodes` naming this knowledge base, with what each links to.
+    fn annotation_links(&self, nodes: &[Node]) -> Vec<(String, LinkTargetKind)> {
+        extract_page_annotations(nodes)
+            .iter()
+            .filter_map(|annotation| self.classify_page_annotation(annotation))
+            .collect()
+    }
+
     /// Builds the reverse link index by loading every page, extracting link
     /// targets, classifying them, and recording which pages link to which.
     ///
@@ -384,8 +431,12 @@ impl KnowledgeBaseIndex {
                 continue;
             };
             let mut source_targets = HashSet::new();
-            for target in extract_link_targets(&page.content) {
-                if let LinkTargetKind::InternalPage(target_id) = self.classify_link_target(&target)
+            let inline = extract_link_targets(&page.content)
+                .into_iter()
+                .map(|target| self.classify_link_target(&target));
+            let annotated = self.annotation_links(&page.content).into_iter();
+            for kind in inline.chain(annotated.map(|(_, kind)| kind)) {
+                if let LinkTargetKind::InternalPage(target_id) = kind
                     && target_id != *source_id
                     && source_targets.insert(target_id.clone())
                 {
@@ -436,8 +487,17 @@ impl KnowledgeBaseIndex {
             }
         };
         let mut new_targets = HashSet::new();
-        for target in extract_link_targets(&page.content) {
-            if let LinkTargetKind::InternalPage(target_id) = self.classify_link_target(&target)
+        let kinds = extract_link_targets(&page.content)
+            .into_iter()
+            .map(|target| self.classify_link_target(&target))
+            .chain(
+                self.annotation_links(&page.content)
+                    .into_iter()
+                    .map(|(_, kind)| kind),
+            )
+            .collect::<Vec<_>>();
+        for kind in kinds {
+            if let LinkTargetKind::InternalPage(target_id) = kind
                 && target_id != page_id
                 && new_targets.insert(target_id.clone())
             {
@@ -510,8 +570,15 @@ impl KnowledgeBaseIndex {
             };
             seen_edges.clear();
             seen_attachments.clear();
-            for target in extract_link_targets(&page.content) {
-                match self.classify_link_target(&target) {
+            let inline = extract_link_targets(&page.content)
+                .into_iter()
+                .map(|target| {
+                    let kind = self.classify_link_target(&target);
+                    (target, kind, true)
+                });
+            let annotated = self.annotation_links(&page.content).into_iter();
+            for (target, kind, is_inline) in inline.chain(annotated.map(|(t, k)| (t, k, false))) {
+                match kind {
                     LinkTargetKind::InternalPage(target_id) if target_id != *id => {
                         linked_pages.insert(target_id.clone());
                         if seen_edges.insert(target_id.clone()) {
@@ -531,7 +598,8 @@ impl KnowledgeBaseIndex {
                     _ => {}
                 }
 
-                if extract_attachment_relative(&target).is_some()
+                if is_inline
+                    && extract_attachment_relative(&target).is_some()
                     && let Ok(resolved) = resolver.resolve(&target)
                     && !resolved.exists
                     && seen_attachments.insert(resolved.path.clone())
@@ -856,6 +924,7 @@ mod tests {
             backlinks: HashMap::new(),
             forward_links: HashMap::new(),
             duplicate_ids: Vec::new(),
+            database_id: None,
         };
 
         assert_eq!(index.filter_page_ids("alpha"), vec!["id-1".to_string()]);
@@ -907,6 +976,7 @@ mod tests {
             backlinks: HashMap::new(),
             forward_links: HashMap::new(),
             duplicate_ids: Vec::new(),
+            database_id: None,
         };
 
         assert_eq!(
@@ -980,6 +1050,7 @@ mod tests {
             backlinks: HashMap::new(),
             forward_links: HashMap::new(),
             duplicate_ids: Vec::new(),
+            database_id: None,
         };
 
         assert!(matches!(
@@ -1992,6 +2063,97 @@ mod tests {
         assert_eq!(result.load_errors[0].page_id, "p1");
         assert_eq!(result.load_errors[0].title, "Page One");
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn analyze_links_skips_a_link_in_inline_code_but_not_its_bare_twin() {
+        let (dir, index) = make_kb_on_disk(&[("p1", "Page One", &[], "`[[Gone]]` or [[Gone]]")]);
+        let result = index.analyze_links();
+        assert_eq!(result.broken_links.len(), 1);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn make_kb_with_uuid(
+        uuid: &str,
+        pages: &[(&str, &str, &[&str], &str)],
+    ) -> (PathBuf, KnowledgeBaseIndex) {
+        let (dir, _) = make_kb_on_disk(pages);
+        fs::write(
+            dir.join("lepiter.properties"),
+            json!({ "uuid": uuid }).to_string(),
+        )
+        .unwrap();
+        let index = KnowledgeBase::open(&dir).unwrap();
+        (dir, index)
+    }
+
+    #[test]
+    fn a_gt_page_annotation_links_a_page_of_this_knowledge_base() {
+        let (dir, mut index) = make_kb_with_uuid(
+            "11111111-2222-3333-4444-555555555555",
+            &[
+                (
+                    "p1",
+                    "Source",
+                    &[],
+                    "{{gtPage:Bare}} {{gtPage:Spaced |db=51vbb0nzpw6rs2rntv5xqzu35|label=s}} \
+                     {{gtPage:id=e58h992dm4ds8uri3tnxj2nje}} {{gtPage:attachments/gone}} \
+                     {{gtPage:Named|id=e58h992dm4ds8uri3tnxj2nje}} \
+                     {{gtPage:id=f5lxx1zz5oxftqflll12hk78q}}",
+                ),
+                ("p2", "Bare", &[], ""),
+                ("p3", "Spaced ", &[], ""),
+                ("p4", "Named", &[], ""),
+                ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "By id", &[], ""),
+            ],
+        );
+        let result = index.analyze_links();
+        let mut targets: Vec<&str> = result.edges.iter().map(|e| e.target.as_str()).collect();
+        targets.sort();
+        assert_eq!(
+            targets,
+            ["aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "p2", "p3", "p4"]
+        );
+        assert_eq!(index.orphan_ids(&result.linked_pages, None), ["p1"]);
+        let broken: Vec<&str> = result
+            .broken_links
+            .iter()
+            .map(|b| b.target.as_str())
+            .collect();
+        assert_eq!(broken, ["attachments/gone", "f5lxx1zz5oxftqflll12hk78q"]);
+        assert!(result.missing_attachments.is_empty());
+        index.build_backlinks();
+        assert_eq!(index.backlinks_for("p2"), ["p1"]);
+        index.update_backlinks_for("p1");
+        assert_eq!(index.backlinks_for("p3"), ["p1"]);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_gt_page_annotation_naming_another_database_is_no_link() {
+        for (uuid, db) in [
+            (
+                Some("11111111-2222-3333-4444-555555555555"),
+                "10dgnsy3z96jty74mrfol4axh",
+            ),
+            (None, "51vbb0nzpw6rs2rntv5xqzu35"),
+        ] {
+            let text = ["{{gtPage:Other|db=", db, "}} {{gtPage:Here}}"].concat();
+            let pages: &[(&str, &str, &[&str], &str)] = &[
+                ("p1", "Source", &[], &text),
+                ("p2", "Other", &[], ""),
+                ("p3", "Here", &[], ""),
+            ];
+            let (dir, index) = match uuid {
+                Some(uuid) => make_kb_with_uuid(uuid, pages),
+                None => make_kb_on_disk(pages),
+            };
+            let result = index.analyze_links();
+            let targets: Vec<&str> = result.edges.iter().map(|e| e.target.as_str()).collect();
+            assert_eq!(targets, ["p3"], "{db}");
+            assert!(result.broken_links.is_empty());
+            fs::remove_dir_all(&dir).unwrap();
+        }
     }
 
     // -----------------------------------------------------------------------

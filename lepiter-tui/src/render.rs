@@ -813,6 +813,24 @@ mod tests {
         assert_eq!(span_texts(&out[1]).concat(), "x = '[2J' #  ");
     }
 
+    #[test]
+    fn both_paths_style_annotations_identically() {
+        let mut links = Vec::new();
+        let md_line = parse_inline_markdown("text {{note}} end", &mut links);
+        let ann_line = parse_inline_annotations("text {{note}} end");
+        // annotation span (index 1) should have the same style in both
+        assert_eq!(md_line.spans[1].style, ann_line.spans[1].style);
+        assert_eq!(md_line.spans[1].content, ann_line.spans[1].content);
+    }
+
+    #[test]
+    fn both_paths_style_bold_identically() {
+        let mut links = Vec::new();
+        let md_line = parse_inline_markdown("**bold**", &mut links);
+        let ann_line = parse_inline_annotations("**bold**");
+        assert_eq!(md_line.spans[0].style, ann_line.spans[0].style);
+    }
+
     // --- highlight_selected_link_markers ---
 
     #[test]

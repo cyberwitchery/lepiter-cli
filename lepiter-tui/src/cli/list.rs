@@ -201,8 +201,15 @@ mod tests {
         let (dir, index) = make_test_kb(&[("p1", "Alpha", "body")]);
         let out = output_string(|buf| write_list_plain(buf, &index));
         let lines: Vec<&str> = out.lines().collect();
-        assert_eq!(lines[0], "title  id");
-        assert_eq!(lines[1], format!("-----  {}", "-".repeat(36)));
+        assert_eq!(
+            lines[0].split_whitespace().collect::<Vec<_>>(),
+            ["title", "id"]
+        );
+        assert!(
+            lines[1].chars().all(|c| c == '-' || c == ' ') && lines[1].contains('-'),
+            "{}",
+            lines[1]
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 

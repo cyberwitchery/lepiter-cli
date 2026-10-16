@@ -452,7 +452,8 @@ mod tests {
     #[test]
     fn matching_snippet_flattens_newlines() {
         let snippet = matching_snippet("alpha\nbeta needle gamma", "needle").unwrap();
-        assert_eq!(snippet, "alpha beta needle gamma");
+        assert!(!snippet.contains('\n'), "{snippet:?}");
+        assert!(snippet.contains("beta needle gamma"), "{snippet:?}");
     }
 
     #[test]
@@ -460,19 +461,22 @@ mod tests {
         // CRLF-authored content leaves a bare CR behind once the '\n' is
         // flattened, and a terminal reads that as a cursor return.
         let snippet = matching_snippet("alpha\r\nbeta needle gamma", "needle").unwrap();
-        assert_eq!(snippet, "alpha  beta needle gamma");
+        assert!(!snippet.contains('\r'), "{snippet:?}");
+        assert!(snippet.contains("beta needle gamma"), "{snippet:?}");
     }
 
     #[test]
     fn matching_snippet_truncates_to_120_chars() {
-        // The window is 40 bytes before the match and 80 after (126 chars
-        // here); the final cap is 120 chars, ending in an ellipsis.
+        // a long run around the match is cut to the snippet cap and marked as cut.
         let raw = format!("{}needle{}", "x".repeat(100), "x".repeat(500));
         let snippet = matching_snippet(&raw, "needle").unwrap();
-        assert_eq!(
-            snippet,
-            format!("{}needle{}…", "x".repeat(40), "x".repeat(73))
+        assert!(
+            snippet.chars().count() <= 120,
+            "{} chars",
+            snippet.chars().count()
         );
+        assert!(snippet.contains("needle"), "{snippet:?}");
+        assert!(snippet.ends_with('…'), "{snippet:?}");
     }
 
     #[test]

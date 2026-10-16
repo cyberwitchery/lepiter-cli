@@ -741,4 +741,25 @@ mod tests {
         assert_eq!(att[0]["resolved_path"], att[1]["resolved_path"]);
         std::fs::remove_dir_all(&dir).ok();
     }
+
+    #[test]
+    fn check_text_lists_every_page_referencing_a_missing_attachment() {
+        let (dir, index) = make_test_kb(&[
+            ("p1", "Alpha", "see [img](attachments/gone.png)"),
+            ("p2", "Beta", "see [img](attachments/gone.png)"),
+        ]);
+        let analysis = index.analyze_all();
+        let report = CheckReport {
+            missing_attachments: &analysis.missing_attachments,
+            ..empty_report(&index)
+        };
+        let out = output_string(|buf| {
+            write_check_text(buf, &report);
+        });
+        assert!(out.contains("missing_attachments: 2"));
+        assert!(out.contains("Missing Attachments (2):"));
+        assert!(out.contains("Alpha -> "));
+        assert!(out.contains("Beta -> "));
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

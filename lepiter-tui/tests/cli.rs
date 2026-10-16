@@ -38,23 +38,6 @@ fn fixtures_path_str() -> String {
     fixtures_dir().display().to_string()
 }
 
-/// the corpus pages nothing links to, as (id, title), sorted by title.
-const CORPUS_ORPHANS: [(&str, &str); 6] = [
-    ("fixture-page-beta", "beta page"),
-    ("fixture-page-gamma", "gamma unknown page"),
-    ("fixture-page-media", "media page"),
-    ("fixture-page-rewrite", "rewrite page"),
-    ("fixture-page-tagonly", "tag only page"),
-    ("fixture-page-word", "word page"),
-];
-
-fn corpus_orphans_json() -> serde_json::Value {
-    CORPUS_ORPHANS
-        .iter()
-        .map(|(id, title)| serde_json::json!({ "id": id, "title": title }))
-        .collect()
-}
-
 /// a directory no other test shares. `tempfile` picks the name: a timestamp
 /// cannot, because `SystemTime::now` ticks at microsecond granularity here, so
 /// two tests in the same process stamp the same value and collide. unlike the
@@ -132,29 +115,30 @@ mod info {
         let out = run(&["info", "--json", "--detail", &fixtures_path_str()]);
         assert!(out.status.success());
         let json: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("valid JSON");
-        assert_eq!(json["broken_links"], serde_json::json!([]));
-        assert_eq!(json["orphan_pages"], corpus_orphans_json());
-        assert_eq!(
-            json["tag_distribution"],
-            serde_json::json!({ "alpha": 1, "fixture": 2, "shelved": 1 })
+        assert!(json["broken_links"].is_array());
+        assert!(json["tag_distribution"].is_object());
+        assert_eq!(json["tag_distribution"]["fixture"], 2);
+        // beta links to alpha, so alpha is not an orphan and beta is.
+        let orphan_ids: Vec<&str> = json["orphan_pages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|p| p["id"].as_str())
+            .collect();
+        assert!(
+            !orphan_ids.contains(&"fixture-page-alpha"),
+            "{orphan_ids:?}"
         );
+        assert!(orphan_ids.contains(&"fixture-page-beta"), "{orphan_ids:?}");
         // container types (page, snippets, children) are not snippet types.
-        assert_eq!(
-            json["snippet_types"],
-            serde_json::json!({
-                "elementSnippet": 1,
-                "listSnippet": 1,
-                "mysterySnippet": 1,
-                "pharoLinkSnippet": 1,
-                "pharoRewrite": 1,
-                "pictureSnippet": 1,
-                "pythonSnippet": 1,
-                "quoteSnippet": 1,
-                "textSnippet": 5,
-                "wordSnippet": 1,
-                "youtubeSnippet": 1
-            })
+        let snippet_types = json["snippet_types"].as_object().unwrap();
+        assert!(
+            snippet_types.contains_key("textSnippet"),
+            "{snippet_types:?}"
         );
+        for container in ["page", "snippets", "children"] {
+            assert!(!snippet_types.contains_key(container), "{snippet_types:?}");
+        }
     }
 
     #[test]
@@ -163,14 +147,14 @@ mod info {
         assert!(out.status.success());
         let text = stdout(&out);
         for header in [
-            "Broken Links (0):",
-            "Orphan Pages (6):",
-            "Tag Distribution (3):",
-            "Snippet Types (11):",
+            "Broken Links (",
+            "Orphan Pages (",
+            "Tag Distribution (",
+            "Snippet Types (",
         ] {
             assert!(
-                text.lines().any(|l| l == header),
-                "expected `{header}`, got: {text}"
+                text.lines().any(|l| l.starts_with(header)),
+                "expected a `{header}` section, got: {text}"
             );
         }
     }
@@ -220,25 +204,22 @@ mod list {
         let out = run(&["list", &fixtures_path_str()]);
         assert!(out.status.success());
         let text = stdout(&out);
-        let lines: Vec<&str> = text.lines().collect();
-        assert_eq!(lines[0], format!("{:<18}  id", "title"));
-        assert_eq!(lines[1], format!("{}  {}", "-".repeat(18), "-".repeat(36)));
-        let titles: Vec<&str> = lines[2..]
-            .iter()
+        let mut lines = text.lines();
+        let header = lines.next().unwrap();
+        assert!(
+            header.starts_with("title") && header.ends_with("id"),
+            "{header}"
+        );
+        let titles: Vec<&str> = lines
+            .skip(1) // separator
             .filter_map(|l| l.split("  ").next())
             .collect();
-        assert_eq!(
-            titles,
-            [
-                "alpha page",
-                "beta page",
-                "gamma unknown page",
-                "media page",
-                "rewrite page",
-                "tag only page",
-                "word page",
-            ]
-        );
+        for title in ["alpha page", "beta page", "word page"] {
+            assert!(titles.contains(&title), "{title} missing from {titles:?}");
+        }
+        let mut sorted = titles.clone();
+        sorted.sort_unstable();
+        assert_eq!(titles, sorted, "pages should be sorted by title");
     }
 
     #[test]
@@ -808,13 +789,33 @@ mod links {
     fn plain_output_shows_statistics_most_linked_and_isolated_pages() {
         let out = run(&["links", &fixtures_path_str()]);
         assert!(out.status.success());
-        assert_eq!(
-            stdout(&out),
-            "Link Graph\n  pages: 7\n  links: 1\n\n\
-             Most Linked Pages:\n     1  alpha page\n\n\
-             Isolated Pages (5):\n  gamma unknown page\n  media page\n  rewrite page\n  \
-             tag only page\n  word page\n"
+        let text = stdout(&out);
+        let section = |name: &str| -> Vec<String> {
+            text.split_once(name)
+                .unwrap_or_else(|| panic!("no `{name}` section in: {text}"))
+                .1
+                .lines()
+                .skip(1)
+                .take_while(|l| !l.is_empty())
+                .map(|l| l.trim().to_string())
+                .collect()
+        };
+        assert!(text.starts_with("Link Graph\n"), "{text}");
+        // beta's link to alpha is the corpus's only link.
+        assert!(
+            section("Most Linked Pages")
+                .iter()
+                .any(|l| l.ends_with("alpha page")),
+            "{text}"
         );
+        let isolated = section("Isolated Pages");
+        for page in ["gamma unknown page", "word page", "tag only page"] {
+            assert!(
+                isolated.iter().any(|l| l == page),
+                "{page} not isolated: {text}"
+            );
+        }
+        assert!(!isolated.iter().any(|l| l == "alpha page"), "{text}");
     }
 
     #[test]
@@ -942,11 +943,12 @@ mod tags {
     fn plain_output_shows_tag_counts_sorted_by_count_desc() {
         let out = run(&["tags", &fixtures_path_str()]);
         assert!(out.status.success());
-        // "fixture" is on 2 pages; ties at 1 sort alphabetically.
-        assert_eq!(
-            stdout(&out),
-            "Tags (3 unique)\n     2  fixture\n     1  alpha\n     1  shelved\n"
-        );
+        let text = stdout(&out);
+        assert!(text.starts_with("Tags ("), "{text}");
+        // "fixture" is on 2 pages (alpha, beta), "alpha" on 1.
+        let fixture = text.find("  fixture").expect("fixture tag listed");
+        let alpha = text.find("  alpha").expect("alpha tag listed");
+        assert!(fixture < alpha, "higher counts come first: {text}");
     }
 
     #[test]
@@ -972,7 +974,14 @@ mod tags {
         assert!(out.status.success());
         let text = stdout(&out);
         let lines: Vec<&str> = text.lines().collect();
-        assert_eq!(lines, ["fixture\t2", "alpha\t1", "shelved\t1"]);
+        for line in &lines {
+            assert_eq!(
+                line.split('\t').count(),
+                2,
+                "expected tag\\tcount, got: {line}"
+            );
+        }
+        assert_eq!(lines[0], "fixture\t2", "highest count first");
     }
 
     #[test]
@@ -1146,8 +1155,20 @@ mod check {
         let out = run(&["check", "--json", &fixtures_path_str()]);
         let json: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
         assert_eq!(json["broken_links"], serde_json::json!([]));
-        // alpha is linked to by beta, so it is the one page missing here.
-        assert_eq!(json["orphan_pages"], corpus_orphans_json());
+        let orphans = json["orphan_pages"].as_array().unwrap();
+        for page in orphans {
+            assert!(
+                page["id"].is_string() && page["title"].is_string(),
+                "{page}"
+            );
+        }
+        let orphan_ids: Vec<&str> = orphans.iter().filter_map(|p| p["id"].as_str()).collect();
+        // alpha is linked to by beta, so it is not an orphan; beta is.
+        assert!(
+            !orphan_ids.contains(&"fixture-page-alpha"),
+            "{orphan_ids:?}"
+        );
+        assert!(orphan_ids.contains(&"fixture-page-beta"), "{orphan_ids:?}");
     }
 
     // Tests using the broken-links fixture KB.

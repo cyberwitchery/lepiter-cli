@@ -227,7 +227,8 @@ impl App {
                 | Mode::NewPageTitle => {}
             },
             KeyCode::Char('G') => match self.mode {
-                Mode::Page => self.page_scroll = usize::MAX / 2,
+                // before the first draw the bottom is unknown; the draw clamps.
+                Mode::Page => self.page_scroll = self.page_max_scroll.unwrap_or(usize::MAX),
                 Mode::List
                 | Mode::Search
                 | Mode::PageSearch
@@ -466,6 +467,7 @@ mod tests {
             parsed_cache: LruCache::new(16),
             rendered_cache: LruCache::new(16),
             page_scroll: 0,
+            page_max_scroll: None,
             selected_link: 0,
             search: String::new(),
             search_needle: String::new(),
@@ -754,8 +756,56 @@ mod tests {
     #[test]
     fn page_big_g_scrolls_to_bottom() {
         let mut app = make_app_on_page();
+        let last = app
+            .current_rendered_page()
+            .unwrap()
+            .lines
+            .iter()
+            .map(|line| line.to_string())
+            .rfind(|line| !line.trim().is_empty())
+            .unwrap();
         app.handle_key(key(KeyCode::Char('G')));
-        assert!(app.page_scroll > 0);
+        let screen = draw(&mut app, 80, 24);
+        assert!(screen.contains(last.trim()), "{last:?} not on screen");
+    }
+
+    #[test]
+    fn page_scrolling_reaches_the_bottom_of_wrapped_text() {
+        // a first source line that wraps to more rows than a 40x12 page view
+        // shows: at word boundaries, and as one unbroken run that only fits
+        // the 38 columns inside the borders, not the 40 outside them.
+        for first in ["wrapped words ".repeat(15), "x".repeat(240)] {
+            let mut app = make_app_on_page();
+            let id = app.opened.clone().unwrap();
+            let mut page = app.current_rendered_page().unwrap().clone();
+            page.lines = vec![
+                ratatui::text::Line::raw(first.clone()),
+                ratatui::text::Line::raw("BOTTOM_SENTINEL"),
+            ];
+            page.links.clear();
+            app.rendered_cache.insert(id, page);
+
+            for keys in [vec![KeyCode::Char('G')], vec![KeyCode::Char('j'); 100]] {
+                app.page_scroll = 0;
+                assert!(!draw(&mut app, 40, 12).contains("BOTTOM_SENTINEL"));
+                for code in &keys {
+                    app.handle_key(key(*code));
+                }
+                let screen = draw(&mut app, 40, 12);
+                assert!(screen.contains("BOTTOM_SENTINEL"), "{first:.20}: {keys:?}");
+                // and the view can come back up at once.
+                let bottom = app.page_scroll;
+                app.handle_key(key(KeyCode::Char('k')));
+                assert_eq!(app.page_scroll, bottom - 1, "{first:.20}: {keys:?}");
+            }
+        }
+    }
+
+    fn draw(app: &mut App, width: u16, height: u16) -> String {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+        terminal.draw(|frame| crate::ui(frame, app)).unwrap();
+        format!("{:?}", terminal.backend().buffer())
     }
 
     #[test]

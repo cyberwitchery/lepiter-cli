@@ -655,10 +655,10 @@ mod tests {
     #[test]
     fn inline_wiki_link() {
         let mut links = Vec::new();
-        let line = parse_inline_markdown("see [[My Page]] here", &mut links);
+        let line = parse_inline_markdown("see [[My Page ]] here", &mut links);
         assert_eq!(links.len(), 1);
         assert_eq!(links[0].label, "My Page");
-        assert_eq!(links[0].target, "My Page");
+        assert_eq!(links[0].target, "My Page ");
         // span 0 = "see ", span 1 = link text, span 2 = marker, span 3 = " here"
         assert_eq!(line.spans[0].content.as_ref(), "see ");
         assert!(has_fg(&line, 1, Color::LightBlue));

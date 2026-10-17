@@ -8,6 +8,16 @@ all notable changes to this project are documented in this file.
 - re-importing a markdown export written by 0.12.1 or earlier keeps a link
   inside inline code pointing at the exported `.md` file: those versions
   rewrote it on export, and `import` now leaves inline code as written
+- a `[[…]]` link whose text is a page's title now reaches that page even when
+  the text also reads as a page id, a `page:` target, a url or an attachment
+  path, as in Glamorous Toolkit. `check`, `links`, backlinks, `export`, `show`
+  and the reader used to take the other reading
+- `lepiter-core`: `InlineLink` has a new public field, `name`: a wikilink's
+  text as written between the brackets, untrimmed, or a markdown link's
+  `target`. the struct is not `#[non_exhaustive]`, so code that builds an
+  `InlineLink` or matches one without `..` has to name the new field.
+  `rewrite_inline_links` now passes its callback that untrimmed text, `" c "`
+  for `[[ c ]]` where it passed `"c"`
 
 ### fixed
 - a `[[…]]` or `[label](target)` inside inline code is code, as in Glamorous

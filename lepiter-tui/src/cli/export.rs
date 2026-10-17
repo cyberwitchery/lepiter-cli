@@ -290,6 +290,17 @@ mod tests {
     }
 
     #[test]
+    fn export_links_a_wikilink_to_the_page_titled_as_written() {
+        let (dir, index) = make_test_kb(&[("p1", "Twin"), ("p2", "Twin ")]);
+        let nodes = [Node::Paragraph {
+            text: "see [[Twin ]] and [[Twin]]".into(),
+        }];
+        let out = render_with_rewritten_links(&nodes, &index, &build_slug_map(&index));
+        assert_eq!(out.trim_end(), "see [Twin](twin-2.md) and [Twin](twin.md)");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn build_slug_map_cross_slug_collision() {
         let (dir, index) = make_test_kb(&[("p1", "Alpha"), ("p2", "Alpha"), ("p3", "Alpha-2")]);
         let slugs = build_slug_map(&index);

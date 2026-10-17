@@ -309,7 +309,7 @@ impl KnowledgeBaseIndex {
     }
 
     /// Looks up exact (case-insensitive) title matches via the precomputed
-    /// index.  `needle` must already be trimmed and lowercased.  Returns
+    /// index.  `needle` must already be lowercased; it is not trimmed.  Returns
     /// `None` when no page has that exact title, so callers can decide whether
     /// to report `NotFound` or fall back to a substring search.
     fn resolve_exact_from_index(&self, needle: &str) -> Option<TitleResolution> {
@@ -1278,11 +1278,12 @@ mod tests {
 
     #[test]
     fn a_wikilink_names_the_page_titled_as_written_first() {
-        let (dir, index) = make_kb_on_disk(&[
+        let (dir, mut index) = make_kb_on_disk(&[
             ("p1", "Target ", &[], "body"),
             ("p2", "Twin", &[], "body"),
             ("p3", "Twin ", &[], "body"),
             ("p4", "Plain", &[], "body"),
+            ("p5", "Source", &[], "see [[Target ]]"),
         ]);
         let internal = |id: &str| LinkTargetKind::InternalPage(id.to_string());
         let cases = [
@@ -1303,6 +1304,16 @@ mod tests {
                 "{text:?}"
             );
         }
+        let edges = index.scan_all_pages().edges;
+        assert_eq!(edges.len(), 1);
+        assert_eq!(
+            (edges[0].source.as_str(), edges[0].target.as_str()),
+            ("p5", "p1")
+        );
+        index.update_backlinks_for("p5");
+        assert_eq!(index.backlinks_for("p1"), &["p5"]);
+        index.build_backlinks();
+        assert_eq!(index.backlinks_for("p1"), &["p5"]);
         fs::remove_dir_all(&dir).unwrap();
     }
 

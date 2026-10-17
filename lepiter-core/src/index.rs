@@ -9,6 +9,7 @@ use walkdir::WalkDir;
 
 use serde::Serialize;
 
+use crate::inline_link::LinkKind;
 use crate::model::{
     AttachmentResolver, LinkTargetKind, Node, Page, PageId, PageMeta, ParseIssue, SearchHit,
     SearchMatchKind, TitleResolution,
@@ -16,7 +17,7 @@ use crate::model::{
 use crate::parse::{parse_item_recursive, parse_page_meta};
 use crate::render::page_content_contains;
 use crate::util::{
-    PageAnnotation, extract_attachment_relative, extract_link_targets, extract_page_annotations,
+    PageAnnotation, extract_attachment_relative, extract_links, extract_page_annotations,
     extract_uuid_like, is_external_target, uid_from_base36, uid_from_uuid, uuid_from_uid,
 };
 
@@ -380,6 +381,18 @@ impl KnowledgeBaseIndex {
         }
     }
 
+    /// [`Self::classify_link_target`] for a link's kind and [`crate::InlineLink::name`],
+    /// except that a wikilink names the page titled exactly as written first.
+    pub fn classify_link(&self, kind: LinkKind, name: &str) -> LinkTargetKind {
+        if kind == LinkKind::Wiki
+            && let Some(TitleResolution::Unique(id)) =
+                self.resolve_exact_from_index(&name.to_lowercase())
+        {
+            return LinkTargetKind::InternalPage(id);
+        }
+        self.classify_link_target(name)
+    }
+
     /// what a `{{gtPage:…}}` annotation links to, or `None` when it names another
     /// knowledge base. a title resolves as written, untrimmed.
     fn classify_page_annotation(
@@ -411,6 +424,21 @@ impl KnowledgeBaseIndex {
         Some((id.clone(), kind))
     }
 
+    /// the inline links in `nodes`, each target with what it links to.
+    fn inline_links(&self, nodes: &[Node]) -> Vec<(String, LinkTargetKind)> {
+        extract_links(nodes)
+            .into_iter()
+            .map(|(kind, name)| {
+                let link = self.classify_link(kind, &name);
+                let target = match kind {
+                    LinkKind::Wiki => name.trim().to_string(),
+                    LinkKind::Markdown => name,
+                };
+                (target, link)
+            })
+            .collect()
+    }
+
     /// the `{{gtPage:…}}` annotations in `nodes` naming this knowledge base, with what each links to.
     fn annotation_links(&self, nodes: &[Node]) -> Vec<(String, LinkTargetKind)> {
         extract_page_annotations(nodes)
@@ -431,11 +459,9 @@ impl KnowledgeBaseIndex {
                 continue;
             };
             let mut source_targets = HashSet::new();
-            let inline = extract_link_targets(&page.content)
-                .into_iter()
-                .map(|target| self.classify_link_target(&target));
+            let inline = self.inline_links(&page.content).into_iter();
             let annotated = self.annotation_links(&page.content).into_iter();
-            for kind in inline.chain(annotated.map(|(_, kind)| kind)) {
+            for (_, kind) in inline.chain(annotated) {
                 if let LinkTargetKind::InternalPage(target_id) = kind
                     && target_id != *source_id
                     && source_targets.insert(target_id.clone())
@@ -487,16 +513,12 @@ impl KnowledgeBaseIndex {
             }
         };
         let mut new_targets = HashSet::new();
-        let kinds = extract_link_targets(&page.content)
+        let links = self
+            .inline_links(&page.content)
             .into_iter()
-            .map(|target| self.classify_link_target(&target))
-            .chain(
-                self.annotation_links(&page.content)
-                    .into_iter()
-                    .map(|(_, kind)| kind),
-            )
+            .chain(self.annotation_links(&page.content))
             .collect::<Vec<_>>();
-        for kind in kinds {
+        for (_, kind) in links {
             if let LinkTargetKind::InternalPage(target_id) = kind
                 && target_id != page_id
                 && new_targets.insert(target_id.clone())
@@ -570,12 +592,10 @@ impl KnowledgeBaseIndex {
             };
             seen_edges.clear();
             seen_attachments.clear();
-            let inline = extract_link_targets(&page.content)
+            let inline = self
+                .inline_links(&page.content)
                 .into_iter()
-                .map(|target| {
-                    let kind = self.classify_link_target(&target);
-                    (target, kind, true)
-                });
+                .map(|(target, kind)| (target, kind, true));
             let annotated = self.annotation_links(&page.content).into_iter();
             for (target, kind, is_inline) in inline.chain(annotated.map(|(t, k)| (t, k, false))) {
                 match kind {
@@ -1252,6 +1272,36 @@ mod tests {
         ];
         for (input, expected) in cases {
             assert_eq!(&index.classify_link_target(input), expected, "{input:?}");
+        }
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_wikilink_names_the_page_titled_as_written_first() {
+        let (dir, index) = make_kb_on_disk(&[
+            ("p1", "Target ", &[], "body"),
+            ("p2", "Twin", &[], "body"),
+            ("p3", "Twin ", &[], "body"),
+            ("p4", "Plain", &[], "body"),
+        ]);
+        let internal = |id: &str| LinkTargetKind::InternalPage(id.to_string());
+        let cases = [
+            ("[[Target ]]", "Target", internal("p1")),
+            ("[[Twin ]]", "Twin", internal("p3")),
+            ("[[Plain ]]", "Plain", internal("p4")),
+            (
+                "[a](<Target >)",
+                "Target ",
+                LinkTargetKind::Unknown("Target".to_string()),
+            ),
+        ];
+        for (text, target, kind) in cases {
+            let nodes = [Node::Paragraph { text: text.into() }];
+            assert_eq!(
+                index.inline_links(&nodes),
+                [(target.to_string(), kind)],
+                "{text:?}"
+            );
         }
         fs::remove_dir_all(&dir).unwrap();
     }

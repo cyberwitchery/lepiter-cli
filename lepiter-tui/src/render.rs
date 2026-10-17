@@ -1,7 +1,7 @@
 //! page rendering to tui lines, including inline markdown, annotations, and
 //! code highlighting.
 
-use lepiter_core::{Node, Page, PageId, normalize_text};
+use lepiter_core::{LinkKind, Node, Page, PageId, normalize_text};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
@@ -13,7 +13,9 @@ use crate::util::lower_byte_to_raw_byte;
 #[derive(Debug, Clone)]
 pub struct LinkTarget {
     pub label: String,
+    /// the link target, or a wikilink's name as written.
     pub target: String,
+    pub kind: LinkKind,
 }
 
 #[derive(Debug, Clone)]
@@ -173,6 +175,7 @@ pub fn render_node(
             links.push(LinkTarget {
                 label: sanitize_for_terminal(text),
                 target: sanitize_for_terminal(url),
+                kind: LinkKind::Markdown,
             });
             let idx = links.len();
             out.push(Line::from(vec![
@@ -271,6 +274,7 @@ fn render_inline_to_spans(
                     links.push(LinkTarget {
                         label: label.clone(),
                         target,
+                        kind: LinkKind::Markdown,
                     });
                     let idx = links.len();
                     spans.push(Span::styled(label, link_style));
@@ -287,6 +291,7 @@ fn render_inline_to_spans(
                     links.push(LinkTarget {
                         label: alt.clone(),
                         target,
+                        kind: LinkKind::Markdown,
                     });
                     let idx = links.len();
                     spans.push(Span::styled(alt, image_style));
@@ -298,11 +303,12 @@ fn render_inline_to_spans(
                     spans.push(Span::styled(alt, image_style));
                 }
             }
-            InlineElement::WikiLink { text } => {
+            InlineElement::WikiLink { text, name } => {
                 if let Some(links) = &mut links {
                     links.push(LinkTarget {
                         label: text.clone(),
-                        target: text.clone(),
+                        target: name,
+                        kind: LinkKind::Wiki,
                     });
                     let idx = links.len();
                     spans.push(Span::styled(text, link_style));

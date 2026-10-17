@@ -70,10 +70,11 @@ fn print_page(index: &KnowledgeBaseIndex, page_id: &str, show_links: bool) -> Re
             println!("  <none>");
         } else {
             for (idx, link) in links.iter().enumerate() {
-                let kind = match index.classify_link(link.kind, &link.target) {
+                let (label, target) = (&link.label, &link.target);
+                let kind = match index.classify_link(link.kind, target) {
                     LinkTargetKind::InternalPage(id) => format!("internal:{id}"),
                     LinkTargetKind::AttachmentPath(_) => {
-                        match attachment_resolver.resolve(&link.target) {
+                        match attachment_resolver.resolve(target) {
                             Ok(resolved) => {
                                 let mut out = format!("attachment:{}", resolved.path.display());
                                 if !resolved.exists {
@@ -87,7 +88,7 @@ fn print_page(index: &KnowledgeBaseIndex, page_id: &str, show_links: bool) -> Re
                     LinkTargetKind::ExternalUrl(url) => format!("external:{url}"),
                     LinkTargetKind::Unknown(raw) => format!("unknown:{raw}"),
                 };
-                println!("  [{}] {} -> {}", idx + 1, link.label, kind);
+                println!("  [{}] {} -> {}", idx + 1, label, kind);
             }
         }
     }

@@ -1,10 +1,11 @@
 use std::io::IsTerminal;
 
 use anyhow::{Context, Result, bail};
-use lepiter_core::{KnowledgeBaseIndex, LinkTargetKind, Node};
+use lepiter_core::{KnowledgeBaseIndex, LinkKind, LinkTargetKind, Node};
 
 use super::format::render_page_pretty;
 use super::{ArgSpec, open_kb, parse_args, resolve_page_id_by_title};
+use crate::render::LinkTarget;
 
 const SPEC: ArgSpec<'static> = ArgSpec {
     usage: "usage: lepiter-cli show [--id|--by-title] [--open-links] [--json] <value> [kb-path]\n\n\
@@ -68,8 +69,9 @@ fn print_page(index: &KnowledgeBaseIndex, page_id: &str, show_links: bool) -> Re
         if links.is_empty() {
             println!("  <none>");
         } else {
-            for (idx, (label, target)) in links.iter().enumerate() {
-                let kind = match index.classify_link_target(target) {
+            for (idx, link) in links.iter().enumerate() {
+                let (label, target) = (&link.label, &link.target);
+                let kind = match index.classify_link(link.kind, target) {
                     LinkTargetKind::InternalPage(id) => format!("internal:{id}"),
                     LinkTargetKind::AttachmentPath(_) => {
                         match attachment_resolver.resolve(target) {
@@ -93,11 +95,15 @@ fn print_page(index: &KnowledgeBaseIndex, page_id: &str, show_links: bool) -> Re
     Ok(())
 }
 
-pub(crate) fn collect_page_links(nodes: &[Node]) -> Vec<(String, String)> {
+pub(crate) fn collect_page_links(nodes: &[Node]) -> Vec<LinkTarget> {
     let mut out = Vec::new();
     for node in nodes {
         match node {
-            Node::Link { text, url } => out.push((text.clone(), url.clone())),
+            Node::Link { text, url } => out.push(LinkTarget {
+                label: text.clone(),
+                target: url.clone(),
+                kind: LinkKind::Markdown,
+            }),
             Node::Paragraph { text } | Node::Text { text } | Node::Quote { text } => {
                 collect_inline_links(text, &mut out);
             }
@@ -115,16 +121,24 @@ pub(crate) fn collect_page_links(nodes: &[Node]) -> Vec<(String, String)> {
     out
 }
 
-fn collect_inline_links(text: &str, out: &mut Vec<(String, String)>) {
+fn collect_inline_links(text: &str, out: &mut Vec<LinkTarget>) {
     use crate::inline;
     for elem in inline::parse_inline(text) {
         match elem {
             inline::InlineElement::Link { label, target }
             | inline::InlineElement::Image { alt: label, target } => {
-                out.push((label, target));
+                out.push(LinkTarget {
+                    label,
+                    target,
+                    kind: LinkKind::Markdown,
+                });
             }
-            inline::InlineElement::WikiLink { text } => {
-                out.push((text.clone(), text));
+            inline::InlineElement::WikiLink { text, name } => {
+                out.push(LinkTarget {
+                    label: text,
+                    target: name,
+                    kind: LinkKind::Wiki,
+                });
             }
             _ => {}
         }
@@ -145,6 +159,13 @@ mod tests {
             text: text.into(),
             url: url.into(),
         }
+    }
+
+    fn pairs(links: Vec<LinkTarget>) -> Vec<(String, String)> {
+        links
+            .into_iter()
+            .map(|link| (link.label, link.target))
+            .collect()
     }
 
     #[test]
@@ -190,6 +211,7 @@ mod tests {
                 vec![paragraph("see also [[My Other Page]]")],
                 &[("My Other Page", "My Other Page")],
             ),
+            (vec![paragraph("see [[Target ]]")], &[("Target", "Target ")]),
             (
                 vec![paragraph("[first](url1) and [second](url2) and [[wiki]]")],
                 &[("first", "url1"), ("second", "url2"), ("wiki", "wiki")],
@@ -224,7 +246,7 @@ mod tests {
                 .iter()
                 .map(|(label, target)| ((*label).to_string(), (*target).to_string()))
                 .collect();
-            assert_eq!(collect_page_links(&nodes), expected, "{nodes:?}");
+            assert_eq!(pairs(collect_page_links(&nodes)), expected, "{nodes:?}");
         }
     }
 
@@ -233,7 +255,7 @@ mod tests {
         let nodes = vec![Node::Paragraph {
             text: "see ![alt](attachments/x.png) here".into(),
         }];
-        let links = collect_page_links(&nodes);
+        let links = pairs(collect_page_links(&nodes));
         assert_eq!(links, vec![("alt".into(), "attachments/x.png".into())]);
     }
 }

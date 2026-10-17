@@ -526,7 +526,7 @@ impl App {
             return;
         };
 
-        match self.index.classify_link_target(&link.target) {
+        match self.index.classify_link(link.kind, &link.target) {
             LinkTargetKind::InternalPage(target_id) => {
                 self.open_page(&target_id, true);
             }

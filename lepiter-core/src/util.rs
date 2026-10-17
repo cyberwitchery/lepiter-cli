@@ -1,5 +1,6 @@
 use std::path::{Component, Path, PathBuf};
 
+use crate::inline_link::LinkKind;
 use crate::model::{AttachmentError, AttachmentResult, Node};
 
 /// Extracts raw link target strings from a node tree.
@@ -7,35 +8,38 @@ use crate::model::{AttachmentError, AttachmentResult, Node};
 /// Finds explicit `Node::Link` urls plus inline `[label](target)` and `[[wikilink]]`
 /// syntax in text-bearing nodes.
 pub fn extract_link_targets(nodes: &[Node]) -> Vec<String> {
+    extract_links(nodes)
+        .into_iter()
+        .map(|(kind, name)| match kind {
+            LinkKind::Wiki => name.trim().to_string(),
+            LinkKind::Markdown => name,
+        })
+        .collect()
+}
+
+/// each link in a node tree as its kind and [`crate::InlineLink::name`], in
+/// source order; a `Node::Link` url is a markdown link.
+pub(crate) fn extract_links(nodes: &[Node]) -> Vec<(LinkKind, String)> {
     let mut out = Vec::new();
     for node in nodes {
         match node {
-            Node::Link { url, .. } => out.push(url.clone()),
+            Node::Link { url, .. } => out.push((LinkKind::Markdown, url.clone())),
             Node::Paragraph { text }
             | Node::Text { text }
             | Node::Quote { text }
-            | Node::Heading { text, .. } => {
-                extract_inline_link_targets(text, &mut out);
-            }
+            | Node::Heading { text, .. } => out.extend(
+                crate::inline_link::scan_inline_links(text)
+                    .map(|link| (link.kind, link.name.to_string())),
+            ),
             Node::List { items } => {
                 for item in items {
-                    out.extend(extract_link_targets(item));
+                    out.extend(extract_links(item));
                 }
             }
             _ => {}
         }
     }
     out
-}
-
-/// Extracts `[label](target)` and `[[wikilink]]` targets from inline text.
-///
-/// Delegates to the shared [`crate::inline_link`] scanner so the link grammar
-/// lives in one place; collects each link's trimmed target in source order.
-fn extract_inline_link_targets(text: &str, out: &mut Vec<String>) {
-    for link in crate::inline_link::scan_inline_links(text) {
-        out.push(link.target.to_string());
-    }
 }
 
 /// the page a `{{gtPage:…}}` annotation names.
@@ -393,13 +397,10 @@ mod tests {
         }
     }
 
-    // -- extract_inline_link_targets edge cases --
+    // -- inline link target edge cases --
 
-    /// Helper: call the private extract_inline_link_targets directly.
     fn inline_targets(text: &str) -> Vec<String> {
-        let mut out = Vec::new();
-        extract_inline_link_targets(text, &mut out);
-        out
+        extract_link_targets(&[Node::Paragraph { text: text.into() }])
     }
 
     #[test]

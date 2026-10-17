@@ -30,6 +30,9 @@ pub struct InlineLink<'a> {
     /// The link target, exactly as written between `<` and `>` when it is
     /// bracketed and trimmed of surrounding whitespace otherwise. Never blank.
     pub target: &'a str,
+    /// what the link names: for [`LinkKind::Wiki`] the text between the brackets
+    /// as written, untrimmed; `target` otherwise.
+    pub name: &'a str,
     /// Byte range of the whole construct within the source text.
     pub range: Range<usize>,
 }
@@ -116,13 +119,15 @@ impl<'a> Iterator for InlineLinks<'a> {
                 && !is_escaped(bytes, i)
                 && let Some(end) = find_closing_double_bracket(bytes, i + 2)
             {
-                let target = self.text[i + 2..end].trim();
+                let name = &self.text[i + 2..end];
+                let target = name.trim();
                 if !target.is_empty() {
                     self.i = end + 2;
                     return Some(InlineLink {
                         kind: LinkKind::Wiki,
                         label: target,
                         target,
+                        name,
                         range: i..end + 2,
                     });
                 }
@@ -142,6 +147,7 @@ impl<'a> Iterator for InlineLinks<'a> {
                     kind: LinkKind::Markdown,
                     label: &self.text[i + 1..label_end],
                     target,
+                    name: target,
                     range: i..target_end + 1,
                 });
             }
@@ -183,10 +189,10 @@ fn backtick_run(bytes: &[u8], start: usize) -> usize {
 /// Rewrites the inline links in `text`, leaving everything else byte-for-byte
 /// intact.
 ///
-/// For each link, `rewrite(kind, target)` may return `Some(new_target)` to
+/// For each link, `rewrite(kind, name)` may return `Some(new_target)` to
 /// replace it — rendered as `[label](new_target)`, where wiki links use their
 /// target as the label — or `None` to leave the original span verbatim
-/// (preserving any internal whitespace).
+/// (preserving any internal whitespace). `name` is [`InlineLink::name`].
 pub fn rewrite_inline_links(
     text: &str,
     mut rewrite: impl FnMut(LinkKind, &str) -> Option<String>,
@@ -195,7 +201,7 @@ pub fn rewrite_inline_links(
     let mut cursor = 0;
     for link in scan_inline_links(text) {
         out.push_str(&text[cursor..link.range.start]);
-        match rewrite(link.kind, link.target) {
+        match rewrite(link.kind, link.name) {
             Some(new_target) => push_link(&mut out, link.label, &new_target),
             None => out.push_str(&text[link.range.clone()]),
         }
@@ -732,17 +738,17 @@ mod tests {
     }
 
     #[test]
-    fn rewrite_callback_sees_kind_and_trimmed_target() {
+    fn rewrite_callback_sees_kind_and_name() {
         let mut seen = Vec::new();
-        let _ = rewrite_inline_links("[a]( b ) [[ c ]]", |kind, target| {
-            seen.push((kind, target.to_string()));
+        let _ = rewrite_inline_links("[a]( b ) [[ c ]]", |kind, name| {
+            seen.push((kind, name.to_string()));
             None
         });
         assert_eq!(
             seen,
             vec![
                 (LinkKind::Markdown, "b".to_string()),
-                (LinkKind::Wiki, "c".to_string()),
+                (LinkKind::Wiki, " c ".to_string()),
             ]
         );
     }

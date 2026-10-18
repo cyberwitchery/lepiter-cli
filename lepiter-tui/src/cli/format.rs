@@ -168,7 +168,7 @@ fn style_inline_markdown_ansi(text: &str) -> String {
                 out.push_str(&ansi("3;96", &alt));
                 out.push_str(&ansi("90", &format!(" ({target})")));
             }
-            inline::InlineElement::WikiLink { text } => {
+            inline::InlineElement::WikiLink { text, .. } => {
                 out.push_str(&ansi("4;94", &text));
             }
             inline::InlineElement::Annotation { text } => {

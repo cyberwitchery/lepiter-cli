@@ -27,8 +27,8 @@ pub enum InlineElement {
     Link { label: String, target: String },
     /// `![alt](target)` image.
     Image { alt: String, target: String },
-    /// `[[text]]` wiki-style link.
-    WikiLink { text: String },
+    /// `[[name]]` wiki-style link, shown as `text`, its name trimmed.
+    WikiLink { text: String, name: String },
     /// `{{annotation}}` — includes the surrounding braces.
     Annotation { text: String },
 }
@@ -180,6 +180,7 @@ pub fn parse_inline(text: &str) -> Vec<InlineElement> {
                 out.push(match link.kind {
                     LinkKind::Wiki => InlineElement::WikiLink {
                         text: link.target.to_string(),
+                        name: link.name.to_string(),
                     },
                     LinkKind::Markdown if image => InlineElement::Image {
                         alt: unescape(link.label),
@@ -436,6 +437,7 @@ mod tests {
                 "see ",
                 InlineElement::WikiLink {
                     text: "My Page".into(),
+                    name: "My Page".into(),
                 },
                 " here",
             ),
@@ -700,6 +702,7 @@ mod tests {
                 },
                 InlineElement::WikiLink {
                     text: "Page".into(),
+                    name: "Page".into(),
                 },
             ]
         );
@@ -888,7 +891,7 @@ mod tests {
                 InlineElement::Link { target, .. } | InlineElement::Image { target, .. } => {
                     Some((LinkKind::Markdown, target))
                 }
-                InlineElement::WikiLink { text } => Some((LinkKind::Wiki, text)),
+                InlineElement::WikiLink { text, .. } => Some((LinkKind::Wiki, text)),
                 _ => None,
             })
             .collect()
@@ -932,7 +935,10 @@ mod tests {
     fn wiki_target_is_trimmed() {
         assert_eq!(
             parse_inline("[[ a ]]"),
-            vec![InlineElement::WikiLink { text: "a".into() }]
+            vec![InlineElement::WikiLink {
+                text: "a".into(),
+                name: " a ".into(),
+            }]
         );
     }
 
@@ -986,7 +992,7 @@ mod tests {
                 InlineElement::Styled { text, .. } | InlineElement::Annotation { text } => text,
                 InlineElement::Link { label, .. } => label,
                 InlineElement::Image { alt, .. } => alt,
-                InlineElement::WikiLink { text } => format!("[[{text}]]"),
+                InlineElement::WikiLink { text, .. } => format!("[[{text}]]"),
             })
             .collect()
     }
@@ -1119,6 +1125,7 @@ mod tests {
             parse_inline(r"[[a\*b]]"),
             vec![InlineElement::WikiLink {
                 text: r"a\*b".into(),
+                name: r"a\*b".into(),
             }]
         );
     }
@@ -1289,7 +1296,8 @@ mod tests {
             parse_inline("[[First]] and [second](url2)"),
             vec![
                 InlineElement::WikiLink {
-                    text: "First".into()
+                    text: "First".into(),
+                    name: "First".into(),
                 },
                 InlineElement::Styled {
                     text: " and ".into(),

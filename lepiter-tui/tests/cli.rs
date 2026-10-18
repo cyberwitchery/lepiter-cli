@@ -745,6 +745,30 @@ mod show {
     }
 
     #[test]
+    fn open_links_resolves_a_wikilink_to_the_page_titled_as_written() {
+        let root = write_text_snippet_kb("show-padded", "padded-page", "Padded ", &["[[Padded ]]"]);
+
+        let out = run(&[
+            "show",
+            "--open-links",
+            "--id",
+            "padded-page",
+            &root.display().to_string(),
+        ]);
+        assert!(out.status.success());
+        let text = stdout(&out);
+        let (_, listing) = text
+            .split_once("resolved links:\n")
+            .expect("expected a resolved links section");
+        assert_eq!(
+            listing.lines().collect::<Vec<_>>(),
+            ["  [1] Padded -> internal:padded-page"]
+        );
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn missing_value_fails() {
         let out = run(&["show"]);
         assert!(!out.status.success());

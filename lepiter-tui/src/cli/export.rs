@@ -142,8 +142,8 @@ fn render_with_rewritten_links(
     index: &KnowledgeBaseIndex,
     slug_map: &HashMap<String, String>,
 ) -> String {
-    let resolve = |target: &str| -> Option<String> {
-        match index.classify_link_target(target) {
+    let resolve = |kind: LinkKind, name: &str| -> Option<String> {
+        match index.classify_link(kind, name) {
             LinkTargetKind::InternalPage(id) => slug_map.get(&id).map(|slug| format!("{slug}.md")),
             _ => None,
         }
@@ -160,11 +160,11 @@ fn render_with_rewritten_links(
 /// exported page (otherwise left verbatim), while `[label](target)` always
 /// keeps markdown syntax with the target resolved when possible.
 fn export_link_rewriter(
-    resolve: impl Fn(&str) -> Option<String>,
+    resolve: impl Fn(LinkKind, &str) -> Option<String>,
 ) -> impl FnMut(LinkKind, &str) -> Option<String> {
-    move |kind, target| match kind {
-        LinkKind::Wiki => resolve(target),
-        LinkKind::Markdown => Some(resolve(target).unwrap_or_else(|| target.to_string())),
+    move |kind, name| match kind {
+        LinkKind::Wiki => resolve(kind, name),
+        LinkKind::Markdown => Some(resolve(kind, name).unwrap_or_else(|| name.to_string())),
     }
 }
 
@@ -193,9 +193,10 @@ mod tests {
 
     #[test]
     fn rewrite_links_for_export() {
-        let resolve = |target: &str| -> Option<String> {
-            match target {
+        let resolve = |_: LinkKind, name: &str| -> Option<String> {
+            match name {
                 "Other" => Some("other.md".to_string()),
+                "Spaced " => Some("spaced.md".to_string()),
                 "page:p1" => Some("alpha.md".to_string()),
                 _ => None,
             }
@@ -207,6 +208,7 @@ mod tests {
             ),
             ("[docs](https://example.com)", "[docs](https://example.com)"),
             ("日本語テキスト [[リンク]]", "日本語テキスト [[リンク]]"),
+            ("see [[Spaced ]]", "see [Spaced](spaced.md)"),
         ];
         for (text, expected) in cases {
             assert_eq!(
@@ -285,6 +287,17 @@ mod tests {
 
         let index = KnowledgeBase::open(&dir).unwrap();
         (dir, index)
+    }
+
+    #[test]
+    fn export_links_a_wikilink_to_the_page_titled_as_written() {
+        let (dir, index) = make_test_kb(&[("p1", "Twin"), ("p2", "Twin ")]);
+        let nodes = [Node::Paragraph {
+            text: "see [[Twin ]] and [[Twin]]".into(),
+        }];
+        let out = render_with_rewritten_links(&nodes, &index, &build_slug_map(&index));
+        assert_eq!(out.trim_end(), "see [Twin](twin-2.md) and [Twin](twin.md)");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

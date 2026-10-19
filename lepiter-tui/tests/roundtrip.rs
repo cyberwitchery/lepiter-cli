@@ -263,6 +263,15 @@ fn snippet_cases_survive_the_roundtrip() {
             ]),
         ),
         (
+            "a_link_in_a_code_block_in_prose_survives",
+            json!([
+                {
+                    "__type": "textSnippet",
+                    "string": "```\n[[a_link_in_a_code_block_in_prose_survives]]\n```",
+                },
+            ]),
+        ),
+        (
             "guard_prose_that_starts_with_a_backslash_survives",
             json!([
                 { "__type": "textSnippet", "string": "\\- already escaped by hand" },

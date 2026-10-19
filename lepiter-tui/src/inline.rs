@@ -11,7 +11,7 @@
 
 use std::ops::Range;
 
-use lepiter_core::{LinkKind, code_span_at, scan_inline_links};
+use lepiter_core::{LinkKind, code_block_at, code_span_at, scan_inline_links};
 
 /// a parsed fragment of inline markdown.
 #[derive(Debug, Clone, PartialEq)]
@@ -50,8 +50,10 @@ pub enum InlineElement {
 /// precedes it or when a `[[wiki-link]]` follows.
 ///
 /// code spans are delimited by [`code_span_at`], so a span can contain a
-/// shorter run, and an opening run with no closer is literal text. content is
-/// taken verbatim: no leading or trailing space is stripped.
+/// shorter run, and an opening run with no closer is literal text. a code block
+/// is delimited by [`code_block_at`]: its ` ``` ` are hidden like a span's
+/// backticks, and one that never closes is code to the end of the text. content
+/// is taken verbatim: no leading or trailing space is stripped.
 ///
 /// `***`, `**` and `*` open bold-and-italic, bold, and italic, each only when a
 /// run of the same length closes it later, outside any code span, link, or
@@ -134,7 +136,7 @@ pub fn parse_inline(text: &str) -> Vec<InlineElement> {
             continue;
         }
 
-        // code spans: a run of n backticks closed by the next run of exactly n
+        // code: a ``` block, or a run of n backticks closed by the next run of exactly n
         if chars[i] == '`' {
             if let Some(span) = code {
                 if i == span.close_at {
@@ -144,18 +146,32 @@ pub fn parse_inline(text: &str) -> Vec<InlineElement> {
                     continue;
                 }
             } else {
-                let run = backtick_run(&chars, i);
-                match code_span_at(text, byte_at[i]) {
-                    Some(span) => {
+                let start = byte_at[i];
+                let opened = match code_block_at(text, start) {
+                    Some(block) if text[start + 3..block.end].ends_with("```") => {
+                        Some((3, block.end - 3))
+                    }
+                    Some(block) => Some((3, block.end)),
+                    None => code_span_at(text, start).map(|span| {
+                        let run = backtick_run(&chars, i);
+                        (run, span.end - run)
+                    }),
+                };
+                match opened {
+                    Some((len, close)) => {
                         flush(&mut out, &mut buf, bold, italic, false);
                         code = Some(CodeSpan {
-                            close_at: char_at(&byte_at, span.end - run),
-                            close_len: run,
+                            close_at: char_at(&byte_at, close),
+                            close_len: len,
                         });
+                        i += len;
                     }
-                    None => buf.extend(&chars[i..i + run]),
+                    None => {
+                        let run = backtick_run(&chars, i);
+                        buf.extend(&chars[i..i + run]);
+                        i += run;
+                    }
                 }
-                i += run;
                 continue;
             }
         }
@@ -339,8 +355,8 @@ fn emphasis_closer(
             continue;
         }
         if chars[i] == '`' {
-            i = match code_span_at(text, byte_at[i]) {
-                Some(span) => char_at(byte_at, span.end),
+            i = match code_block_at(text, byte_at[i]).or_else(|| code_span_at(text, byte_at[i])) {
+                Some(code) => char_at(byte_at, code.end),
                 None => i + backtick_run(chars, i),
             };
             continue;
@@ -1640,6 +1656,16 @@ mod tests {
     }
 
     #[test]
+    fn a_code_block_is_code_up_to_its_closing_fence_or_the_end() {
+        assert_eq!(code_spans("a\n```sh\n[[b]]\n``` [[c]]"), ["sh\n[[b]]\n"]);
+        assert_eq!(
+            reader_targets("```sh\n[[b]]\n``` [[c]]"),
+            [(LinkKind::Wiki, "c".into())]
+        );
+        assert_eq!(code_spans("a ```\n[[b]]"), ["\n[[b]]"]);
+    }
+
+    #[test]
     fn code_span_content_is_not_space_stripped() {
         assert_eq!(code_spans("` a `"), vec![" a "]);
         assert_eq!(code_spans("`` ` ``"), vec![" ` "]);
@@ -1728,9 +1754,27 @@ mod tests {
                 continue;
             }
             let run = run_len(chars, i);
+            let line = chars[i + run..]
+                .split(|c| *c == '\n')
+                .next()
+                .unwrap_or_default();
+            let inline = line
+                .get(1..)
+                .is_some_and(|rest| rest.windows(2).any(|pair| pair == ['`'; 2]));
+            if run > 3 || (run == 3 && !inline) {
+                let close = (i + 3..chars.len().saturating_sub(2))
+                    .find(|&j| chars[j..j + 3] == ['`'; 3])
+                    .unwrap_or(chars.len());
+                let end = (close + 3).min(chars.len());
+                flags[i..i + 3].fill(None);
+                flags[i + 3..close].fill(Some(true));
+                flags[close..end].fill(None);
+                i = end;
+                continue;
+            }
             let mut j = i + run;
             let mut close = None;
-            while j < chars.len() {
+            while j < chars.len() && chars[j] != '\n' {
                 if chars[j] != '`' {
                     j += 1;
                     continue;
@@ -1756,7 +1800,7 @@ mod tests {
 
     #[test]
     fn corpus_keeps_every_character_a_delimiter_or_escape_does_not_consume() {
-        let alphabet = ['`', 'a', 'b', ' ', '\u{e9}', '\\', '-'];
+        let alphabet = ['`', 'a', 'b', ' ', '\u{e9}', '\\', '-', '\n'];
         let mut state = 0x9e37_79b9_7f4a_7c15_u64;
         let mut next = || {
             state ^= state << 13;

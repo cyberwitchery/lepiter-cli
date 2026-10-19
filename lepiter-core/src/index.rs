@@ -1877,10 +1877,19 @@ mod tests {
     }
 
     #[test]
-    fn analyze_links_skips_a_link_in_inline_code_but_not_its_bare_twin() {
-        let (dir, index) = make_kb_on_disk(&[("p1", "Page One", &[], "`[[Gone]]` or [[Gone]]")]);
+    fn analyze_links_skips_a_link_in_code_but_not_its_bare_twin() {
+        let (dir, index) = make_kb_on_disk(&[
+            (
+                "p1",
+                "Page One",
+                &[],
+                "`[[Gone]]` or [[Gone]]\n```\n[[Gone]] [[Page Two]]\n```",
+            ),
+            ("p2", "Page Two", &[], ""),
+        ]);
         let result = index.analyze_links();
         assert_eq!(result.broken_links.len(), 1);
+        assert!(result.edges.is_empty());
         fs::remove_dir_all(&dir).unwrap();
     }
 

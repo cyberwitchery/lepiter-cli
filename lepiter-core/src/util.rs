@@ -290,7 +290,7 @@ mod tests {
         let nodes = vec![Node::Paragraph {
             text: concat!(
                 r"`{{gtPage:A}}` [{{gtPage:B}}](u) \{{gtPage:C}} {{see [a](b)}} [{{gtPage:F}}](u) ",
-                "{{gtPage:D |label=d|db=x|id=y|db=z|id=w|E}} {{gtPage:|id=v}}",
+                "{{gtPage:D |label=d|db=x|id=y|db=z|id=w|E}} {{gtPage:|id=v}}\n```\n{{gtPage:G}}\n```",
             )
             .into(),
         }];

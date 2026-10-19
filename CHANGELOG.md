@@ -6,8 +6,9 @@ all notable changes to this project are documented in this file.
 
 ### changed
 - re-importing a markdown export written by 0.12.1 or earlier keeps a link
-  inside inline code pointing at the exported `.md` file: those versions
-  rewrote it on export, and `import` now leaves inline code as written
+  inside inline code or a ` ``` ` code block pointing at the exported `.md`
+  file: those versions rewrote it on export, and `import` now leaves code as
+  written
 - a `[[…]]` link whose text is a page's title now reaches that page even when
   the text also reads as a page id, a `page:` target, a url or an attachment
   path, as in Glamorous Toolkit. `check`, `links`, backlinks, `export`, `show`
@@ -23,6 +24,11 @@ all notable changes to this project are documented in this file.
 - a `[[…]]` or `[label](target)` inside inline code is code, as in Glamorous
   Toolkit: `check`, `links` and backlinks no longer count it, the reader shows
   it as code, and `export` and `import` leave it as written
+- a ` ``` ` code block in a text snippet is code up to the next ` ``` `, or to
+  the end of the snippet when none follows, as in Glamorous Toolkit: `check`,
+  `links` and backlinks no longer count a `[[…]]`, `[label](target)` or
+  `{{gtPage:…}}` inside it, the reader shows it as code, and `export` and
+  `import` leave it as written
 - inline code ends at a line break, as in Glamorous Toolkit, so the reader no
   longer shows the lines between a backtick and a matching one on a later line
   as code

@@ -49,7 +49,8 @@ pub use index::{
     LinkEdge, LinkGraph, MissingAttachment, PageLoadError,
 };
 pub use inline_link::{
-    InlineLink, InlineLinks, LinkKind, code_span_at, rewrite_inline_links, scan_inline_links,
+    InlineLink, InlineLinks, LinkKind, code_block_at, code_span_at, rewrite_inline_links,
+    scan_inline_links,
 };
 pub use model::{
     AttachmentError, AttachmentResolver, LinkTargetKind, Node, Page, PageId, PageMeta, ParseIssue,

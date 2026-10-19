@@ -209,6 +209,10 @@ mod tests {
             ("[docs](https://example.com)", "[docs](https://example.com)"),
             ("日本語テキスト [[リンク]]", "日本語テキスト [[リンク]]"),
             ("see [[Spaced ]]", "see [Spaced](spaced.md)"),
+            (
+                "```\n[[Other]] [link](page:p1)\n```",
+                "```\n[[Other]] [link](page:p1)\n```",
+            ),
         ];
         for (text, expected) in cases {
             assert_eq!(

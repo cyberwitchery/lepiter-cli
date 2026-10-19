@@ -59,8 +59,9 @@ pub struct InlineLink<'a> {
 /// literal text and delimits nothing. Labels and targets are reported as raw
 /// slices, so an escape inside one is still spelled with its backslash.
 ///
-/// No link starts inside an inline code span (see [`code_span_at`]); a backtick
-/// preceded by an odd number of backslashes opens none.
+/// No link starts inside an inline code span or a code block (see
+/// [`code_span_at`] and [`code_block_at`]); a backtick preceded by an odd number
+/// of backslashes opens neither.
 pub fn scan_inline_links(text: &str) -> InlineLinks<'_> {
     InlineLinks {
         text,
@@ -174,12 +175,39 @@ pub fn code_span_at(text: &str, start: usize) -> Option<Range<usize>> {
     None
 }
 
+/// the byte range of the code block whose ` ``` ` opens at byte `start`: through
+/// the next ` ``` ` anywhere after it, or to the end of `text` when none follows.
+/// a ` ``` ` followed by text and then ` `` ` on the same line opens inline code
+/// instead.
+pub fn code_block_at(text: &str, start: usize) -> Option<Range<usize>> {
+    let bytes = text.as_bytes();
+    let opens = bytes[start..].starts_with(b"```")
+        && match bytes.get(start + 3) {
+            None | Some(b'`' | b'\n' | b'\r') => true,
+            Some(_) => !bytes[start + 4..]
+                .windows(2)
+                .take_while(|pair| !matches!(pair[0], b'\n' | b'\r'))
+                .any(|pair| pair == b"``"),
+        };
+    if !opens {
+        return None;
+    }
+    let body = start + 3;
+    let end = text[body..]
+        .find("```")
+        .map_or(text.len(), |at| body + at + 3);
+    Some(start..end)
+}
+
 /// where a walk resumes from an unescaped backtick run at byte `i`: past its
-/// code span, or past the run when it opens none.
+/// code block or code span, or past the run when it opens neither.
 pub(crate) fn past_backtick_run(text: &str, i: usize) -> Option<usize> {
     let bytes = text.as_bytes();
-    (bytes.get(i) == Some(&b'`') && !is_escaped(bytes, i))
-        .then(|| code_span_at(text, i).map_or(i + backtick_run(bytes, i), |span| span.end))
+    (bytes.get(i) == Some(&b'`') && !is_escaped(bytes, i)).then(|| {
+        code_block_at(text, i)
+            .or_else(|| code_span_at(text, i))
+            .map_or(i + backtick_run(bytes, i), |code| code.end)
+    })
 }
 
 fn backtick_run(bytes: &[u8], start: usize) -> usize {
@@ -861,16 +889,27 @@ mod tests {
     }
 
     #[test]
-    fn a_link_inside_inline_code_is_code() {
-        assert!(scan("`[[a]]` ``[b](c)``").is_empty());
+    fn a_link_inside_inline_code_or_a_code_block_is_code() {
+        for text in [
+            "`[[a]]` ``[b](c)``",
+            "```sh\nif [[ -f x ]]; then\n```",
+            "````\n[[a]]\n````",
+            "x ```\n[[a]]",
+            "```x\r[[a]] ``",
+        ] {
+            assert!(scan(text).is_empty(), "{text:?}");
+        }
         for text in [
             "`[[a]]` [[a]]",
             r"\`[[a]]` x",
             "``[[a]]`",
             "`\n[[a]]\n`",
             "`\r[[a]]\r`",
+            "```\n[[b]] ``` [[a]]",
+            "```x`` [[a]]\n```",
         ] {
-            assert_eq!(scan(text).len(), 1, "{text:?}");
+            let targets: Vec<_> = scan(text).iter().map(|link| link.target).collect();
+            assert_eq!(targets, ["a"], "{text:?}");
         }
     }
 

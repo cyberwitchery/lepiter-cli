@@ -146,14 +146,16 @@ pub fn parse_inline(text: &str) -> Vec<InlineElement> {
                     continue;
                 }
             } else {
-                let run = backtick_run(&chars, i);
                 let start = byte_at[i];
                 let opened = match code_block_at(text, start) {
                     Some(block) if text[start + 3..block.end].ends_with("```") => {
                         Some((3, block.end - 3))
                     }
                     Some(block) => Some((3, block.end)),
-                    None => code_span_at(text, start).map(|span| (run, span.end - run)),
+                    None => code_span_at(text, start).map(|span| {
+                        let run = backtick_run(&chars, i);
+                        (run, span.end - run)
+                    }),
                 };
                 match opened {
                     Some((len, close)) => {
@@ -165,6 +167,7 @@ pub fn parse_inline(text: &str) -> Vec<InlineElement> {
                         i += len;
                     }
                     None => {
+                        let run = backtick_run(&chars, i);
                         buf.extend(&chars[i..i + run]);
                         i += run;
                     }
@@ -1751,8 +1754,14 @@ mod tests {
                 continue;
             }
             let run = run_len(chars, i);
-            let after = chars.get(i + 4..).unwrap_or_default();
-            if run > 3 || (run == 3 && !after.windows(2).any(|pair| pair == ['`'; 2])) {
+            let line = chars[i + run..]
+                .split(|c| *c == '\n')
+                .next()
+                .unwrap_or_default();
+            let inline = line
+                .get(1..)
+                .is_some_and(|rest| rest.windows(2).any(|pair| pair == ['`'; 2]));
+            if run > 3 || (run == 3 && !inline) {
                 let close = (i + 3..chars.len().saturating_sub(2))
                     .find(|&j| chars[j..j + 3] == ['`'; 3])
                     .unwrap_or(chars.len());
@@ -1765,7 +1774,7 @@ mod tests {
             }
             let mut j = i + run;
             let mut close = None;
-            while j < chars.len() {
+            while j < chars.len() && chars[j] != '\n' {
                 if chars[j] != '`' {
                     j += 1;
                     continue;
@@ -1791,7 +1800,7 @@ mod tests {
 
     #[test]
     fn corpus_keeps_every_character_a_delimiter_or_escape_does_not_consume() {
-        let alphabet = ['`', 'a', 'b', ' ', '\u{e9}', '\\', '-'];
+        let alphabet = ['`', 'a', 'b', ' ', '\u{e9}', '\\', '-', '\n'];
         let mut state = 0x9e37_79b9_7f4a_7c15_u64;
         let mut next = || {
             state ^= state << 13;

@@ -206,7 +206,7 @@ pub(crate) fn past_backtick_run(text: &str, i: usize) -> Option<usize> {
     (bytes.get(i) == Some(&b'`') && !is_escaped(bytes, i)).then(|| {
         code_block_at(text, i)
             .or_else(|| code_span_at(text, i))
-            .map_or(i + backtick_run(bytes, i), |code| code.end)
+            .map_or_else(|| i + backtick_run(bytes, i), |code| code.end)
     })
 }
 

@@ -817,9 +817,9 @@ fn insert_sorted_by_title(
 }
 
 fn compute_sorted_ids(pages: &HashMap<PageId, PageMeta>) -> Vec<PageId> {
-    let mut ids: Vec<PageId> = pages.keys().cloned().collect();
-    ids.sort_by(|a, b| title_sort_key(pages, a).cmp(&title_sort_key(pages, b)));
-    ids
+    let mut entries: Vec<&PageMeta> = pages.values().collect();
+    entries.sort_by_key(|m| (m.title_lower.as_str(), m.id.as_str()));
+    entries.into_iter().map(|m| m.id.clone()).collect()
 }
 
 /// Collapses the scan-time id -> paths map into sorted `DuplicateId`s for every
@@ -1134,15 +1134,20 @@ mod tests {
 
     #[test]
     fn search_hits_same_score_sorted_alphabetically() {
-        let (dir, index) = make_kb_on_disk(&[
+        let (dir, _) = make_kb_on_disk(&[
             ("p1", "Zebra", &["common"], "body"),
             ("p2", "Alpha", &["common"], "body"),
             ("p3", "Middle", &["common"], "body"),
         ]);
-        let hits = index.search_hits("common", false);
-        let ids: Vec<&str> = hits.iter().map(|h| h.id.as_str()).collect();
-        // all tag matches → same score → alphabetical by title
-        assert_eq!(ids, vec!["p2", "p3", "p1"]);
+        // each open draws new hash keys
+        for _ in 0..8 {
+            let hits = KnowledgeBase::open(&dir)
+                .unwrap()
+                .search_hits("common", false);
+            let ids: Vec<&str> = hits.iter().map(|h| h.id.as_str()).collect();
+            // all tag matches → same score → alphabetical by title
+            assert_eq!(ids, vec!["p2", "p3", "p1"]);
+        }
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -2058,7 +2063,7 @@ mod tests {
 
     #[test]
     fn find_duplicate_titles_case_insensitive() {
-        let (dir, index) = make_kb_on_disk(&[
+        let (dir, _) = make_kb_on_disk(&[
             ("p5", "ALPHA", &[], "body"),
             ("p2", "Alpha", &[], "body"),
             ("p8", "ALPHA", &[], "body"),
@@ -2068,10 +2073,13 @@ mod tests {
             ("p6", "Alpha", &[], "body"),
             ("p4", "ALPHA", &[], "body"),
         ]);
-        let dupes = index.find_duplicate_titles();
-        assert_eq!(dupes.len(), 1);
-        assert_eq!(dupes[0].title, "alpha");
-        assert_eq!(dupes[0].page_ids.len(), 8);
+        // each open draws new hash keys
+        for _ in 0..8 {
+            let dupes = KnowledgeBase::open(&dir).unwrap().find_duplicate_titles();
+            assert_eq!(dupes.len(), 1);
+            assert_eq!(dupes[0].title, "alpha");
+            assert_eq!(dupes[0].page_ids.len(), 8);
+        }
         fs::remove_dir_all(&dir).unwrap();
     }
 

@@ -154,21 +154,7 @@ fn print_links_text(index: &KnowledgeBaseIndex, edges: &[&LinkEdge], ego_id: Opt
 
     // Most linked-to pages (by in-degree), top 10.
     let mut by_in: Vec<(&str, usize)> = in_degree.iter().map(|(k, v)| (*k, *v)).collect();
-    by_in.sort_by(|a, b| {
-        b.1.cmp(&a.1).then_with(|| {
-            let ta = index
-                .pages
-                .get(a.0)
-                .map(|m| m.title_lower.as_str())
-                .unwrap_or("");
-            let tb = index
-                .pages
-                .get(b.0)
-                .map(|m| m.title_lower.as_str())
-                .unwrap_or("");
-            ta.cmp(tb)
-        })
-    });
+    by_in.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| index.cmp_by_title(a.0, b.0)));
 
     if !by_in.is_empty() {
         println!("\nMost Linked Pages:");

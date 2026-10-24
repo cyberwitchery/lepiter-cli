@@ -21,6 +21,10 @@ all notable changes to this project are documented in this file.
   for `[[ c ]]` where it passed `"c"`
 
 ### fixed
+- pages that share a title, ignoring case, now come in page id order, so
+  `ids`, `list`, `search`, `links`, `check`, `show`, `export` and the reader
+  give the same output on every run, and `export` writes each page to the same
+  file every time
 - a `[[…]]` or `[label](target)` inside inline code is code, as in Glamorous
   Toolkit: `check`, `links` and backlinks no longer count it, the reader shows
   it as code, and `export` and `import` leave it as written

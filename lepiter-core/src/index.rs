@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::BufReader;
@@ -27,8 +28,8 @@ pub struct KnowledgeBaseIndex {
     root: PathBuf,
     /// Metadata map keyed by canonical page id.
     pub pages: HashMap<PageId, PageMeta>,
-    /// Page ids in case-insensitive title sort order, computed at open time,
-    /// maintained by [`Self::register_page`].
+    /// Page ids in case-insensitive title sort order, ties by id, computed at
+    /// open time, maintained by [`Self::register_page`].
     pub sorted_ids: Vec<PageId>,
     /// Exact-title lookup index: lowercased title -> page ids sharing that title.
     /// Kept in sync with `pages` by [`Self::register_page`].
@@ -148,10 +149,11 @@ impl KnowledgeBaseIndex {
             if let Some(old) = &old_title_lower {
                 self.remove_from_title_index(old, &id);
             }
-            self.title_index
-                .entry(new_title_lower)
-                .or_default()
-                .push(id);
+            insert_sorted_by_title(
+                self.title_index.entry(new_title_lower).or_default(),
+                &self.pages,
+                id,
+            );
         }
     }
 
@@ -207,6 +209,11 @@ impl KnowledgeBaseIndex {
             .iter()
             .filter_map(|id| self.pages.get(id))
             .collect()
+    }
+
+    /// orders two page ids as [`Self::sorted_ids`] does.
+    pub fn cmp_by_title(&self, a: &str, b: &str) -> Ordering {
+        title_sort_key(&self.pages, a).cmp(&title_sort_key(&self.pages, b))
     }
 
     /// Returns page ids filtered by metadata query (title/id/tags), sorted by title.
@@ -273,14 +280,7 @@ impl KnowledgeBaseIndex {
                 })
             })
             .collect();
-        hits.sort_by_cached_key(|h| {
-            let title = self
-                .pages
-                .get(&h.id)
-                .map(|m| m.title_lower.clone())
-                .unwrap_or_default();
-            (std::cmp::Reverse(h.kind.score()), title)
-        });
+        hits.sort_by_key(|h| std::cmp::Reverse(h.kind.score()));
         hits
     }
 
@@ -478,9 +478,7 @@ impl KnowledgeBaseIndex {
             .into_iter()
             .map(|(target, sources)| {
                 let mut sorted: Vec<PageId> = sources.into_iter().collect();
-                sorted.sort_by(|a, b| {
-                    title_sort_key(&self.pages, a).cmp(title_sort_key(&self.pages, b))
-                });
+                sorted.sort_by(|a, b| self.cmp_by_title(a, b));
                 (target, sorted)
             })
             .collect();
@@ -673,7 +671,7 @@ impl KnowledgeBaseIndex {
     /// Finds page titles shared by more than one page (case-insensitive).
     pub fn find_duplicate_titles(&self) -> Vec<DuplicateTitle> {
         let mut by_title: HashMap<&str, Vec<&PageMeta>> = HashMap::new();
-        for meta in self.pages.values() {
+        for meta in self.sorted_pages() {
             by_title.entry(&meta.title_lower).or_default().push(meta);
         }
         let mut dupes: Vec<DuplicateTitle> = by_title
@@ -759,7 +757,7 @@ pub struct LinkGraph {
 /// A set of pages that share the same title (case-insensitive).
 #[derive(Debug, Clone)]
 pub struct DuplicateTitle {
-    /// The shared title (original casing from the first match).
+    /// The shared title, cased as on the first page in `page_ids`.
     pub title: String,
     /// Page ids sharing this title.
     pub page_ids: Vec<PageId>,
@@ -797,12 +795,13 @@ impl LinkGraph {
     }
 }
 
-/// Returns the case-insensitive title for `id`, or `""` if unknown.
+/// Returns the sort key for `id`: its case-insensitive title (`""` if unknown), then `id`.
 ///
 /// Free function so callers can split-borrow `pages` and `backlinks`
 /// without conflicting on `&self`.
-fn title_sort_key<'a>(pages: &'a HashMap<PageId, PageMeta>, id: &str) -> &'a str {
-    pages.get(id).map(|m| m.title_lower.as_str()).unwrap_or("")
+fn title_sort_key<'a>(pages: &'a HashMap<PageId, PageMeta>, id: &'a str) -> (&'a str, &'a str) {
+    let title = pages.get(id).map_or("", |m| m.title_lower.as_str());
+    (title, id)
 }
 
 /// Inserts `source_id` into `sources` at the position that keeps the vec
@@ -818,9 +817,9 @@ fn insert_sorted_by_title(
 }
 
 fn compute_sorted_ids(pages: &HashMap<PageId, PageMeta>) -> Vec<PageId> {
-    let mut entries: Vec<_> = pages.values().collect();
-    entries.sort_by(|a, b| a.title_lower.cmp(&b.title_lower));
-    entries.into_iter().map(|m| m.id.clone()).collect()
+    let mut ids: Vec<PageId> = pages.keys().cloned().collect();
+    ids.sort_by(|a, b| title_sort_key(pages, a).cmp(&title_sort_key(pages, b)));
+    ids
 }
 
 /// Collapses the scan-time id -> paths map into sorted `DuplicateId`s for every
@@ -1529,6 +1528,29 @@ mod tests {
     }
 
     #[test]
+    fn tied_titles_sort_by_id_in_ids_and_backlinks() {
+        let (dir, mut index) = make_kb_on_disk(&[
+            ("p5", "Same", &[], "[[Zebra]]"),
+            ("p2", "same", &[], "[[Zebra]]"),
+            ("p0", "Zebra", &[], "nothing"),
+            ("p8", "SAME", &[], "[[Zebra]]"),
+            ("p1", "Same", &[], "[[Zebra]]"),
+            ("p7", "same", &[], "[[Zebra]]"),
+            ("p9", "Alpha", &[], "[[Zebra]]"),
+            ("p3", "Same", &[], "[[Zebra]]"),
+            ("p6", "SAME", &[], "[[Zebra]]"),
+            ("p4", "same", &[], "[[Zebra]]"),
+        ]);
+        assert_eq!(
+            index.sorted_ids,
+            ["p9", "p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8", "p0"]
+        );
+        index.build_backlinks();
+        assert_eq!(index.backlinks_for("p0"), &index.sorted_ids[..9]);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn update_backlinks_for_replaces_changed_link() {
         let (dir, mut index) = make_kb_on_disk(&[
             ("p1", "Alpha", &[], "see [[Beta]]"),
@@ -1683,7 +1705,8 @@ mod tests {
         index.register_page(meta_with_title("alpha", "Alpha"));
         index.register_page(meta_with_title("gamma", "Gamma"));
         index.register_page(meta_with_title("beta", "Beta"));
-        assert_eq!(index.sorted_ids, vec!["alpha", "beta", "gamma"]);
+        index.register_page(meta_with_title("beta2", "BETA"));
+        assert_eq!(index.sorted_ids, vec!["alpha", "beta", "beta2", "gamma"]);
         assert!(index.pages.contains_key("beta"));
 
         fs::remove_dir_all(&dir).unwrap();
@@ -1775,17 +1798,13 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let mut index = KnowledgeBase::open(&dir).unwrap();
 
-        index.register_page(meta_with_title("p1", "Shared"));
         index.register_page(meta_with_title("p2", "Shared"));
+        index.register_page(meta_with_title("p1", "Shared"));
 
-        match index.resolve_page_id_by_title_exact("shared") {
-            TitleResolution::Ambiguous(ids) => {
-                assert_eq!(ids.len(), 2);
-                assert!(ids.contains(&"p1".to_string()));
-                assert!(ids.contains(&"p2".to_string()));
-            }
-            other => panic!("expected Ambiguous, got {other:?}"),
-        }
+        assert_eq!(
+            index.resolve_page_id_by_title_exact("shared"),
+            TitleResolution::Ambiguous(vec!["p1".to_string(), "p2".to_string()])
+        );
 
         fs::remove_dir_all(&dir).unwrap();
     }
@@ -2039,11 +2058,20 @@ mod tests {
 
     #[test]
     fn find_duplicate_titles_case_insensitive() {
-        let (dir, index) =
-            make_kb_on_disk(&[("p1", "Alpha", &[], "body"), ("p2", "ALPHA", &[], "body")]);
+        let (dir, index) = make_kb_on_disk(&[
+            ("p5", "ALPHA", &[], "body"),
+            ("p2", "Alpha", &[], "body"),
+            ("p8", "ALPHA", &[], "body"),
+            ("p1", "alpha", &[], "body"),
+            ("p7", "Alpha", &[], "body"),
+            ("p3", "ALPHA", &[], "body"),
+            ("p6", "Alpha", &[], "body"),
+            ("p4", "ALPHA", &[], "body"),
+        ]);
         let dupes = index.find_duplicate_titles();
         assert_eq!(dupes.len(), 1);
-        assert_eq!(dupes[0].page_ids.len(), 2);
+        assert_eq!(dupes[0].title, "alpha");
+        assert_eq!(dupes[0].page_ids.len(), 8);
         fs::remove_dir_all(&dir).unwrap();
     }
 

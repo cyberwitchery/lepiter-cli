@@ -206,15 +206,12 @@ impl App {
 
             let mut ids: Vec<_> = hit_kind.keys().cloned().collect();
             ids.sort_by_cached_key(|id| {
-                let score = Reverse(hit_kind[id].score());
                 let title = self
                     .index
                     .pages
                     .get(id)
-                    .map(|m| m.title_lower.as_str())
-                    .unwrap_or("")
-                    .to_owned();
-                (score, title)
+                    .map_or("", |m| m.title_lower.as_str());
+                (Reverse(hit_kind[id].score()), title.to_owned(), id.clone())
             });
             self.visible_ids = ids;
             self.search_hit_kind = hit_kind;

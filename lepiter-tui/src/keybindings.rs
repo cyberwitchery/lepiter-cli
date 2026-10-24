@@ -715,6 +715,32 @@ mod tests {
     }
 
     #[test]
+    fn search_lists_tied_titles_in_page_id_order() {
+        let dir = tempfile::tempdir().unwrap();
+        for (id, title) in [
+            ("p5", "Same"),
+            ("p2", "same"),
+            ("p8", "SAME"),
+            ("p1", "Same"),
+            ("p7", "same"),
+            ("p3", "SAME"),
+            ("p6", "Same"),
+            ("p4", "same"),
+        ] {
+            let page = json!({ "uid": { "uuid": id }, "pageType": { "title": title } });
+            std::fs::write(dir.path().join(format!("{id}.lepiter")), page.to_string()).unwrap();
+        }
+        let mut app = make_app();
+        app.index = lepiter_core::KnowledgeBase::open(dir.path()).unwrap();
+        app.search = "same".to_string();
+        app.rebuild_visible_ids();
+        assert_eq!(
+            app.visible_ids,
+            ["p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8"]
+        );
+    }
+
+    #[test]
     fn search_always_returns_search_tick() {
         for code in [KeyCode::Char('x'), KeyCode::Esc, KeyCode::F(1)] {
             let mut app = make_app();

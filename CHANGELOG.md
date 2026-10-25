@@ -2,6 +2,25 @@
 
 all notable changes to this project are documented in this file.
 
+## Unreleased
+
+### changed
+- re-importing a markdown export written by 0.12.2 or earlier turns a carriage
+  return in a title or tag into a space, as yaml reads it; export the page again
+  to keep it
+
+### fixed
+- `export` writes every title and tag as a yaml string that `import` and any
+  other yaml reader read back exactly: a line break, a control character or a
+  `---` line in a title no longer adds keys, makes the file invalid yaml or
+  loses the page on import
+- `import` reads frontmatter as yaml does: single-quoted and escaped
+  double-quoted strings, values folded over several lines, `#` comments, block
+  sequences of tags, a comma inside a quoted tag and a quoted `id`. a key
+  nested under another key is no longer read, and a value it cannot read (a
+  block scalar, an anchor, a `!!` tag, a repeated key) is skipped with a
+  warning naming the file and key
+
 ## 0.12.2 - 2026-10-25
 
 ### changed

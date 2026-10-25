@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 
@@ -45,7 +45,7 @@ pub fn run_import(args: Vec<String>) -> Result<()> {
     }
 
     // collect all .md files and parse their frontmatter to build a slug→id map
-    let mut md_files: Vec<(PathBuf, String)> = Vec::new();
+    let mut md_files: Vec<(String, Frontmatter)> = Vec::new();
     let mut slug_to_id: HashMap<String, String> = HashMap::new();
     let mut claimed_ids: HashSet<String> = HashSet::new();
 
@@ -61,7 +61,12 @@ pub fn run_import(args: Vec<String>) -> Result<()> {
         let content = fs::read_to_string(&path)
             .with_context(|| format!("failed to read {}", path.display()))?;
 
-        let Some(fm) = parse_frontmatter(&content) else {
+        let mut warnings = Vec::new();
+        let fm = parse_frontmatter(&content, &mut warnings);
+        for warning in warnings {
+            eprintln!("warning: {}: {warning}", path.display());
+        }
+        let Some(fm) = fm else {
             eprintln!(
                 "warning: skipping {} (no valid frontmatter)",
                 path.display()
@@ -102,25 +107,19 @@ pub fn run_import(args: Vec<String>) -> Result<()> {
             slug_to_id.insert(slug_file, fm.id.clone());
         }
 
-        md_files.push((path, content));
+        md_files.push((content, fm));
     }
 
     fs::create_dir_all(&kb_path)
         .with_context(|| format!("failed to create output directory {}", kb_path.display()))?;
 
     let mut imported = 0usize;
-    let mut errors = 0usize;
 
-    for (_path, content) in &md_files {
-        let Some(fm) = parse_frontmatter(content) else {
-            errors += 1;
-            continue;
-        };
-
+    for (content, fm) in &md_files {
         let body = strip_frontmatter(content);
         let snippets = parse_markdown_body(body, &slug_to_id);
 
-        let page_json = build_page_json(&fm, &snippets);
+        let page_json = build_page_json(fm, &snippets);
         let out_path = kb_path.join(format!("{}.lepiter", fm.id));
 
         let bytes = serde_json::to_vec_pretty(&page_json)
@@ -140,14 +139,11 @@ pub fn run_import(args: Vec<String>) -> Result<()> {
     }
 
     eprintln!("imported {imported} pages to {}", kb_path.display());
-    if errors > 0 {
-        eprintln!("{errors} files skipped due to errors");
-    }
 
     Ok(())
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct Frontmatter {
     title: String,
     id: String,
@@ -155,52 +151,493 @@ struct Frontmatter {
     updated_at: Option<String>,
 }
 
-fn parse_frontmatter(content: &str) -> Option<Frontmatter> {
-    let content = content.strip_prefix('\u{feff}').unwrap_or(content);
-    if !content.starts_with("---\n") && !content.starts_with("---\r\n") {
-        return None;
-    }
-    let after_first = &content[4..];
-    let end = after_first
-        .find("\n---\n")
-        .or_else(|| after_first.find("\n---\r\n"))
-        .or_else(|| {
-            // handle case where --- is at end of file
-            if after_first.ends_with("\n---") {
-                Some(after_first.len() - 3)
+/// a value outside the yaml subset `Yaml` reads is skipped and reported in `warnings`.
+fn parse_frontmatter(content: &str, warnings: &mut Vec<String>) -> Option<Frontmatter> {
+    let (block, _) = split_frontmatter(content)?;
+    let block = block.replace("\r\n", "\n").replace('\r', "\n");
+    let mut yaml = Yaml { s: &block, pos: 0 };
+    let mut fields: BTreeMap<&str, Result<Value, &str>> = BTreeMap::new();
+    loop {
+        yaml.skip_empty_lines();
+        if yaml.pos == yaml.s.len() {
+            break;
+        }
+        let Some(key) = yaml.key() else {
+            warnings.push(format!("ignoring frontmatter line {:?}", yaml.line()));
+            yaml.skip_node();
+            continue;
+        };
+        let value = yaml.value();
+        if value.is_err() {
+            yaml.skip_node();
+        }
+        if matches!(key, "title" | "id" | "tags" | "updated_at") {
+            let value = if fields.contains_key(key) {
+                Err("repeated key")
             } else {
-                None
-            }
-        })?;
-    let yaml_block = &after_first[..end];
-
-    let mut title = String::new();
-    let mut id = String::new();
-    let mut tags = Vec::new();
-    let mut updated_at = None;
-
-    for line in yaml_block.lines() {
-        let line = line.trim();
-        if let Some(rest) = line.strip_prefix("title:") {
-            title = parse_yaml_string(rest.trim());
-        } else if let Some(rest) = line.strip_prefix("id:") {
-            id = rest.trim().to_string();
-        } else if let Some(rest) = line.strip_prefix("updated_at:") {
-            let val = rest.trim().to_string();
-            if !val.is_empty() {
-                updated_at = Some(val);
-            }
-        } else if let Some(rest) = line.strip_prefix("tags:") {
-            tags = parse_yaml_tags(rest.trim());
+                value
+            };
+            fields.insert(key, value);
         }
     }
 
-    Some(Frontmatter {
-        title,
-        id,
-        tags,
-        updated_at,
-    })
+    let mut fm = Frontmatter::default();
+    for (key, value) in fields {
+        match (key, value) {
+            (_, Ok(Value::Null)) => {}
+            ("title", Ok(Value::Scalar(s))) => fm.title = s,
+            ("id", Ok(Value::Scalar(s))) => fm.id = s,
+            ("updated_at", Ok(Value::Scalar(s))) => fm.updated_at = Some(s),
+            ("tags", Ok(Value::Seq(tags))) => fm.tags = tags,
+            (_, Ok(_)) => warnings.push(format!("ignoring frontmatter key {key:?}: wrong type")),
+            (_, Err(why)) => warnings.push(format!("ignoring frontmatter key {key:?}: {why}")),
+        }
+    }
+    Some(fm)
+}
+
+/// splits `content` into its frontmatter and the body after the closing `---` line.
+fn split_frontmatter(content: &str) -> Option<(&str, &str)> {
+    let content = content.strip_prefix('\u{feff}').unwrap_or(content);
+    let rest = content
+        .strip_prefix("---\n")
+        .or_else(|| content.strip_prefix("---\r\n"))?;
+    let mut start = 0;
+    loop {
+        let end = rest[start..].find('\n').map(|i| start + i);
+        let line = &rest[start..end.unwrap_or(rest.len())];
+        if line.strip_suffix('\r').unwrap_or(line) == "---" {
+            return Some((&rest[..start], end.map_or("", |e| &rest[e + 1..])));
+        }
+        start = end? + 1;
+    }
+}
+
+enum Value {
+    Null,
+    Scalar(String),
+    Seq(Vec<String>),
+}
+
+/// the yaml subset of frontmatter: plain and quoted scalars, and flow or block sequences of them.
+struct Yaml<'a> {
+    s: &'a str,
+    pos: usize,
+}
+
+impl<'a> Yaml<'a> {
+    fn rest(&self) -> &'a str {
+        &self.s[self.pos..]
+    }
+
+    fn peek(&self) -> Option<char> {
+        self.rest().chars().next()
+    }
+
+    fn line(&self) -> &'a str {
+        self.rest().split('\n').next().unwrap_or("")
+    }
+
+    fn indent(&self) -> usize {
+        let line = self.line();
+        line.len() - line.trim_start_matches(' ').len()
+    }
+
+    fn blank_after(&self) -> bool {
+        matches!(self.rest().chars().nth(1), None | Some(' ' | '\t' | '\n'))
+    }
+
+    /// at a line break, the end of input, or a comment
+    fn at_line_end(&self) -> bool {
+        match self.peek() {
+            None | Some('\n') => true,
+            Some('#') => {
+                self.pos == 0 || matches!(self.s.as_bytes()[self.pos - 1], b' ' | b'\t' | b'\n')
+            }
+            _ => false,
+        }
+    }
+
+    fn skip_blanks(&mut self) {
+        let rest = self.rest();
+        self.pos += rest.len() - rest.trim_start_matches([' ', '\t']).len();
+    }
+
+    fn skip_line(&mut self) {
+        self.pos = (self.pos + self.line().len() + 1).min(self.s.len());
+    }
+
+    fn skip_empty_lines(&mut self) {
+        while self.pos < self.s.len() {
+            let line = self.line().trim_start_matches([' ', '\t']);
+            if !line.is_empty() && !line.starts_with('#') {
+                break;
+            }
+            self.skip_line();
+        }
+    }
+
+    /// skips a node that failed to read: the rest of its line and the indented lines after it.
+    fn skip_node(&mut self) {
+        self.skip_line();
+        while self.pos < self.s.len()
+            && (self.line().is_empty()
+                || self.line().starts_with([' ', '\t', '#'])
+                || self.is_item(0))
+        {
+            self.skip_line();
+        }
+    }
+
+    fn is_item(&self, indent: usize) -> bool {
+        self.indent() == indent
+            && self.line()[indent..].starts_with('-')
+            && matches!(
+                self.line().as_bytes().get(indent + 1),
+                None | Some(b' ' | b'\t')
+            )
+    }
+
+    /// a column-0 `key:` line, leaving the cursor after the colon.
+    fn key(&mut self) -> Option<&'a str> {
+        let line = self.line();
+        if line.starts_with([
+            ' ', '\t', '-', '?', ':', ',', '[', ']', '{', '}', '#', '&', '*', '!', '|', '>', '\'',
+            '"', '%', '@', '`',
+        ]) {
+            return None;
+        }
+        let colon = line
+            .match_indices(':')
+            .map(|(i, _)| i)
+            .find(|&i| matches!(line.as_bytes().get(i + 1), None | Some(b' ' | b'\t')))?;
+        let key = line[..colon].trim_end_matches([' ', '\t']);
+        if key.contains(" #") || key.contains("\t#") {
+            return None;
+        }
+        self.pos += colon + 1;
+        Some(key)
+    }
+
+    fn value(&mut self) -> Result<Value, &'static str> {
+        self.skip_blanks();
+        if self.at_line_end() {
+            self.skip_line();
+            self.skip_empty_lines();
+            let indent = self.indent();
+            if self.is_item(indent) {
+                return self.block_seq(indent);
+            }
+            if indent == 0 {
+                return Ok(Value::Null);
+            }
+            self.skip_blanks();
+        }
+        let value = if self.peek() == Some('[') {
+            Value::Seq(self.flow_seq()?)
+        } else {
+            self.scalar(Some(1))?
+        };
+        self.end_node(0)?;
+        Ok(value)
+    }
+
+    /// only a comment may follow a node, and no later line may be indented past `indent`.
+    fn end_node(&mut self, indent: usize) -> Result<(), &'static str> {
+        self.skip_blanks();
+        if !self.at_line_end() {
+            return Err("unexpected text after the value");
+        }
+        self.skip_line();
+        self.skip_empty_lines();
+        if self.pos < self.s.len() && self.indent() > indent {
+            return Err("unexpected indented text after the value");
+        }
+        Ok(())
+    }
+
+    fn block_seq(&mut self, indent: usize) -> Result<Value, &'static str> {
+        let mut items = Vec::new();
+        while self.pos < self.s.len() && self.is_item(indent) {
+            self.pos += indent + 1;
+            self.skip_blanks();
+            if self.at_line_end() {
+                return Err("empty sequence items are not supported");
+            }
+            if let Value::Scalar(s) = self.scalar(Some(indent + 1))? {
+                items.push(s);
+            }
+            self.end_node(indent)?;
+        }
+        Ok(Value::Seq(items))
+    }
+
+    fn flow_seq(&mut self) -> Result<Vec<String>, &'static str> {
+        let start = self.pos;
+        let items = self.flow_items();
+        if items.is_err() {
+            self.pos = start;
+            self.skip_flow();
+        }
+        items
+    }
+
+    fn flow_items(&mut self) -> Result<Vec<String>, &'static str> {
+        self.pos += 1;
+        let mut items = Vec::new();
+        loop {
+            self.skip_flow_space();
+            match self.peek() {
+                None => return Err("unterminated flow sequence"),
+                Some(']') => {
+                    self.pos += 1;
+                    return Ok(items);
+                }
+                _ => {}
+            }
+            if let Value::Scalar(s) = self.scalar(None)? {
+                items.push(s);
+            }
+            self.skip_flow_space();
+            match self.peek() {
+                Some(',') => self.pos += 1,
+                Some(']') => {}
+                _ => return Err("expected `,` or `]` in a flow sequence"),
+            }
+        }
+    }
+
+    fn skip_flow_space(&mut self) {
+        loop {
+            match self.peek() {
+                Some(' ' | '\t' | '\n') => self.pos += 1,
+                Some('#') if self.at_line_end() => self.pos += self.line().len(),
+                _ => return,
+            }
+        }
+    }
+
+    /// skips a flow collection, with the collections and quoted scalars in it.
+    fn skip_flow(&mut self) {
+        let mut depth = 0usize;
+        while let Some(c) = self.peek() {
+            let node_start = self.pos == 0
+                || matches!(
+                    self.s.as_bytes()[self.pos - 1],
+                    b' ' | b'\t' | b'\n' | b'[' | b'{' | b',' | b':'
+                );
+            match c {
+                '"' | '\'' if node_start => {
+                    let _ = self.quoted(c);
+                    continue;
+                }
+                '#' if self.at_line_end() => {
+                    self.pos += self.line().len();
+                    continue;
+                }
+                '[' | '{' => depth += 1,
+                ']' | '}' => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        self.pos += 1;
+                        return;
+                    }
+                }
+                _ => {}
+            }
+            self.pos += c.len_utf8();
+        }
+    }
+
+    /// `indent` is the least indentation of a plain scalar's continuation lines; `None` in a flow.
+    fn scalar(&mut self, indent: Option<usize>) -> Result<Value, &'static str> {
+        match self.peek() {
+            Some(q @ ('"' | '\'')) => self.quoted(q).map(Value::Scalar),
+            Some('[' | '{') => {
+                self.skip_flow();
+                Err("nested collections are not supported")
+            }
+            Some('|' | '>') => Err("block scalars are not supported"),
+            Some('&' | '*') => Err("anchors and aliases are not supported"),
+            Some('!') => Err("tags are not supported"),
+            Some('-' | '?' | ':') if self.blank_after() => Err("unexpected indicator"),
+            Some(',' | ']' | '}' | '#' | '%' | '@' | '`') => Err("unexpected indicator"),
+            _ => self.plain(indent),
+        }
+    }
+
+    fn quoted(&mut self, quote: char) -> Result<String, &'static str> {
+        self.pos += 1;
+        let mut out = String::new();
+        let mut error = None;
+        loop {
+            let Some(c) = self.peek() else {
+                return Err("unterminated quoted scalar");
+            };
+            self.pos += c.len_utf8();
+            match c {
+                '\'' if quote == '\'' && self.peek() == Some('\'') => {
+                    self.pos += 1;
+                    out.push('\'');
+                }
+                _ if c == quote => break,
+                '\\' if quote == '"' && self.peek() == Some('\n') => {
+                    self.pos += 1;
+                    self.fold(&mut out, true)?;
+                }
+                '\\' if quote == '"' => match self.escape() {
+                    Some(c) => out.push(c),
+                    None => error = Some("invalid escape"),
+                },
+                ' ' | '\t' | '\n' => {
+                    let start = self.pos - 1;
+                    self.pos = start;
+                    self.skip_blanks();
+                    if self.peek() == Some('\n') {
+                        self.pos += 1;
+                        self.fold(&mut out, false)?;
+                    } else {
+                        out.push_str(&self.s[start..self.pos]);
+                    }
+                }
+                _ => out.push(c),
+            }
+        }
+        error.map_or(Ok(out), Err)
+    }
+
+    fn escape(&mut self) -> Option<char> {
+        let c = self.peek()?;
+        self.pos += c.len_utf8();
+        let len = match c {
+            'x' => 2,
+            'u' => 4,
+            'U' => 8,
+            _ => {
+                return Some(match c {
+                    '0' => '\0',
+                    'a' => '\u{7}',
+                    'b' => '\u{8}',
+                    't' => '\t',
+                    'n' => '\n',
+                    'v' => '\u{b}',
+                    'f' => '\u{c}',
+                    'r' => '\r',
+                    'e' => '\u{1b}',
+                    'N' => '\u{85}',
+                    '_' => '\u{a0}',
+                    'L' => '\u{2028}',
+                    'P' => '\u{2029}',
+                    ' ' | '\t' | '"' | '/' | '\\' => c,
+                    _ => return None,
+                });
+            }
+        };
+        let hex = self.rest().get(..len)?;
+        if !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
+        self.pos += len;
+        char::from_u32(u32::from_str_radix(hex, 16).ok()?)
+    }
+
+    /// folds the line break just read with the empty lines after it.
+    fn fold(&mut self, out: &mut String, escaped: bool) -> Result<(), &'static str> {
+        let mut breaks = 0;
+        loop {
+            let line = self.line();
+            if (line.starts_with("---") || line.starts_with("..."))
+                && matches!(line.as_bytes().get(3), None | Some(b' ' | b'\t'))
+            {
+                return Err("document marker inside a quoted scalar");
+            }
+            self.skip_blanks();
+            if self.peek() != Some('\n') {
+                break;
+            }
+            self.pos += 1;
+            breaks += 1;
+        }
+        match breaks {
+            0 if !escaped => out.push(' '),
+            n => out.extend(std::iter::repeat_n('\n', n)),
+        }
+        Ok(())
+    }
+
+    fn plain(&mut self, indent: Option<usize>) -> Result<Value, &'static str> {
+        let flow = indent.is_none();
+        let mut out = String::new();
+        let mut pending = String::new();
+        loop {
+            if self.peek() == Some('#') && self.at_line_end() {
+                break;
+            }
+            let start = self.pos;
+            while let Some(c) = self.peek() {
+                let next = self.rest()[c.len_utf8()..].chars().next();
+                let stop = match c {
+                    ' ' | '\t' | '\n' => true,
+                    ':' => {
+                        matches!(next, None | Some(' ' | '\t' | '\n'))
+                            || flow && matches!(next, Some(',' | '[' | ']' | '{' | '}'))
+                    }
+                    ',' | '[' | ']' | '{' | '}' => flow,
+                    _ => false,
+                };
+                if stop {
+                    break;
+                }
+                self.pos += c.len_utf8();
+            }
+            if self.pos == start {
+                break;
+            }
+            out.push_str(&pending);
+            out.push_str(&self.s[start..self.pos]);
+            let end = self.pos;
+            self.skip_blanks();
+            if self.peek() != Some('\n') {
+                pending = self.s[end..self.pos].to_string();
+                continue;
+            }
+            self.pos += 1;
+            let mut breaks = 0;
+            while self.pos < self.s.len() && self.line().trim_start_matches([' ', '\t']).is_empty()
+            {
+                self.skip_line();
+                breaks += 1;
+            }
+            let line = self.line();
+            let marker = (line.starts_with("---") || line.starts_with("..."))
+                && matches!(line.as_bytes().get(3), None | Some(b' ' | b'\t'));
+            if self.pos == self.s.len() || marker || indent.is_some_and(|n| self.indent() < n) {
+                self.pos = end;
+                break;
+            }
+            self.skip_blanks();
+            if self.peek() == Some('#') {
+                self.pos = end;
+                break;
+            }
+            pending = if breaks == 0 {
+                " ".to_string()
+            } else {
+                "\n".repeat(breaks)
+            };
+        }
+        if out.is_empty() {
+            return Err("unexpected indicator");
+        }
+        Ok(match out.as_str() {
+            "~" | "null" | "Null" | "NULL" => Value::Null,
+            _ => Value::Scalar(out),
+        })
+    }
+}
+
+fn strip_frontmatter(content: &str) -> &str {
+    split_frontmatter(content).map_or(content, |(_, body)| body)
 }
 
 /// Rejects frontmatter ids that would escape the output directory when joined as
@@ -210,49 +647,6 @@ fn id_is_safe(id: &str) -> bool {
         && !id.contains('\\')
         && !id.contains("..")
         && !PathBuf::from(id).is_absolute()
-}
-
-fn parse_yaml_string(s: &str) -> String {
-    let s = s.trim();
-    // the len check keeps a lone quote (start == end) from slicing `1..0` and panicking
-    if s.len() >= 2
-        && ((s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')))
-    {
-        let inner = &s[1..s.len() - 1];
-        inner.replace("\\\"", "\"").replace("\\\\", "\\")
-    } else {
-        s.to_string()
-    }
-}
-
-fn parse_yaml_tags(s: &str) -> Vec<String> {
-    let s = s.trim();
-    if !s.starts_with('[') || !s.ends_with(']') {
-        return Vec::new();
-    }
-    let inner = &s[1..s.len() - 1];
-    inner
-        .split(',')
-        .map(|t| parse_yaml_string(t.trim()))
-        .filter(|t| !t.is_empty())
-        .collect()
-}
-
-fn strip_frontmatter(content: &str) -> &str {
-    let content = content.strip_prefix('\u{feff}').unwrap_or(content);
-    if !content.starts_with("---\n") && !content.starts_with("---\r\n") {
-        return content;
-    }
-    let after_first = &content[4..];
-    if let Some(pos) = after_first.find("\n---\n") {
-        &after_first[pos + 5..]
-    } else if let Some(pos) = after_first.find("\n---\r\n") {
-        &after_first[pos + 6..]
-    } else if after_first.ends_with("\n---") {
-        ""
-    } else {
-        content
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -646,8 +1040,9 @@ fn build_page_json(fm: &Frontmatter, snippets: &[Snippet]) -> serde_json::Value 
 
 #[cfg(test)]
 mod tests {
+    use super::super::export::build_frontmatter;
     use super::*;
-    use lepiter_core::{BlockEscaping, Node, is_standalone_link, render_nodes_to_text_with};
+    use lepiter_core::{BlockEscaping, Node, Page, is_standalone_link, render_nodes_to_text_with};
 
     const NASTY_LINKS: &[(&str, &str)] = &[
         ("plain", "https://example.com/path?q=1#frag"),
@@ -741,7 +1136,7 @@ mod tests {
     #[test]
     fn parse_frontmatter_basic() {
         let content = "---\ntitle: \"Test Page\"\nid: abc-123\ntags: [\"rust\", \"cli\"]\nupdated_at: 2024-01-01T00:00:00+00:00\n---\n\nBody text.\n";
-        let fm = parse_frontmatter(content).unwrap();
+        let fm = parse_frontmatter(content, &mut Vec::new()).unwrap();
         assert_eq!(fm.title, "Test Page");
         assert_eq!(fm.id, "abc-123");
         assert_eq!(fm.tags, vec!["rust", "cli"]);
@@ -751,48 +1146,165 @@ mod tests {
     #[test]
     fn parse_frontmatter_no_tags() {
         let content = "---\ntitle: \"Simple\"\nid: p2\n---\n\n";
-        let fm = parse_frontmatter(content).unwrap();
+        let fm = parse_frontmatter(content, &mut Vec::new()).unwrap();
         assert!(fm.tags.is_empty());
         assert!(fm.updated_at.is_none());
     }
 
     #[test]
     fn parse_frontmatter_missing_returns_none() {
-        assert!(parse_frontmatter("no frontmatter here").is_none());
-        assert!(parse_frontmatter("---\nunclosed").is_none());
+        assert!(parse_frontmatter("no frontmatter here", &mut Vec::new()).is_none());
+        assert!(parse_frontmatter("---\nunclosed", &mut Vec::new()).is_none());
     }
 
     #[test]
     fn parse_frontmatter_bom() {
         let content = "\u{feff}---\ntitle: \"BOM\"\nid: bom-1\n---\n\n";
-        let fm = parse_frontmatter(content).unwrap();
+        let fm = parse_frontmatter(content, &mut Vec::new()).unwrap();
         assert_eq!(fm.title, "BOM");
         assert_eq!(fm.id, "bom-1");
     }
 
     #[test]
-    fn parse_yaml_string_lone_quote_does_not_panic() {
-        assert_eq!(parse_yaml_string("\""), "\"");
-        assert_eq!(parse_yaml_string("'"), "'");
-        // normal quoting still works
-        assert_eq!(parse_yaml_string("\"\""), "");
-        assert_eq!(parse_yaml_string("\"hello\""), "hello");
-        assert_eq!(parse_yaml_string("'hello'"), "hello");
-        assert_eq!(parse_yaml_string("plain"), "plain");
+    fn parse_frontmatter_reads_yaml_scalars_and_sequences() {
+        let cases: &[(&str, &str, &str, &[&str])] = &[
+            ("title: 'it''s'\nid: p1", "it's", "p1", &[]),
+            (
+                "title: \"caf\\u00e9\\tx\\x41\\U0001F600\"\nid: p1",
+                "café\txA😀",
+                "p1",
+                &[],
+            ),
+            (
+                "title: \"Folded\n  continued\"\nid: p1",
+                "Folded continued",
+                "p1",
+                &[],
+            ),
+            (
+                "title: \"Injected\ntags: [evil]\"\nid: p1",
+                "Injected tags: [evil]",
+                "p1",
+                &[],
+            ),
+            ("title: \"a\\\n  b\n\n  c\"\nid: p1", "ab\nc", "p1", &[]),
+            ("title: \"cr\rchar\"\nid: p1", "cr char", "p1", &[]),
+            ("title: plain # comment\nid: p1", "plain", "p1", &[]),
+            (
+                "title: plain\n  continued\nid: p1",
+                "plain continued",
+                "p1",
+                &[],
+            ),
+            ("title: ~\nid: \"p1\"", "", "p1", &[]),
+            (
+                "title: Real\nid: p1\nextra:\n  title: Fake",
+                "Real",
+                "p1",
+                &[],
+            ),
+            (
+                "title: Real\nid: p1\nx: {a: \"}\",\ntitle: Fake}",
+                "Real",
+                "p1",
+                &[],
+            ),
+            (
+                "title: t\nid: p1\ntags: [a, 'b, c', \"d, e\",\n  f]",
+                "t",
+                "p1",
+                &["a", "b, c", "d, e", "f"],
+            ),
+            (
+                "title: t\nid: p1\ntags:\n  - alpha\n  - 'beta'",
+                "t",
+                "p1",
+                &["alpha", "beta"],
+            ),
+            (
+                "title: t\nid: p1\ntags:\n- alpha # c\n- \"\"",
+                "t",
+                "p1",
+                &["alpha", ""],
+            ),
+        ];
+        for &(yaml, title, id, tags) in cases {
+            let mut warnings = Vec::new();
+            let fm = parse_frontmatter(&format!("---\n{yaml}\n---\n"), &mut warnings).unwrap();
+            assert_eq!(fm.title, title, "{yaml:?}");
+            assert_eq!(fm.id, id, "{yaml:?}");
+            assert_eq!(fm.tags, tags, "{yaml:?}");
+            assert!(warnings.is_empty(), "{yaml:?}: {warnings:?}");
+        }
+        let quoted = "---\nid: p1\nupdated_at: \"2024-01-01T00:00:00+02:00\"\n---\n";
+        let fm = parse_frontmatter(quoted, &mut Vec::new()).unwrap();
+        assert_eq!(fm.updated_at.as_deref(), Some("2024-01-01T00:00:00+02:00"));
     }
 
     #[test]
-    fn parse_yaml_tags_lone_quote_does_not_panic() {
-        // `tags: ["]` — the bracket-stripped inner is a lone quote
-        assert_eq!(parse_yaml_tags("[\"]"), vec!["\""]);
+    fn parse_frontmatter_skips_and_reports_unsupported_values() {
+        let cases = [
+            ("title: |\n  block", "title"),
+            ("title: &a anchored", "title"),
+            ("title: !!str tagged", "title"),
+            ("title: a\ntitle: b", "title"),
+            ("title: \"bad \\q escape\"", "title"),
+            ("title: nested: mapping", "title"),
+            ("title: \"x\"\n  junk", "title"),
+            ("tags: [a, [b]]", "tags"),
+            ("tags: {a: b}", "tags"),
+            ("tags: [a\n  # unterminated", "tags"),
+            ("title: \"", "title"),
+        ];
+        for (yaml, key) in cases {
+            let mut warnings = Vec::new();
+            let fm =
+                parse_frontmatter(&format!("---\nid: p1\n{yaml}\n---\n"), &mut warnings).unwrap();
+            assert_eq!(fm.id, "p1", "{yaml:?}");
+            assert!(
+                fm.title.is_empty() && fm.tags.is_empty(),
+                "{yaml:?}: {fm:?}"
+            );
+            assert!(
+                warnings.len() == 1 && warnings[0].contains(&format!("{key:?}")),
+                "{yaml:?}: {warnings:?}"
+            );
+        }
     }
 
     #[test]
-    fn parse_frontmatter_lone_quote_title_does_not_panic() {
-        let content = "---\ntitle: \"\nid: lone-1\n---\n\nbody\n";
-        let fm = parse_frontmatter(content).unwrap();
-        assert_eq!(fm.title, "\"");
-        assert_eq!(fm.id, "lone-1");
+    fn frontmatter_round_trips_hostile_titles_and_tags() {
+        let hostile = [
+            "Line1\nLine2",
+            "Injected\ntags: [evil]",
+            "x\n---\nbody-break",
+            "cr\rcrlf\r\n",
+            "bell\u{7}\u{0}\u{1b}\u{7f}",
+            "\u{85}\u{9f}\u{a0}\u{2028}\u{2029}",
+            "\u{feff}\u{fffe}\u{ffff}",
+            "key: value # not a comment",
+            "[a, b], c",
+            "'it''s' \"q\" \\ \\n",
+            "  padded\t ",
+            "",
+            "😀 日本",
+            "- dash",
+            "~",
+        ];
+        for title in hostile {
+            let page = Page {
+                id: "p1".to_string(),
+                title: title.to_string(),
+                updated_at: None,
+                tags: hostile.iter().map(|t| t.to_string()).collect(),
+                content: Vec::new(),
+            };
+            let mut warnings = Vec::new();
+            let fm = parse_frontmatter(&build_frontmatter(&page), &mut warnings).unwrap();
+            assert_eq!(fm.title, page.title);
+            assert_eq!(fm.tags, page.tags);
+            assert!(warnings.is_empty(), "{title:?}: {warnings:?}");
+        }
     }
 
     #[test]
@@ -1486,20 +1998,6 @@ mod tests {
         assert!(!is_standalone_link("text [link](url) more"));
         assert!(!is_standalone_link("no link here"));
         assert!(!is_standalone_link("[unclosed]("));
-    }
-
-    #[test]
-    fn roundtrip_frontmatter() {
-        // build frontmatter the same way export does, then parse it back
-        let original_title = "Page with \"quotes\" and \\backslashes\\";
-        let escaped_title = original_title.replace('\\', "\\\\").replace('"', "\\\"");
-        let fm_str = format!(
-            "---\ntitle: \"{escaped_title}\"\nid: test-id\ntags: [\"a\", \"b\"]\nupdated_at: 2024-06-01T12:00:00+00:00\n---\n\nbody"
-        );
-        let fm = parse_frontmatter(&fm_str).unwrap();
-        assert_eq!(fm.title, original_title);
-        assert_eq!(fm.id, "test-id");
-        assert_eq!(fm.tags, vec!["a", "b"]);
     }
 
     #[test]

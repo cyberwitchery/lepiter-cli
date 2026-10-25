@@ -157,6 +157,7 @@ fn parse_frontmatter(content: &str, warnings: &mut Vec<String>) -> Option<Frontm
     let block = block.replace("\r\n", "\n").replace('\r', "\n");
     let mut yaml = Yaml { s: &block, pos: 0 };
     let mut fields: BTreeMap<&str, Result<Value, &str>> = BTreeMap::new();
+    let mut rewound_to = 0;
     loop {
         yaml.skip_empty_lines();
         if yaml.pos == yaml.s.len() {
@@ -167,8 +168,16 @@ fn parse_frontmatter(content: &str, warnings: &mut Vec<String>) -> Option<Frontm
             yaml.skip_node();
             continue;
         };
+        let start = yaml.pos;
+        let line_end = yaml.pos + yaml.line().len();
         let value = yaml.value();
-        if value.is_err() {
+        if let Err(why) = value {
+            // a malformed value that ran past its line skips only that line, once per region
+            let malformed = yaml.pos == yaml.s.len() || !why.ends_with("not supported");
+            if malformed && yaml.pos > line_end && start >= rewound_to {
+                rewound_to = yaml.pos;
+                yaml.pos = line_end;
+            }
             yaml.skip_node();
         }
         if matches!(key, "title" | "id" | "tags" | "updated_at") {
@@ -420,15 +429,12 @@ impl<'a> Yaml<'a> {
     /// skips a flow collection, with the collections and quoted scalars in it.
     fn skip_flow(&mut self) {
         let mut depth = 0usize;
+        let mut node_start = true;
         while let Some(c) = self.peek() {
-            let node_start = self.pos == 0
-                || matches!(
-                    self.s.as_bytes()[self.pos - 1],
-                    b' ' | b'\t' | b'\n' | b'[' | b'{' | b',' | b':'
-                );
             match c {
                 '"' | '\'' if node_start => {
                     let _ = self.quoted(c);
+                    node_start = false;
                     continue;
                 }
                 '#' if self.at_line_end() => {
@@ -444,6 +450,9 @@ impl<'a> Yaml<'a> {
                     }
                 }
                 _ => {}
+            }
+            if !matches!(c, ' ' | '\t' | '\n') {
+                node_start = matches!(c, '[' | '{' | ',' | ':');
             }
             self.pos += c.len_utf8();
         }
@@ -1158,11 +1167,14 @@ mod tests {
     }
 
     #[test]
-    fn parse_frontmatter_bom() {
-        let content = "\u{feff}---\ntitle: \"BOM\"\nid: bom-1\n---\n\n";
-        let fm = parse_frontmatter(content, &mut Vec::new()).unwrap();
-        assert_eq!(fm.title, "BOM");
-        assert_eq!(fm.id, "bom-1");
+    fn parse_frontmatter_bom_and_crlf() {
+        for content in [
+            "\u{feff}---\ntitle: \"BOM\"\nid: bom-1\n---\n\n",
+            "---\r\ntitle: \"BOM\"\r\nid: bom-1\r\n---\r\nbody",
+        ] {
+            let fm = parse_frontmatter(content, &mut Vec::new()).unwrap();
+            assert_eq!((fm.title.as_str(), fm.id.as_str()), ("BOM", "bom-1"));
+        }
     }
 
     #[test]
@@ -1197,6 +1209,25 @@ mod tests {
                 &[],
             ),
             ("title: ~\nid: \"p1\"", "", "p1", &[]),
+            (
+                "title: t\nx: {a: the '90s}\ny: {b: 5 \"}\nid: p1",
+                "t",
+                "p1",
+                &[],
+            ),
+            (
+                "title: \"\\0\\a\\v\\r\\e\\N\\_\\L\\P\\/\\ \\\t\"\nid: p1",
+                "\0\u{7}\u{b}\r\u{1b}\u{85}\u{a0}\u{2028}\u{2029}/ \t",
+                "p1",
+                &[],
+            ),
+            ("title: t\nx: {a: don't}\nid: p1", "t", "p1", &[]),
+            (
+                "title: NULL\nid: p1\ntags: [-x, ?y]",
+                "",
+                "p1",
+                &["-x", "?y"],
+            ),
             (
                 "title: Real\nid: p1\nextra:\n  title: Fake",
                 "Real",
@@ -1259,7 +1290,7 @@ mod tests {
         for (yaml, key) in cases {
             let mut warnings = Vec::new();
             let fm =
-                parse_frontmatter(&format!("---\nid: p1\n{yaml}\n---\n"), &mut warnings).unwrap();
+                parse_frontmatter(&format!("---\n{yaml}\nid: p1\n---\n"), &mut warnings).unwrap();
             assert_eq!(fm.id, "p1", "{yaml:?}");
             assert!(
                 fm.title.is_empty() && fm.tags.is_empty(),
@@ -1270,6 +1301,14 @@ mod tests {
                 "{yaml:?}: {warnings:?}"
             );
         }
+        let stray = "---\ntitle: \"Hello\nid: p1\ntags: [\"a\"]\n---\n";
+        let mut warnings = Vec::new();
+        let fm = parse_frontmatter(stray, &mut warnings).unwrap();
+        assert_eq!(
+            (fm.id.as_str(), fm.tags.as_slice()),
+            ("p1", &["a".to_string()][..])
+        );
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
     }
 
     #[test]

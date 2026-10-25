@@ -19,7 +19,8 @@ all notable changes to this project are documented in this file.
   sequences of tags, a comma inside a quoted tag and a quoted `id`. a key
   nested under another key is no longer read, and a value it cannot read (a
   block scalar, an anchor, a `!!` tag, a repeated key) is skipped with a
-  warning naming the file and key
+  warning naming the file and key. a malformed value, such as an unclosed
+  quote, is skipped the same way and costs only its own line
 
 ## 0.12.2 - 2026-10-25
 

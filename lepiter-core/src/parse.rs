@@ -432,9 +432,9 @@ fn collect_text_fragments(
     }
 }
 
-/// Parses a markdown-style heading line, returning the level (1–6) and text.
+/// Parses a heading line, one starting with `#`, returning the level (1–6) and text.
 pub fn parse_heading(input: &str) -> Option<(u8, String)> {
-    let trimmed = input.trim();
+    let trimmed = input.trim_end();
     let hashes = trimmed.chars().take_while(|c| *c == '#').count();
     if hashes == 0 {
         return None;
@@ -599,6 +599,7 @@ mod tests {
             Some((2, "Heading".to_string()))
         );
         assert_eq!(parse_heading("No heading"), None);
+        assert_eq!(parse_heading("    # indented"), None);
     }
 
     #[test]

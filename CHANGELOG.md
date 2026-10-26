@@ -22,6 +22,10 @@ all notable changes to this project are documented in this file.
   warning naming the file and key. a malformed value, such as an unclosed
   quote, is skipped the same way and, when it is the only one, costs only its
   own line
+- the reader reads a text snippet's headings line by line, as Glamorous Toolkit
+  does: a line starting with `#` outside a ` ``` ` code block is a heading, and
+  the lines below it are text again, with their links numbered. a `#` after
+  leading spaces is text everywhere, and `export` keeps the spaces
 
 ## 0.12.2 - 2026-10-25
 

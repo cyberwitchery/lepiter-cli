@@ -1,7 +1,9 @@
 //! page rendering to tui lines, including inline markdown, annotations, and
 //! code highlighting.
 
-use lepiter_core::{LinkKind, Node, Page, PageId, normalize_text};
+use lepiter_core::{
+    LinkKind, Node, Page, PageId, normalize_text, parse_heading, past_backtick_run,
+};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
@@ -50,32 +52,12 @@ pub fn render_node(
 ) {
     match node {
         Node::Heading { level, text } => {
-            let style = match *level {
-                1 => Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-                2 => Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD),
-                _ => Style::default()
-                    .fg(Color::Blue)
-                    .add_modifier(Modifier::BOLD),
-            };
-            out.extend(split_at_newlines(Line::from(Span::styled(
-                format!(
-                    "{} {}",
-                    "#".repeat((*level).max(1) as usize),
-                    sanitize_for_terminal(text)
-                ),
-                style,
-            ))));
+            let text = format!("{} {text}", "#".repeat((*level).max(1) as usize));
+            render_text_lines(&sanitize_for_terminal(&text), out, links);
             out.push(Line::raw(""));
         }
         Node::Paragraph { text } | Node::Text { text } => {
-            out.extend(split_at_newlines(parse_inline_markdown(
-                &sanitize_for_terminal(text),
-                links,
-            )));
+            render_text_lines(&sanitize_for_terminal(text), out, links);
             out.push(Line::raw(""));
         }
         Node::Quote { text } => {
@@ -331,6 +313,49 @@ fn render_inline_to_spans(
 
 fn parse_inline_markdown(text: &str, links: &mut Vec<LinkTarget>) -> Line<'static> {
     Line::from(render_inline_to_spans(parse_inline(text), Some(links)))
+}
+
+pub fn heading_style(level: u8) -> Style {
+    let colour = match level {
+        1 => Color::Cyan,
+        2 => Color::Green,
+        _ => Color::Blue,
+    };
+    Style::default().fg(colour).add_modifier(Modifier::BOLD)
+}
+
+/// draws each header line outside a code block as a heading, the other lines as inline markdown.
+fn render_text_lines(text: &str, out: &mut Vec<Line<'static>>, links: &mut Vec<LinkTarget>) {
+    let bytes = text.as_bytes();
+    let mut run = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'#' && (i == 0 || bytes[i - 1] == b'\n') {
+            let end = text[i..].find('\n').map_or(text.len(), |n| i + n);
+            if let Some((level, _)) = parse_heading(&text[i..end]) {
+                if i > run {
+                    out.extend(split_at_newlines(parse_inline_markdown(
+                        &text[run..i - 1],
+                        links,
+                    )));
+                }
+                out.push(Line::from(Span::styled(
+                    text[i..end].to_string(),
+                    heading_style(level),
+                )));
+                run = end + 1;
+                i = end;
+                continue;
+            }
+        }
+        i = past_backtick_run(text, i).unwrap_or(i + 1);
+    }
+    if run <= text.len() {
+        out.extend(split_at_newlines(parse_inline_markdown(
+            &text[run..],
+            links,
+        )));
+    }
 }
 
 /// splits `line` into one row per source line, each span keeping its style.
@@ -1056,13 +1081,19 @@ mod tests {
     }
 
     #[test]
-    fn heading_continuation_keeps_the_heading_style() {
-        let (out, _) = render(&Node::Heading {
-            level: 1,
-            text: "top\nmore".into(),
-        });
-        assert_eq!(span_texts(&out[1]), vec!["more"]);
-        assert!(has_fg(&out[1], 0, Color::Cyan));
+    fn a_header_line_is_a_heading_and_the_rest_inline_markdown() {
+        for (snippet, row, spans, fg) in [
+            ("# top\nsee [[zzz]]", 1, vec!["see ", "zzz", "[1]"], None),
+            ("intro\n## Sub\nmore", 1, vec!["## Sub"], Some(Color::Green)),
+            ("# a\n```\n# b\n```", 2, vec!["# b"], Some(Color::Yellow)),
+        ] {
+            let node = lepiter_core::parse_node_from_raw(
+                &serde_json::json!({"__type": "textSnippet", "string": snippet}),
+            );
+            let (out, _) = render(&node);
+            assert_eq!(span_texts(&out[row]), spans, "{snippet:?}");
+            assert_eq!(out[row].spans[0].style.fg, fg, "{snippet:?}");
+        }
     }
 
     #[test]

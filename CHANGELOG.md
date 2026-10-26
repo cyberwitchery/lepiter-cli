@@ -8,6 +8,9 @@ all notable changes to this project are documented in this file.
 - re-importing a markdown export written by 0.12.2 or earlier turns a carriage
   return in a title or tag into a space, as yaml reads it; export the page again
   to keep it
+- `lepiter-core`: `past_backtick_run` is now public, and `parse_heading` no
+  longer trims leading whitespace: `parse_heading("    # x")` is `None` where it
+  was `Some((1, "x"))`
 
 ### fixed
 - `export` writes every title and tag as a yaml string that `import` and any
@@ -22,6 +25,13 @@ all notable changes to this project are documented in this file.
   warning naming the file and key. a malformed value, such as an unclosed
   quote, is skipped the same way and, when it is the only one, costs only its
   own line
+- the reader reads a text snippet's headings line by line, as Glamorous Toolkit
+  does: a line starting with `#` is a heading, and the lines below it are text
+  again. a ` ``` ` code block, link or `{{…}}` annotation that spans lines stays
+  whole: a `#` line inside one is not a heading, and one that opens on a
+  heading's line belongs to that heading. links, emphasis and code are drawn on
+  every line, a heading's own included, so a link on any of them is numbered. a
+  `#` after leading spaces is text everywhere, and `export` keeps the spaces
 
 ## 0.12.2 - 2026-10-25
 

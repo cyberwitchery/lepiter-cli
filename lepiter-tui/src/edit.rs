@@ -18,7 +18,7 @@ use lepiter_core::{
 
 use crate::plugins::PluginManager;
 use crate::render::{
-    parse_inline_annotations, render_code_block, render_node, sanitize_for_terminal,
+    heading_style, parse_inline_annotations, render_code_block, render_node, sanitize_for_terminal,
 };
 
 pub struct EditState {
@@ -545,18 +545,7 @@ fn render_edit_text_lines(
         has_line = true;
         let line = sanitize_for_terminal(raw_line);
         if let Some((level, _)) = parse_heading(&line) {
-            let style = match level {
-                1 => Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-                2 => Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD),
-                _ => Style::default()
-                    .fg(Color::Blue)
-                    .add_modifier(Modifier::BOLD),
-            };
-            out.push(Line::from(Span::styled(line, style)));
+            out.push(Line::from(Span::styled(line, heading_style(level))));
             continue;
         }
         if let Some(stripped) = line.strip_prefix("> ") {

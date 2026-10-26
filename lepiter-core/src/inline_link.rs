@@ -201,7 +201,7 @@ pub fn code_block_at(text: &str, start: usize) -> Option<Range<usize>> {
 
 /// where a walk resumes from an unescaped backtick run at byte `i`: past its
 /// code block or code span, or past the run when it opens neither.
-pub(crate) fn past_backtick_run(text: &str, i: usize) -> Option<usize> {
+pub fn past_backtick_run(text: &str, i: usize) -> Option<usize> {
     let bytes = text.as_bytes();
     (bytes.get(i) == Some(&b'`') && !is_escaped(bytes, i)).then(|| {
         code_block_at(text, i)

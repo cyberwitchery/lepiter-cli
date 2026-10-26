@@ -3,6 +3,7 @@
 
 use lepiter_core::{
     LinkKind, Node, Page, PageId, normalize_text, parse_heading, past_backtick_run,
+    scan_inline_links,
 };
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -324,32 +325,54 @@ pub fn heading_style(level: u8) -> Style {
     Style::default().fg(colour).add_modifier(Modifier::BOLD)
 }
 
-/// draws each header line outside a code block as a heading, the other lines as inline markdown.
+/// draws header lines as headings, the rest as inline markdown; no link, annotation or code is cut.
 fn render_text_lines(text: &str, out: &mut Vec<Line<'static>>, links: &mut Vec<LinkTarget>) {
     let bytes = text.as_bytes();
+    let mut scanned = scan_inline_links(text).peekable();
+    let mut annotations = true;
+    let mut past = |i: usize| {
+        if annotations && bytes[i..].starts_with(b"{{") {
+            match text[i + 2..].find("}}") {
+                Some(len) => return i + len + 4,
+                None => annotations = false,
+            }
+        }
+        if let Some(next) = past_backtick_run(text, i) {
+            return next;
+        }
+        while scanned.next_if(|link| link.range.start < i).is_some() {}
+        scanned
+            .next_if(|link| link.range.start == i)
+            .map_or(i + 1, |link| link.range.end)
+    };
     let mut run = 0;
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'#' && (i == 0 || bytes[i - 1] == b'\n') {
-            let end = text[i..].find('\n').map_or(text.len(), |n| i + n);
-            if let Some((level, _)) = parse_heading(&text[i..end]) {
+            let line_end = text[i..].find('\n').map_or(text.len(), |n| i + n);
+            if let Some((level, _)) = parse_heading(&text[i..line_end]) {
                 if i > run {
                     out.extend(split_at_newlines(parse_inline_markdown(
                         &text[run..i - 1],
                         links,
                     )));
                 }
-                let mut line = parse_inline_markdown(&text[i..end], links);
-                for span in &mut line.spans {
-                    span.style = heading_style(level).patch(span.style);
+                let mut end = i;
+                while end < bytes.len() && bytes[end] != b'\n' {
+                    end = past(end);
                 }
-                out.push(line);
+                for mut line in split_at_newlines(parse_inline_markdown(&text[i..end], links)) {
+                    for span in &mut line.spans {
+                        span.style = heading_style(level).patch(span.style);
+                    }
+                    out.push(line);
+                }
                 run = end + 1;
                 i = end;
                 continue;
             }
         }
-        i = past_backtick_run(text, i).unwrap_or(i + 1);
+        i = past(i);
     }
     if run <= text.len() {
         out.extend(split_at_newlines(parse_inline_markdown(
@@ -1053,6 +1076,9 @@ mod tests {
             Node::Paragraph {
                 text: "first\nsecond".into(),
             },
+            Node::Paragraph {
+                text: "intro\n# head\n".into(),
+            },
             Node::Text {
                 text: "one\n\nthree".into(),
             },
@@ -1083,23 +1109,61 @@ mod tests {
 
     #[test]
     fn a_header_line_is_a_heading_and_the_rest_inline_markdown() {
-        for (snippet, row, spans, fg) in [
-            ("# top\nsee [[zzz]]", 1, vec!["see ", "zzz", "[1]"], None),
-            ("intro\n## Sub\nmore", 1, vec!["## Sub"], Some(Color::Green)),
+        let (link, marker) = (Some(Color::LightBlue), Some(Color::Yellow));
+        for (snippet, row, spans) in [
+            (
+                "# top\nsee [[zzz]]",
+                1,
+                vec![("see ", None), ("zzz", link), ("[1]", marker)],
+            ),
+            (
+                "intro\n## Sub\nmore",
+                1,
+                vec![("## Sub", Some(Color::Green))],
+            ),
             (
                 "intro\n# see [[zzz]]\nmore",
                 1,
-                vec!["# see ", "zzz", "[1]"],
-                Some(Color::Cyan),
+                vec![
+                    ("# see ", Some(Color::Cyan)),
+                    ("zzz", link),
+                    ("[1]", marker),
+                ],
             ),
-            ("# a\n```\n# b\n```", 2, vec!["# b"], Some(Color::Yellow)),
+            ("# a\n```\n# b\n```", 2, vec![("# b", Some(Color::Yellow))]),
+            ("issue #12 is open", 0, vec![("issue #12 is open", None)]),
+            (
+                "see [[foo\n# bar]] and [[baz]]",
+                1,
+                vec![
+                    ("# bar", link),
+                    ("[1]", marker),
+                    (" and ", None),
+                    ("baz", link),
+                    ("[2]", marker),
+                ],
+            ),
+            (
+                "intro {{gtClass:Foo\n# bar}} tail",
+                1,
+                vec![("# bar}}", Some(Color::LightMagenta)), (" tail", None)],
+            ),
+            (
+                "# Title ```\n# inner\n```\nafter",
+                1,
+                vec![("# inner", Some(Color::Yellow))],
+            ),
         ] {
             let node = lepiter_core::parse_node_from_raw(
                 &serde_json::json!({"__type": "textSnippet", "string": snippet}),
             );
             let (out, _) = render(&node);
-            assert_eq!(span_texts(&out[row]), spans, "{snippet:?}");
-            assert_eq!(out[row].spans[0].style.fg, fg, "{snippet:?}");
+            let got: Vec<_> = out[row]
+                .spans
+                .iter()
+                .map(|span| (span.content.as_ref(), span.style.fg))
+                .collect();
+            assert_eq!(got, spans, "{snippet:?}");
         }
     }
 

@@ -24,8 +24,9 @@ all notable changes to this project are documented in this file.
   own line
 - the reader reads a text snippet's headings line by line, as Glamorous Toolkit
   does: a line starting with `#` outside a ` ``` ` code block is a heading, and
-  the lines below it are text again, with their links numbered. a `#` after
-  leading spaces is text everywhere, and `export` keeps the spaces
+  the lines below it are text again. links, emphasis and code are drawn on every
+  line, a heading's own included, so a link on any of them is numbered. a `#`
+  after leading spaces is text everywhere, and `export` keeps the spaces
 
 ## 0.12.2 - 2026-10-25
 

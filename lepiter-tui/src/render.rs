@@ -339,10 +339,11 @@ fn render_text_lines(text: &str, out: &mut Vec<Line<'static>>, links: &mut Vec<L
                         links,
                     )));
                 }
-                out.push(Line::from(Span::styled(
-                    text[i..end].to_string(),
-                    heading_style(level),
-                )));
+                let mut line = parse_inline_markdown(&text[i..end], links);
+                for span in &mut line.spans {
+                    span.style = heading_style(level).patch(span.style);
+                }
+                out.push(line);
                 run = end + 1;
                 i = end;
                 continue;
@@ -1085,6 +1086,12 @@ mod tests {
         for (snippet, row, spans, fg) in [
             ("# top\nsee [[zzz]]", 1, vec!["see ", "zzz", "[1]"], None),
             ("intro\n## Sub\nmore", 1, vec!["## Sub"], Some(Color::Green)),
+            (
+                "intro\n# see [[zzz]]\nmore",
+                1,
+                vec!["# see ", "zzz", "[1]"],
+                Some(Color::Cyan),
+            ),
             ("# a\n```\n# b\n```", 2, vec!["# b"], Some(Color::Yellow)),
         ] {
             let node = lepiter_core::parse_node_from_raw(

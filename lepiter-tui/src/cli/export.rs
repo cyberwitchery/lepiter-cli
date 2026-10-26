@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write;
 use std::fs;
 use std::path::PathBuf;
 
@@ -112,20 +113,14 @@ fn slugify(title: &str) -> String {
     }
 }
 
-fn build_frontmatter(page: &Page) -> String {
+pub(super) fn build_frontmatter(page: &Page) -> String {
     let mut out = String::from("---\n");
 
-    // quote the title for yaml safety
-    let escaped_title = page.title.replace('\\', "\\\\").replace('"', "\\\"");
-    out.push_str(&format!("title: \"{escaped_title}\"\n"));
+    out.push_str(&format!("title: {}\n", yaml_quote(&page.title)));
     out.push_str(&format!("id: {}\n", page.id));
 
     if !page.tags.is_empty() {
-        let quoted: Vec<String> = page
-            .tags
-            .iter()
-            .map(|t| format!("\"{}\"", t.replace('\\', "\\\\").replace('"', "\\\"")))
-            .collect();
+        let quoted: Vec<String> = page.tags.iter().map(|t| yaml_quote(t)).collect();
         out.push_str(&format!("tags: [{}]\n", quoted.join(", ")));
     }
 
@@ -134,6 +129,29 @@ fn build_frontmatter(page: &Page) -> String {
     }
 
     out.push_str("---\n\n");
+    out
+}
+
+/// `s` as a yaml double-quoted scalar, with line breaks and unprintable characters escaped.
+fn yaml_quote(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push(c),
+            '\0'..='\u{1f}' | '\u{7f}'..='\u{9f}' => {
+                let _ = write!(out, "\\x{:02X}", c as u32);
+            }
+            '\u{2028}' | '\u{2029}' | '\u{feff}' | '\u{fffe}' | '\u{ffff}' => {
+                let _ = write!(out, "\\u{:04X}", c as u32);
+            }
+            _ => out.push(c),
+        }
+    }
+    out.push('"');
     out
 }
 
@@ -250,6 +268,34 @@ mod tests {
         };
         let fm = build_frontmatter(&page);
         assert!(fm.contains("title: \"Page with \\\"quotes\\\"\""));
+    }
+
+    #[test]
+    fn build_frontmatter_escapes_line_breaks_and_unprintables() {
+        let cases = [
+            ("a\nb", r#""a\nb""#),
+            ("x\n---\ny", r#""x\n---\ny""#),
+            ("a\rb", r#""a\x0Db""#),
+            ("bel\u{7}\u{0}", r#""bel\x07\x00""#),
+            ("\u{7f}\u{85}\u{9f}", r#""\x7F\x85\x9F""#),
+            ("\u{2028}\u{2029}", r#""\u2028\u2029""#),
+            ("\u{feff}\u{fffe}\u{ffff}", r#""\uFEFF\uFFFE\uFFFF""#),
+        ];
+        for (title, quoted) in cases {
+            let page = Page {
+                id: "p1".to_string(),
+                title: title.to_string(),
+                updated_at: None,
+                tags: vec![title.to_string()],
+                content: Vec::new(),
+            };
+            let fm = build_frontmatter(&page);
+            assert_eq!(
+                fm,
+                format!("---\ntitle: {quoted}\nid: p1\ntags: [{quoted}]\n---\n\n"),
+                "{title:?}"
+            );
+        }
     }
 
     #[test]

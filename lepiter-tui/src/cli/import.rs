@@ -386,7 +386,9 @@ impl<'a> Yaml<'a> {
         let items = self.flow_items();
         if items.is_err() {
             self.pos = start;
-            self.skip_flow();
+            if !self.skip_flow() {
+                return Err("mismatched bracket in a flow collection");
+            }
         }
         items
     }
@@ -426,9 +428,9 @@ impl<'a> Yaml<'a> {
         }
     }
 
-    /// skips a flow collection, with the collections and quoted scalars in it.
-    fn skip_flow(&mut self) {
-        let mut depth = 0usize;
+    /// skips a flow collection and its quoted scalars; `false` at a mismatched closing bracket.
+    fn skip_flow(&mut self) -> bool {
+        let mut open = Vec::new();
         let mut node_start = true;
         while let Some(c) = self.peek() {
             match c {
@@ -437,16 +439,31 @@ impl<'a> Yaml<'a> {
                     node_start = false;
                     continue;
                 }
+                // an anchor, a tag or a `? ` key leaves the node start to the node after it
+                '&' | '!' if node_start => {
+                    let rest = self.rest();
+                    self.pos += rest
+                        .find([' ', '\t', '\n', ',', '[', ']', '{', '}'])
+                        .unwrap_or(rest.len());
+                    continue;
+                }
+                '?' if node_start && self.blank_after() => {
+                    self.pos += 1;
+                    continue;
+                }
                 '#' if self.at_line_end() => {
                     self.pos += self.line().len();
                     continue;
                 }
-                '[' | '{' => depth += 1,
+                '[' => open.push(']'),
+                '{' => open.push('}'),
                 ']' | '}' => {
-                    depth = depth.saturating_sub(1);
-                    if depth == 0 {
+                    if open.pop() != Some(c) {
+                        return false;
+                    }
+                    if open.is_empty() {
                         self.pos += 1;
-                        return;
+                        return true;
                     }
                 }
                 _ => {}
@@ -456,16 +473,17 @@ impl<'a> Yaml<'a> {
             }
             self.pos += c.len_utf8();
         }
+        true
     }
 
     /// `indent` is the least indentation of a plain scalar's continuation lines; `None` in a flow.
     fn scalar(&mut self, indent: Option<usize>) -> Result<Value, &'static str> {
         match self.peek() {
             Some(q @ ('"' | '\'')) => self.quoted(q).map(Value::Scalar),
-            Some('[' | '{') => {
-                self.skip_flow();
-                Err("nested collections are not supported")
-            }
+            Some('[' | '{') => match self.skip_flow() {
+                true => Err("nested collections are not supported"),
+                false => Err("mismatched bracket in a flow collection"),
+            },
             Some('|' | '>') => Err("block scalars are not supported"),
             Some('&' | '*') => Err("anchors and aliases are not supported"),
             Some('!') => Err("tags are not supported"),
@@ -1215,6 +1233,16 @@ mod tests {
                 "p1",
                 &[],
             ),
+            ("title: t\nx: [&a \"[q\"]\nid: p1\ny: 1]", "t", "p1", &[]),
+            ("title: t\nx: [!!str \"[q\"]\nid: p1\ny: 1]", "t", "p1", &[]),
+            ("title: t\nx: {? \"{q\" : b}\nid: p1\ny: 1}", "t", "p1", &[]),
+            (
+                "title: t\nx: {a: [1, 2\nid: p1\ny: 3}\nz: w]",
+                "t",
+                "p1",
+                &[],
+            ),
+            ("title: t\nx: [&a b,\nid: p1\ny: c}", "t", "p1", &[]),
             (
                 "title: \"\\0\\a\\v\\r\\e\\N\\_\\L\\P\\/\\ \\\t\"\nid: p1",
                 "\0\u{7}\u{b}\r\u{1b}\u{85}\u{a0}\u{2028}\u{2029}/ \t",

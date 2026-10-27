@@ -32,6 +32,10 @@ all notable changes to this project are documented in this file.
   heading's line belongs to that heading. links, emphasis and code are drawn on
   every line, a heading's own included, so a link on any of them is numbered. a
   `#` after leading spaces is text everywhere, and `export` keeps the spaces
+- a large text snippet no longer stalls `show`, `check`, `export` or the
+  reader while its links are found: unclosed `[[`, `[` or `(` and deeply
+  nested link labels cost time in proportion to the snippet's length, where
+  50 KB of unclosed `[[` took 2 s to `show`
 
 ## 0.12.2 - 2026-10-25
 

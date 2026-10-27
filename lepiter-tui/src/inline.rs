@@ -76,6 +76,8 @@ pub fn parse_inline(text: &str) -> Vec<InlineElement> {
         .map(|link| link.range.clone())
         .collect::<Vec<_>>();
     let mut links = scanned.into_iter().peekable();
+    let closes = annotation_closes(text, &chars);
+    let mut closers = None;
     let mut i = 0usize;
     let mut out = Vec::new();
     let mut buf = String::new();
@@ -107,7 +109,7 @@ pub fn parse_inline(text: &str) -> Vec<InlineElement> {
 
         // annotations: {{...}}
         let limit = code.map_or(chars.len(), |span| span.close_at);
-        if let Some(end) = annotation_end(&chars, i, limit) {
+        if let Some(end) = annotation_end(&chars, &closes, i, limit) {
             flush(&mut out, &mut buf, bold, italic, code.is_some());
             let annotation = chars[i..end].iter().collect::<String>();
             out.push(InlineElement::Annotation { text: annotation });
@@ -124,7 +126,10 @@ pub fn parse_inline(text: &str) -> Vec<InlineElement> {
             } else {
                 emphasis.is_marker(run)
                     && can_open(&chars, i, run)
-                    && emphasis_closer(text, &chars, &byte_at, &link_ranges, i + run, run).is_some()
+                    && closers.get_or_insert_with(|| {
+                        last_closers(text, &chars, &byte_at, &closes, &link_ranges, i + run)
+                    })[run - 1]
+                        .is_some_and(|at| at > i)
             };
             if delimits {
                 flush(&mut out, &mut buf, bold, italic, false);
@@ -238,20 +243,32 @@ fn char_at(byte_at: &[usize], offset: usize) -> usize {
     byte_at.partition_point(|at| *at < offset)
 }
 
+/// the first `}}` at or after each char, or the text's length; empty when no
+/// `{{` opens an annotation.
+fn annotation_closes(text: &str, chars: &[char]) -> Vec<usize> {
+    if !text.contains("{{") {
+        return Vec::new();
+    }
+    let n = chars.len();
+    let mut closes = vec![n; n + 1];
+    for i in (0..n.saturating_sub(1)).rev() {
+        closes[i] = if chars[i] == '}' && chars[i + 1] == '}' {
+            i
+        } else {
+            closes[i + 1]
+        };
+    }
+    closes
+}
+
 /// end of the `{{...}}` annotation opening at `start`, if it closes before
 /// `limit`.
-fn annotation_end(chars: &[char], start: usize, limit: usize) -> Option<usize> {
+fn annotation_end(chars: &[char], closes: &[usize], start: usize, limit: usize) -> Option<usize> {
     if start + 1 >= chars.len() || chars[start] != '{' || chars[start + 1] != '{' {
         return None;
     }
-    let mut i = start + 2;
-    while i + 1 < limit {
-        if chars[i] == '}' && chars[i + 1] == '}' {
-            return Some(i + 2);
-        }
-        i += 1;
-    }
-    None
+    let close = closes[start + 2];
+    (close + 1 < limit).then_some(close + 2)
 }
 
 /// the character a backslash escape at `start` makes literal, if it is one.
@@ -334,23 +351,25 @@ fn can_close(chars: &[char], start: usize) -> bool {
     start > 0 && !chars[start - 1].is_whitespace()
 }
 
-/// start of the run that closes an emphasis of `len` asterisks whose content
-/// begins at `from`, skipping what a code span, link, or annotation consumes.
-fn emphasis_closer(
+/// start of the last run of one, two and three asterisks that can close
+/// emphasis from `from` on, skipping what a code span, link, or annotation consumes.
+fn last_closers(
     text: &str,
     chars: &[char],
     byte_at: &[usize],
+    closes: &[usize],
     link_ranges: &[Range<usize>],
     from: usize,
-    len: usize,
-) -> Option<usize> {
+) -> [Option<usize>; 3] {
+    let mut last = [None; 3];
+    let mut links = link_ranges.iter().peekable();
     let mut i = from;
     while i < chars.len() {
         if escaped_char(chars, i).is_some() {
             i += 2;
             continue;
         }
-        if let Some(end) = annotation_end(chars, i, chars.len()) {
+        if let Some(end) = annotation_end(chars, closes, i, chars.len()) {
             i = end;
             continue;
         }
@@ -361,21 +380,22 @@ fn emphasis_closer(
             };
             continue;
         }
-        if let Some(range) = link_ranges.iter().find(|range| range.start == byte_at[i]) {
+        while links.next_if(|range| range.start < byte_at[i]).is_some() {}
+        if let Some(range) = links.next_if(|range| range.start == byte_at[i]) {
             i = byte_at.partition_point(|offset| *offset < range.end);
             continue;
         }
         if chars[i] == '*' {
             let run = marker_run(chars, i);
-            if run == len && i > from && can_close(chars, i) {
-                return Some(i);
+            if run <= last.len() && can_close(chars, i) {
+                last[run - 1] = Some(i);
             }
             i += run;
             continue;
         }
         i += 1;
     }
-    None
+    last
 }
 
 /// byte offset of each char, plus the end of the text.
@@ -471,6 +491,14 @@ mod tests {
                 "text ",
                 InlineElement::Annotation {
                     text: "{{gtView}}".into(),
+                },
+                " more",
+            ),
+            (
+                "text {{a}b}} more",
+                "text ",
+                InlineElement::Annotation {
+                    text: "{{a}b}}".into(),
                 },
                 " more",
             ),
@@ -1406,6 +1434,25 @@ mod tests {
             vec![
                 InlineElement::Styled {
                     text: "*a ".into(),
+                    bold: false,
+                    italic: false,
+                    code: false,
+                },
+                InlineElement::Link {
+                    label: "b*c".into(),
+                    target: "d".into(),
+                },
+            ]
+        );
+        assert_eq!(
+            parse_inline("[x](y) *a [b*c](d)"),
+            vec![
+                InlineElement::Link {
+                    label: "x".into(),
+                    target: "y".into(),
+                },
+                InlineElement::Styled {
+                    text: " *a ".into(),
                     bold: false,
                     italic: false,
                     code: false,

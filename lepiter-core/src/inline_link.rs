@@ -66,18 +66,8 @@ pub fn scan_inline_links(text: &str) -> InlineLinks<'_> {
     InlineLinks {
         text,
         i: 0,
-        guard_nesting: true,
         keep_blank: false,
-    }
-}
-
-/// Scans without the nested-link guard, yielding a label's outermost links only.
-fn scan_shallow(text: &str) -> InlineLinks<'_> {
-    InlineLinks {
-        text,
-        i: 0,
-        guard_nesting: false,
-        keep_blank: false,
+        delimiters: None,
     }
 }
 
@@ -87,8 +77,8 @@ pub(crate) fn whole_line_link(line: &str) -> Option<InlineLink<'_>> {
     let link = InlineLinks {
         text: line,
         i: 0,
-        guard_nesting: true,
         keep_blank: true,
+        delimiters: None,
     }
     .next()?;
     (link.kind == LinkKind::Markdown && link.range == (0..line.len())).then_some(link)
@@ -98,63 +88,202 @@ pub(crate) fn whole_line_link(line: &str) -> Option<InlineLink<'_>> {
 pub struct InlineLinks<'a> {
     text: &'a str,
     i: usize,
-    guard_nesting: bool,
     keep_blank: bool,
+    delimiters: Option<Delimiters<'a>>,
 }
 
 impl<'a> Iterator for InlineLinks<'a> {
     type Item = InlineLink<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let bytes = self.text.as_bytes();
-        while self.i < bytes.len() {
+        let text = self.text;
+        if self.i >= text.len() {
+            return None;
+        }
+        if self.delimiters.is_none() && !text.contains('[') {
+            self.i = text.len();
+            return None;
+        }
+        let delimiters = self.delimiters.get_or_insert_with(|| Delimiters::new(text));
+        while self.i < text.len() {
             let i = self.i;
-            if let Some(next) = past_backtick_run(self.text, i) {
+            if let Some(next) = past_backtick_run(text, i) {
                 self.i = next;
                 continue;
             }
-            // [[wikilink]]
-            if i + 1 < bytes.len()
-                && bytes[i] == b'['
-                && bytes[i + 1] == b'['
-                && !is_escaped(bytes, i)
-                && let Some(end) = find_closing_double_bracket(bytes, i + 2)
-            {
-                let name = &self.text[i + 2..end];
-                let target = name.trim();
-                if !target.is_empty() {
-                    self.i = end + 2;
-                    return Some(InlineLink {
-                        kind: LinkKind::Wiki,
-                        label: target,
-                        target,
-                        name,
-                        range: i..end + 2,
-                    });
-                }
-            }
-            // [label](target)
-            if bytes[i] == b'['
-                && !is_escaped(bytes, i)
-                && let Some(label_end) = find_balanced_close_bracket(bytes, i + 1)
-                && label_end + 1 < bytes.len()
-                && bytes[label_end + 1] == b'('
-                && let Some((target, target_end)) = find_destination(self.text, label_end + 2)
-                && (self.keep_blank || !target.trim().is_empty())
-                && (!self.guard_nesting || !nests_a_link(&self.text[i + 1..label_end]))
-            {
-                self.i = target_end + 1;
-                return Some(InlineLink {
-                    kind: LinkKind::Markdown,
-                    label: &self.text[i + 1..label_end],
-                    target,
-                    name: target,
-                    range: i..target_end + 1,
-                });
+            if let Some(link) = delimiters.link_at(i, text.len(), self.keep_blank, true) {
+                self.i = link.range.end;
+                return Some(link);
             }
             self.i += 1;
         }
         None
+    }
+}
+
+/// Where each delimiter of one text closes, so a link is found without re-scanning.
+struct Delimiters<'a> {
+    text: &'a str,
+    escaped: Vec<bool>,
+    /// the closing `]` or `)` of each unescaped `[` or `(`, or the text's length
+    partner: Vec<usize>,
+    /// the first unescaped `]]` at or after each byte, or the text's length
+    wiki_close: Vec<usize>,
+    /// the first line break, unescaped `<` or unescaped `>` at or after each byte, or the text's length
+    angle_stop: Vec<usize>,
+    /// the first non-whitespace char at or after each char boundary, or the text's length
+    non_space: Vec<usize>,
+}
+
+impl<'a> Delimiters<'a> {
+    fn new(text: &'a str) -> Self {
+        let bytes = text.as_bytes();
+        let n = bytes.len();
+        let mut escaped = vec![false; n];
+        let mut partner = vec![n; n];
+        let (mut brackets, mut parens) = (Vec::new(), Vec::new());
+        let mut backslashes = 0usize;
+        for (i, &byte) in bytes.iter().enumerate() {
+            escaped[i] = backslashes % 2 == 1;
+            backslashes = if byte == b'\\' { backslashes + 1 } else { 0 };
+            match byte {
+                _ if escaped[i] => {}
+                b'[' => brackets.push(i),
+                b'(' => parens.push(i),
+                b']' => {
+                    if let Some(open) = brackets.pop() {
+                        partner[open] = i;
+                    }
+                }
+                b')' => {
+                    if let Some(open) = parens.pop() {
+                        partner[open] = i;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut wiki_close = vec![n; n + 1];
+        let mut angle_stop = vec![n; n + 1];
+        for i in (0..n).rev() {
+            let live = !escaped[i];
+            wiki_close[i] = if live && bytes[i] == b']' && bytes.get(i + 1) == Some(&b']') {
+                i
+            } else {
+                wiki_close[i + 1]
+            };
+            angle_stop[i] = match bytes[i] {
+                b'\n' | b'\r' => i,
+                b'<' | b'>' if live => i,
+                _ => angle_stop[i + 1],
+            };
+        }
+        let mut non_space = vec![n; n + 1];
+        for (i, c) in text.char_indices().rev() {
+            non_space[i] = if c.is_whitespace() {
+                non_space[i + c.len_utf8()]
+            } else {
+                i
+            };
+        }
+        Self {
+            text,
+            escaped,
+            partner,
+            wiki_close,
+            angle_stop,
+            non_space,
+        }
+    }
+
+    /// The link starting at byte `i` that ends by byte `hi`, `[[wiki]]` before `[label](target)`.
+    fn link_at(
+        &self,
+        i: usize,
+        hi: usize,
+        keep_blank: bool,
+        guard_nesting: bool,
+    ) -> Option<InlineLink<'a>> {
+        let (text, bytes) = (self.text, self.text.as_bytes());
+        if bytes[i] != b'[' || self.escaped[i] {
+            return None;
+        }
+        if i + 1 < hi && bytes[i + 1] == b'[' {
+            let end = self.wiki_close[i + 2];
+            if end + 1 < hi && self.non_space[i + 2] < end {
+                let name = &text[i + 2..end];
+                let target = name.trim();
+                return Some(InlineLink {
+                    kind: LinkKind::Wiki,
+                    label: target,
+                    target,
+                    name,
+                    range: i..end + 2,
+                });
+            }
+        }
+        let label_end = self.partner[i];
+        if label_end + 1 >= hi || bytes[label_end + 1] != b'(' {
+            return None;
+        }
+        let (target, blank, target_end) = self.destination(label_end + 2, hi)?;
+        if (blank && !keep_blank) || (guard_nesting && self.nests_a_link(i + 1..label_end)) {
+            return None;
+        }
+        Some(InlineLink {
+            kind: LinkKind::Markdown,
+            label: &text[i + 1..label_end],
+            target,
+            name: target,
+            range: i..target_end + 1,
+        })
+    }
+
+    /// The target of the link whose `(` precedes `start`, whether it is blank, and its closing `)` before `hi`.
+    fn destination(&self, start: usize, hi: usize) -> Option<(&'a str, bool, usize)> {
+        let (text, bytes) = (self.text, self.text.as_bytes());
+        let open = self.non_space[start];
+        if open >= hi || bytes[open] != b'<' {
+            let end = self.partner[start - 1];
+            return (end < hi).then(|| (text[start..end].trim(), open >= end, end));
+        }
+        let close = self.angle_stop[open + 1];
+        if close >= hi || bytes[close] != b'>' {
+            return None;
+        }
+        let end = self.non_space[close + 1];
+        (end < hi && bytes[end] == b')').then(|| {
+            (
+                &text[open + 1..close],
+                self.non_space[open + 1] >= close,
+                end,
+            )
+        })
+    }
+
+    /// Reports whether `label` holds a link other than an image, reading its outermost links only.
+    fn nests_a_link(&self, label: Range<usize>) -> bool {
+        let bytes = self.text.as_bytes();
+        let mut i = label.start;
+        while i < label.end {
+            if let Some(next) = past_backtick_run(&self.text[..label.end], i) {
+                i = next;
+                continue;
+            }
+            match self.link_at(i, label.end, false, false) {
+                Some(link)
+                    if link.kind == LinkKind::Markdown
+                        && i > label.start
+                        && bytes[i - 1] == b'!'
+                        && !self.escaped[i - 1] =>
+                {
+                    i = link.range.end;
+                }
+                Some(_) => return true,
+                None => i += 1,
+            }
+        }
+        false
     }
 }
 
@@ -336,85 +465,6 @@ pub(crate) fn is_escaped(bytes: &[u8], at: usize) -> bool {
         == 1
 }
 
-fn find_closing_double_bracket(bytes: &[u8], start: usize) -> Option<usize> {
-    let mut i = start;
-    while i + 1 < bytes.len() {
-        if bytes[i] == b']' && bytes[i + 1] == b']' && !is_escaped(bytes, i) {
-            return Some(i);
-        }
-        i += 1;
-    }
-    None
-}
-
-fn find_balanced_close_bracket(bytes: &[u8], start: usize) -> Option<usize> {
-    let mut depth = 0usize;
-    for (i, &byte) in bytes.iter().enumerate().skip(start) {
-        if !matches!(byte, b'[' | b']') || is_escaped(bytes, i) {
-            continue;
-        }
-        match byte {
-            b'[' => depth += 1,
-            b']' if depth == 0 => return Some(i),
-            _ => depth -= 1,
-        }
-    }
-    None
-}
-
-/// Reports whether `label` contains a link other than an image.
-fn nests_a_link(label: &str) -> bool {
-    let bytes = label.as_bytes();
-    label.contains('[')
-        && scan_shallow(label).any(|link| {
-            link.kind != LinkKind::Markdown
-                || link.range.start == 0
-                || bytes[link.range.start - 1] != b'!'
-                || is_escaped(bytes, link.range.start - 1)
-        })
-}
-
-/// The target of the link whose `(` precedes `start`, and the index of its closing `)`.
-fn find_destination(text: &str, start: usize) -> Option<(&str, usize)> {
-    let bytes = text.as_bytes();
-    let open = text.len() - text[start..].trim_start().len();
-    if bytes.get(open) != Some(&b'<') {
-        let end = find_balanced_close_paren(bytes, start)?;
-        return Some((text[start..end].trim(), end));
-    }
-    let close = find_angle_close(bytes, open + 1)?;
-    let end = text.len() - text[close + 1..].trim_start().len();
-    (bytes.get(end) == Some(&b')')).then(|| (&text[open + 1..close], end))
-}
-
-fn find_angle_close(bytes: &[u8], start: usize) -> Option<usize> {
-    for (i, &byte) in bytes.iter().enumerate().skip(start) {
-        match byte {
-            b'\n' | b'\r' => return None,
-            b'<' | b'>' if is_escaped(bytes, i) => {}
-            b'<' => return None,
-            b'>' => return Some(i),
-            _ => {}
-        }
-    }
-    None
-}
-
-fn find_balanced_close_paren(bytes: &[u8], start: usize) -> Option<usize> {
-    let mut depth = 0usize;
-    for (i, &byte) in bytes.iter().enumerate().skip(start) {
-        if !matches!(byte, b'(' | b')') || is_escaped(bytes, i) {
-            continue;
-        }
-        match byte {
-            b'(' => depth += 1,
-            b')' if depth == 0 => return Some(i),
-            _ => depth -= 1,
-        }
-    }
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -589,6 +639,18 @@ mod tests {
         assert_eq!(links[0].label, "a [b [c] d] e");
         assert_eq!(links[0].target, "t");
         assert_eq!(links[0].range, 0..text.len());
+    }
+
+    #[test]
+    fn a_construct_in_a_label_ends_inside_it() {
+        for (text, targets) in [
+            ("[ [ ](x)", vec!["x"]),
+            ("[a[[x]y]](z)", vec!["z"]),
+            ("[x `y [a](b)](c) `", vec![]),
+        ] {
+            let found: Vec<_> = scan(text).iter().map(|link| link.target).collect();
+            assert_eq!(found, targets, "{text:?}");
+        }
     }
 
     #[test]

@@ -36,6 +36,9 @@ all notable changes to this project are documented in this file.
   reader while its links are found: unclosed `[[`, `[` or `(` and deeply
   nested link labels cost time in proportion to the snippet's length, where
   50 KB of unclosed `[[` took 2 s to `show`
+- a large text snippet no longer stalls the reader or `show` while its emphasis
+  and `{{…}}` annotations are found: unclosed `*`, `**`, `***` and `{{` cost
+  time in proportion to the snippet's length, where 10 KB of `*a {{b ` took 5 s
 
 ## 0.12.2 - 2026-10-25
 

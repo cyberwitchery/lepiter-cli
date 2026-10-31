@@ -11,8 +11,23 @@ all notable changes to this project are documented in this file.
 - `lepiter-core`: `past_backtick_run` is now public, and `parse_heading` no
   longer trims leading whitespace: `parse_heading("    # x")` is `None` where it
   was `Some((1, "x"))`
+- the reader edits a pharoLink snippet's code and no longer offers example or
+  changes snippets for editing as code, which wrote a `code` field Glamorous
+  Toolkit does not read. `import` reads a ` ```example ` or ` ```changes `
+  fence as a text snippet, like any fence language it does not know.
+  `lepiter-core`: `is_code_snippet` and `language_to_snippet_type` follow suit,
+  with `pharolink` as the pharoLink snippet's fence language
 
 ### fixed
+- Glamorous Toolkit example and changes snippets are read as the
+  `{{gtExample:…}}` or `{{gtChanges:…}}` text GT gives for them, naming the
+  example, its options or the changes file: `show`, `show --json`, `search
+  --full-text`, `export` and the reader showed an empty code block, and
+  export→import turned each example into one GT cannot run. `import` brings
+  them back as text snippets holding that annotation, which GT renders as the
+  same example or changes view. a pharoLink snippet's code is shown as a
+  ` ```pharolink ` code block where it was an unknown snippet, and comes back
+  from `import` as a pharoLink snippet
 - `export` writes every title and tag as a yaml string that `import` and any
   other yaml reader read back exactly: a line break, a control character or a
   `---` line in a title no longer adds keys, makes the file invalid yaml or

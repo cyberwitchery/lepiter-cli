@@ -439,8 +439,8 @@ pub fn parse_heading(input: &str) -> Option<(u8, String)> {
     if hashes == 0 {
         return None;
     }
-    let rest = trimmed[hashes..].trim_start();
-    if rest.is_empty() {
+    let rest = trimmed[hashes..].trim_start_matches(|c: char| c.is_whitespace() && c != '\n');
+    if rest.is_empty() || rest.starts_with('\n') {
         return None;
     }
     Some((hashes.min(6) as u8, rest.to_string()))
@@ -600,6 +600,9 @@ mod tests {
         );
         assert_eq!(parse_heading("No heading"), None);
         assert_eq!(parse_heading("    # indented"), None);
+        assert_eq!(parse_heading("#\n# b"), None);
+        assert_eq!(parse_heading("## \nfoo"), None);
+        assert_eq!(parse_heading("#\r\nfoo"), None);
     }
 
     #[test]

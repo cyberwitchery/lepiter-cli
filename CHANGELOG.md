@@ -39,6 +39,10 @@ all notable changes to this project are documented in this file.
 - a large text snippet no longer stalls the reader or `show` while its emphasis
   and `{{…}}` annotations are found: unclosed `*`, `**`, `***` and `{{` cost
   time in proportion to the snippet's length, where 10 KB of `*a {{b ` took 5 s
+- a text snippet whose first line is a bare `#` is no longer read as a heading
+  of the lines below it: `show` and the reader keep it as written, and
+  export→import no longer turns a `#` line above `# b` into `# # b`.
+  `lepiter-core`'s `parse_heading` returns `None` for it
 
 ## 0.12.2 - 2026-10-25
 

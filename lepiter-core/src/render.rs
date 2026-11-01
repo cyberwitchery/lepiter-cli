@@ -1,5 +1,6 @@
 use crate::inline_link::{
-    LinkKind, escape, push_link, rewrite_inline_links, unescape, whole_line_link,
+    LinkKind, escape, is_escaped, past_backtick_run, push_link, rewrite_inline_links, unescape,
+    whole_line_link,
 };
 use crate::model::{Node, Page};
 
@@ -346,6 +347,30 @@ pub fn normalize_text(input: &str) -> String {
     input.replace("\r\n", "\n").replace('\r', "\n")
 }
 
+/// Ends each line of a text snippet with `\n` where GT does: at `\r\n`, a lone `\r`, and a NEL
+/// (U+0085) outside code that no backslash escapes.
+pub fn normalize_line_ends(input: &str) -> String {
+    let text = normalize_text(input);
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let (mut copied, mut i) = (0, 0);
+    while let Some(n) = text[i..].find(['`', '\u{85}']) {
+        let at = i + n;
+        if bytes[at] == b'`' {
+            i = past_backtick_run(&text, at).unwrap_or(at + 1);
+            continue;
+        }
+        i = at + '\u{85}'.len_utf8();
+        if !is_escaped(bytes, at) {
+            out.push_str(&text[copied..at]);
+            out.push('\n');
+            copied = i;
+        }
+    }
+    out.push_str(&text[copied..]);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -567,6 +592,22 @@ mod tests {
                 expected,
                 "{node:?}"
             );
+        }
+    }
+
+    #[test]
+    fn normalize_line_ends_cases() {
+        for (input, expected) in [
+            ("a\r\nb", "a\nb"),
+            ("a\rb", "a\nb"),
+            ("a\u{85}b", "a\nb"),
+            ("a\r\r\nb", "a\n\nb"),
+            ("`a\u{85}b` c\u{85}d", "`a\u{85}b` c\nd"),
+            ("\\`a\u{85}b`", "\\`a\nb`"),
+            ("a\\\u{85}b", "a\\\u{85}b"),
+            ("a\\\\\u{85}b", "a\\\\\nb"),
+        ] {
+            assert_eq!(normalize_line_ends(input), expected, "{input:?}");
         }
     }
 

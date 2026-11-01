@@ -1,7 +1,7 @@
 use crate::highlight::{CodeToken, tokenize_code_block};
 use crate::inline;
 use lepiter_core::{
-    Node, Page, closes_fence, normalize_line_ends, open_fence, render_nodes_to_text,
+    Node, Page, closes_fence, normalize_line_ends, normalize_text, open_fence, render_nodes_to_text,
 };
 
 pub use crate::util::truncate_chars;
@@ -69,6 +69,10 @@ fn with_line_ends_normalized(nodes: &[Node]) -> Vec<Node> {
             },
             Node::Quote { text } => Node::Quote {
                 text: normalize_line_ends(text),
+            },
+            Node::Code { language, code } => Node::Code {
+                language: language.clone(),
+                code: normalize_text(code),
             },
             Node::List { items } => Node::List {
                 items: items
@@ -463,6 +467,28 @@ mod tests {
             coloured.contains("\n\x1b[1;36m# b\x1b[0m\n"),
             "{coloured:?}"
         );
+    }
+
+    #[test]
+    fn show_ends_code_lines_at_a_cr_and_a_crlf() {
+        for (code, shown) in [("a\rb\u{85}c", "a\nb\u{85}c"), ("a\r\n\tb", "a\n\tb")] {
+            let page = Page {
+                id: "id".into(),
+                title: "t".into(),
+                updated_at: None,
+                tags: Vec::new(),
+                content: vec![Node::Code {
+                    language: Some("pharo".into()),
+                    code: code.into(),
+                }],
+            };
+            let plain = render_page_pretty(&page, false);
+            assert!(
+                plain.ends_with(&format!("---\n\n```pharo\n{shown}\n```\n")),
+                "{plain:?}"
+            );
+            assert_eq!(strip_ansi(&render_page_pretty(&page, true)), plain);
+        }
     }
 
     #[test]

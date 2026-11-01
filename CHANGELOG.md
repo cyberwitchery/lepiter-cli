@@ -65,6 +65,9 @@ all notable changes to this project are documented in this file.
   line that one ends no longer exports with the next line as `# # b`.
   `lepiter-core`'s `parse_heading` returns `None` for such a `#` line, and the
   new `normalize_line_ends` breaks lines the same way
+- `show` breaks a code snippet's lines at a carriage return, on its own or
+  before a line feed, as the reader does: it printed the character raw, so on
+  a terminal the text after a lone one was drawn over the start of its line
 
 ## 0.12.2 - 2026-10-25
 

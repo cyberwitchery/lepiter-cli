@@ -180,15 +180,26 @@ fn parse_node(item: &Value) -> Node {
         Some("elementSnippet") => parse_element_node(item),
         Some("pharoRewrite") => parse_rewrite_node(item),
         Some("wordSnippet") => parse_word_node(item),
+        Some("exampleSnippet") => Node::Paragraph {
+            text: example_content_as_string(item),
+        },
+        Some("changesSnippet") => Node::Paragraph {
+            text: format!(
+                "{{{{gtChanges:{}}}}}",
+                item.get("fileName")
+                    .and_then(Value::as_str)
+                    .unwrap_or("<missing>")
+            ),
+        },
+        Some(t @ "pharoLinkSnippet") if has_link(item) => Node::Link {
+            text: extract_text(item).unwrap_or_else(|| t.to_string()),
+            url: extract_link(item).unwrap_or_default(),
+        },
         Some(t) if is_code_snippet(t) => Node::Code {
             language: infer_language(Some(t)),
             code: extract_code(item)
                 .or_else(|| extract_text(item))
                 .unwrap_or_default(),
-        },
-        Some(t @ "pharoLinkSnippet") if has_link(item) => Node::Link {
-            text: extract_text(item).unwrap_or_else(|| t.to_string()),
-            url: extract_link(item).unwrap_or_default(),
         },
         Some("linkSnippet") if has_link(item) => Node::Link {
             text: extract_text(item).unwrap_or_else(|| "link".to_string()),
@@ -203,6 +214,41 @@ fn parse_node(item: &Value) -> Node {
             raw: item.clone(),
         },
     }
+}
+
+/// The `{{gtExample:…}}` text GT's `LeExampleSnippet>>contentAsString` gives for `item`.
+fn example_content_as_string(item: &Value) -> String {
+    let field = |key| item.get(key).and_then(Value::as_str);
+    let class = field("exampleBehaviorName");
+    let selector = field("exampleSelector");
+    let mut out = format!("{{{{gtExample:{}", class.unwrap_or(""));
+    if class.is_some() && selector.is_some() {
+        out.push_str(" >> #");
+    }
+    out.push_str(selector.unwrap_or(""));
+    for (key, default) in [
+        ("noCode", false),
+        ("codeExpanded", true),
+        ("previewExpanded", false),
+    ] {
+        let value = item.get(key).and_then(Value::as_bool).unwrap_or(default);
+        if value != default {
+            out.push_str(&format!(" | {key}={value}"));
+        }
+    }
+    if let Some(show) = field("previewShowSelector").filter(|s| *s != "gtViewsFor:") {
+        out.push_str(&format!(" | previewShow=#{show}"));
+    }
+    if let Some(select) = field("previewSelectSelector") {
+        out.push_str(&format!(" | previewSelect=#{select}"));
+    }
+    if let Some(Value::Number(height)) = item.get("previewHeight")
+        && height.as_f64() != Some(200.0)
+    {
+        out.push_str(&format!(" | previewHeight={height}"));
+    }
+    out.push_str("}}");
+    out
 }
 
 fn parse_text_like_node(item: &Value) -> Node {
@@ -469,8 +515,7 @@ const CODE_SNIPPET_LANGUAGES: &[(&str, &str)] = &[
     ("yamlSnippet", "yaml"),
     ("shellCommandSnippet", "shellcommand"),
     ("gemstoneSnippet", "gemstone"),
-    ("exampleSnippet", "example"),
-    ("changesSnippet", "changes"),
+    ("pharoLinkSnippet", "pharolink"),
     ("robocoderMetamodelSnippet", "robocodermetamodel"),
 ];
 
@@ -649,6 +694,18 @@ mod tests {
                 json!({"type":"link","text":"link","url":"page:abc"}),
             ),
             (
+                json!({"__type":"pharoLinkSnippet","code":"1 + 2"}),
+                json!({"type":"code","language":"pharolink","code":"1 + 2"}),
+            ),
+            (
+                json!({"__type":"changesSnippet","fileName":"a.ombu","previewHeight":300}),
+                json!({"type":"paragraph","text":"{{gtChanges:a.ombu}}"}),
+            ),
+            (
+                json!({"__type":"changesSnippet","previewHeight":200}),
+                json!({"type":"paragraph","text":"{{gtChanges:<missing>}}"}),
+            ),
+            (
                 json!({"__type":"pictureSnippet","url":"attachments/x.png","caption":"img"}),
                 json!({"type":"link","text":"img","url":"attachments/x.png"}),
             ),
@@ -687,6 +744,84 @@ mod tests {
         for (input, expected) in cases {
             let node = serde_json::to_value(parse_node(&input)).unwrap();
             assert_eq!(node, expected, "{input}");
+        }
+    }
+
+    #[test]
+    fn example_snippet_reads_as_its_gt_example_annotation() {
+        let defaults = json!({
+            "__type": "exampleSnippet",
+            "exampleBehaviorName": "A class",
+            "exampleSelector": "b",
+            "noCode": false,
+            "codeExpanded": true,
+            "previewExpanded": false,
+            "previewShowSelector": "gtViewsFor:",
+            "previewHeight": 200
+        });
+        let all = json!({
+            "noCode": true,
+            "codeExpanded": false,
+            "previewExpanded": true,
+            "previewShowSelector": "gtLiveFor:",
+            "previewSelectSelector": "c",
+            "previewHeight": 400
+        });
+        let absent = json!({
+            "noCode": null,
+            "codeExpanded": null,
+            "previewExpanded": null,
+            "previewShowSelector": null,
+            "previewHeight": null
+        });
+        let cases = [
+            (json!({}), "A class >> #b"),
+            (absent, "A class >> #b"),
+            (json!({"noCode": true}), "A class >> #b | noCode=true"),
+            (
+                json!({"codeExpanded": false}),
+                "A class >> #b | codeExpanded=false",
+            ),
+            (
+                json!({"previewExpanded": true}),
+                "A class >> #b | previewExpanded=true",
+            ),
+            (
+                json!({"previewShowSelector": "gtLiveFor:"}),
+                "A class >> #b | previewShow=#gtLiveFor:",
+            ),
+            (
+                json!({"previewSelectSelector": "c"}),
+                "A class >> #b | previewSelect=#c",
+            ),
+            (
+                json!({"previewHeight": 400}),
+                "A class >> #b | previewHeight=400",
+            ),
+            (
+                all,
+                "A class >> #b | noCode=true | codeExpanded=false | previewExpanded=true \
+                 | previewShow=#gtLiveFor: | previewSelect=#c | previewHeight=400",
+            ),
+            (json!({"exampleSelector": null}), "A class"),
+            (json!({"exampleBehaviorName": null}), "b"),
+        ];
+        for (changes, annotation) in cases {
+            let mut item = defaults.clone();
+            let fields = item.as_object_mut().unwrap();
+            for (key, value) in changes.as_object().unwrap() {
+                if value.is_null() {
+                    fields.remove(key);
+                } else {
+                    fields.insert(key.clone(), value.clone());
+                }
+            }
+            let text = format!("{{{{gtExample:{annotation}}}}}");
+            assert_eq!(
+                serde_json::to_value(parse_node(&item)).unwrap(),
+                json!({"type": "paragraph", "text": text}),
+                "{changes}"
+            );
         }
     }
 

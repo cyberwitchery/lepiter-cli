@@ -1133,6 +1133,26 @@ mod tests {
     }
 
     #[test]
+    fn search_hits_content_finds_an_example_snippet_selector() {
+        let (dir, _) = make_kb_on_disk(&[("p1", "Alpha", &[], "text")]);
+        let page = json!({
+            "uid": {"uuid": "p2"},
+            "pageType": {"title": "Beta"},
+            "children": {"items": [
+                {"__type": "exampleSnippet", "exampleBehaviorName": "A", "exampleSelector": "rewriteToSecond"}
+            ]}
+        });
+        fs::write(dir.join("p2.lepiter"), page.to_string()).unwrap();
+        let index = KnowledgeBase::open(&dir).unwrap();
+        let hits = index.search_hits("rewriteToSecond", true);
+        assert_eq!(
+            hits.iter().map(|h| h.id.as_str()).collect::<Vec<_>>(),
+            ["p2"]
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn search_hits_same_score_sorted_alphabetically() {
         let (dir, _) = make_kb_on_disk(&[
             ("p1", "Zebra", &["common"], "body"),

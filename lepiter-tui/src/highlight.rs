@@ -239,7 +239,7 @@ static YAML_SYNTAX: LanguageSyntax = LanguageSyntax {
 /// the common markdown-fence aliases (`shell`, `bash`).
 fn syntax_for_language(language: Option<&str>) -> &'static LanguageSyntax {
     match language {
-        Some("pharo") | Some("gemstone") => &SMALLTALK_SYNTAX,
+        Some("pharo") | Some("gemstone") | Some("pharolink") => &SMALLTALK_SYNTAX,
         Some("python") => &PYTHON_SYNTAX,
         Some("javascript") => &JAVASCRIPT_SYNTAX,
         Some("shell") | Some("bash") | Some("shellcommand") => &SHELL_SYNTAX,
@@ -1047,8 +1047,8 @@ mod tests {
     }
 
     #[test]
-    fn pharo_and_gemstone_share_smalltalk_syntax() {
-        for language in ["pharo", "gemstone"] {
+    fn pharo_gemstone_and_pharolink_share_smalltalk_syntax() {
+        for language in ["pharo", "gemstone", "pharolink"] {
             let tokens = tokenize_code_line(r#""doc" self super"#, Some(language));
             assert_eq!(comments(&tokens), vec![r#""doc""#], "{language}");
             assert!(tokens.contains(&CodeToken::Keyword("self")), "{language}");

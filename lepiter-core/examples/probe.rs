@@ -141,6 +141,12 @@ struct SupportInfo<'a> {
 
 fn classify_type<'a>(typ: &'a str, is_unknown: bool) -> SupportInfo<'a> {
     match typ {
+        _ if is_unknown => SupportInfo {
+            mapping: "`Node::Unknown`",
+            render: "`[[unknown: <type>]]`",
+            link_nav: "no",
+            status: "fallback",
+        },
         "textSnippet" => SupportInfo {
             mapping: "`Node::Paragraph`/`Node::Heading`/`Node::Text`",
             render: "markdown-like",
@@ -159,7 +165,7 @@ fn classify_type<'a>(typ: &'a str, is_unknown: bool) -> SupportInfo<'a> {
             link_nav: "no",
             status: "full",
         },
-        "pharoLinkSnippet" | "linkSnippet" => SupportInfo {
+        "linkSnippet" => SupportInfo {
             mapping: "`Node::Link`",
             render: "link line",
             link_nav: "yes",
@@ -189,6 +195,12 @@ fn classify_type<'a>(typ: &'a str, is_unknown: bool) -> SupportInfo<'a> {
             link_nav: "no",
             status: "partial",
         },
+        "exampleSnippet" | "changesSnippet" => SupportInfo {
+            mapping: "`Node::Paragraph`",
+            render: "`{{gtExample:…}}`/`{{gtChanges:…}}` annotation",
+            link_nav: "no",
+            status: "full",
+        },
         "wordSnippet" => SupportInfo {
             mapping: "`Node::Paragraph`",
             render: "paragraph text",
@@ -201,21 +213,17 @@ fn classify_type<'a>(typ: &'a str, is_unknown: bool) -> SupportInfo<'a> {
             link_nav: "no",
             status: "full",
         },
-        "shellCommandSnippet"
-        | "gemstoneSnippet"
-        | "exampleSnippet"
-        | "changesSnippet"
-        | "robocoderMetamodelSnippet" => SupportInfo {
+        "pharoLinkSnippet" => SupportInfo {
+            mapping: "`Node::Code` (`Node::Link` with a `url`)",
+            render: "highlighted code",
+            link_nav: "with a `url`",
+            status: "full",
+        },
+        "shellCommandSnippet" | "gemstoneSnippet" | "robocoderMetamodelSnippet" => SupportInfo {
             mapping: "`Node::Code`",
             render: "code block",
             link_nav: "no",
             status: "partial",
-        },
-        _ if is_unknown => SupportInfo {
-            mapping: "`Node::Unknown`",
-            render: "`[[unknown: <type>]]`",
-            link_nav: "no",
-            status: "fallback",
         },
         _ => SupportInfo {
             mapping: "`Node::Unknown`",

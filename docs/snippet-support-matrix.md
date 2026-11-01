@@ -8,7 +8,7 @@ this matrix is generated from `cargo run -p lepiter-core --example probe -- --ma
 | `elementSnippet` | 1 | `Node::Code` | code block | no | partial |
 | `listSnippet` | 1 | `Node::List` | list block | no | full |
 | `mysterySnippet` | 1 | `Node::Unknown` | `[[unknown: <type>]]` | no | fallback |
-| `pharoLinkSnippet` | 1 | `Node::Link` | link line | yes | full |
+| `pharoLinkSnippet` | 1 | `Node::Code` (`Node::Link` with a `url`) | highlighted code | with a `url` | full |
 | `pharoRewrite` | 1 | `Node::Rewrite` | rewrite diff block | no | full |
 | `pictureSnippet` | 1 | `Node::Link` | link line (media reference) | yes (target-dependent) | partial |
 | `pythonSnippet` | 1 | `Node::Code` | highlighted code | no | full |

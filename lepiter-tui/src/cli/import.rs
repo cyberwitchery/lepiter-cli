@@ -23,6 +23,8 @@ const SPEC: ArgSpec<'static> = ArgSpec {
             - an unknown snippet keeps its type but not its other fields\n  \
             - picture, youtube and word snippets come back as the link or\n    \
             text snippet their markdown form implies\n  \
+            - example and changes snippets come back as text snippets\n    \
+            holding their `{{gtExample:…}}` or `{{gtChanges:…}}` annotation\n  \
             - a carriage return in a text snippet is dropped; a crlf line\n    \
             break comes back as a plain newline",
     toggles: &[],
@@ -1069,7 +1071,10 @@ fn build_page_json(fm: &Frontmatter, snippets: &[Snippet]) -> serde_json::Value 
 mod tests {
     use super::super::export::build_frontmatter;
     use super::*;
-    use lepiter_core::{BlockEscaping, Node, Page, is_standalone_link, render_nodes_to_text_with};
+    use lepiter_core::{
+        BlockEscaping, Node, Page, is_standalone_link, parse_node_from_raw,
+        render_nodes_to_text_with,
+    };
 
     const NASTY_LINKS: &[(&str, &str)] = &[
         ("plain", "https://example.com/path?q=1#frag"),
@@ -1117,6 +1122,34 @@ mod tests {
                 matches!(&snippets[..], [Snippet::Link { text: t, url: u }] if t == text && u == url),
                 "{text:?} {url:?} exported as {markdown:?} imported as {snippets:?}"
             );
+        }
+    }
+
+    #[test]
+    fn gt_example_changes_and_pharo_link_snippets_survive_export_and_import() {
+        let example = "{{gtExample:A >> #b | noCode=true}}";
+        for (raw, markdown, imported) in [
+            (
+                json!({"__type": "exampleSnippet", "exampleBehaviorName": "A", "exampleSelector": "b", "noCode": true}),
+                format!("{example}\n\n"),
+                json!({"__type": "textSnippet", "string": example}),
+            ),
+            (
+                json!({"__type": "changesSnippet", "fileName": "x.ombu"}),
+                "{{gtChanges:x.ombu}}\n\n".to_string(),
+                json!({"__type": "textSnippet", "string": "{{gtChanges:x.ombu}}"}),
+            ),
+            (
+                json!({"__type": "pharoLinkSnippet", "code": "1 + 2"}),
+                "```pharolink\n1 + 2\n```\n\n".to_string(),
+                json!({"__type": "pharoLinkSnippet", "code": "1 + 2"}),
+            ),
+        ] {
+            let exported = export(parse_node_from_raw(&raw));
+            assert_eq!(exported, markdown, "{raw}");
+            let snippets = parse_markdown_body(&exported, &HashMap::new());
+            let snippets: Vec<_> = snippets.iter().map(snippet_json).collect();
+            assert_eq!(snippets, [imported], "{raw}");
         }
     }
 
@@ -2019,6 +2052,8 @@ mod tests {
         // elementSnippet round-trips through the `element` fence.
         assert_eq!(snippet_type_for_language("element"), "elementSnippet");
         assert_eq!(snippet_type_for_language("unknown"), "textSnippet");
+        assert_eq!(snippet_type_for_language("example"), "textSnippet");
+        assert_eq!(snippet_type_for_language("changes"), "textSnippet");
     }
 
     #[test]

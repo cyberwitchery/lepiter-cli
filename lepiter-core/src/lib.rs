@@ -61,8 +61,8 @@ pub use parse::{
     parse_heading, parse_node_from_raw,
 };
 pub use render::{
-    BlockEscaping, closes_fence, escape_block_start, is_standalone_link, normalize_text,
-    open_fence, page_content_contains, parse_standalone_link, render_nodes_to_text,
+    BlockEscaping, closes_fence, escape_block_start, is_standalone_link, normalize_line_ends,
+    normalize_text, open_fence, page_content_contains, parse_standalone_link, render_nodes_to_text,
     render_nodes_to_text_with, render_page_to_text, unescape_block_start,
 };
 pub use util::extract_link_targets;

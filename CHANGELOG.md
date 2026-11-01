@@ -43,6 +43,13 @@ all notable changes to this project are documented in this file.
   of the lines below it: `show` and the reader keep it as written, and
   export→import no longer turns a `#` line above `# b` into `# # b`.
   `lepiter-core`'s `parse_heading` returns `None` for it
+- a carriage return on its own or a NEL (U+0085) ends a text snippet's line,
+  as in Glamorous Toolkit: `show` and the reader break the line there instead
+  of printing the character raw or as a space, so a `#` line after one is a
+  heading and a terminal no longer draws it over the line before. a bare `#`
+  line that one ends no longer exports with the next line as `# # b`.
+  `lepiter-core`'s `parse_heading` returns `None` for such a `#` line, and the
+  new `normalize_line_ends` breaks lines the same way
 
 ## 0.12.2 - 2026-10-25
 

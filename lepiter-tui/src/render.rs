@@ -2,8 +2,8 @@
 //! code highlighting.
 
 use lepiter_core::{
-    LinkKind, Node, Page, PageId, normalize_text, parse_heading, past_backtick_run,
-    scan_inline_links,
+    LinkKind, Node, Page, PageId, normalize_line_ends, normalize_text, parse_heading,
+    past_backtick_run, scan_inline_links,
 };
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -54,11 +54,19 @@ pub fn render_node(
     match node {
         Node::Heading { level, text } => {
             let text = format!("{} {text}", "#".repeat((*level).max(1) as usize));
-            render_text_lines(&sanitize_for_terminal(&text), out, links);
+            render_text_lines(
+                &sanitize_for_terminal(&normalize_line_ends(&text)),
+                out,
+                links,
+            );
             out.push(Line::raw(""));
         }
         Node::Paragraph { text } | Node::Text { text } => {
-            render_text_lines(&sanitize_for_terminal(text), out, links);
+            render_text_lines(
+                &sanitize_for_terminal(&normalize_line_ends(text)),
+                out,
+                links,
+            );
             out.push(Line::raw(""));
         }
         Node::Quote { text } => {
@@ -66,7 +74,7 @@ pub fn render_node(
             let text_style = Style::default()
                 .fg(Color::Gray)
                 .add_modifier(Modifier::ITALIC);
-            for line in sanitize_for_terminal(text).split('\n') {
+            for line in sanitize_for_terminal(&normalize_line_ends(text)).split('\n') {
                 out.push(if line.is_empty() {
                     Line::from(Span::styled(">", marker_style))
                 } else {
@@ -1152,6 +1160,13 @@ mod tests {
                 "# Title ```\n# inner\n```\nafter",
                 1,
                 vec![("# inner", Some(Color::Yellow))],
+            ),
+            ("# a\r# b", 1, vec![("# b", Some(Color::Cyan))]),
+            ("intro\u{85}## Sub", 1, vec![("## Sub", Some(Color::Green))]),
+            (
+                "> a\rb",
+                1,
+                vec![("> ", Some(Color::DarkGray)), ("b", Some(Color::Gray))],
             ),
         ] {
             let node = lepiter_core::parse_node_from_raw(

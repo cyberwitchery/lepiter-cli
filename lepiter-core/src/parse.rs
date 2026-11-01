@@ -432,6 +432,8 @@ fn collect_text_fragments(
     }
 }
 
+const LINE_ENDS: [char; 3] = ['\n', '\r', '\u{85}'];
+
 /// Parses a heading line, one starting with `#`, returning the level (1–6) and text.
 pub fn parse_heading(input: &str) -> Option<(u8, String)> {
     let trimmed = input.trim_end();
@@ -439,8 +441,9 @@ pub fn parse_heading(input: &str) -> Option<(u8, String)> {
     if hashes == 0 {
         return None;
     }
-    let rest = trimmed[hashes..].trim_start_matches(|c: char| c.is_whitespace() && c != '\n');
-    if rest.is_empty() || rest.starts_with('\n') {
+    let rest = trimmed[hashes..]
+        .trim_start_matches(|c: char| c.is_whitespace() && !LINE_ENDS.contains(&c));
+    if rest.is_empty() || rest.starts_with(LINE_ENDS) {
         return None;
     }
     Some((hashes.min(6) as u8, rest.to_string()))
@@ -603,6 +606,10 @@ mod tests {
         assert_eq!(parse_heading("#\n# b"), None);
         assert_eq!(parse_heading("## \nfoo"), None);
         assert_eq!(parse_heading("#\r\nfoo"), None);
+        assert_eq!(parse_heading("#\r# b"), None);
+        assert_eq!(parse_heading("#\rfoo"), None);
+        assert_eq!(parse_heading("#\u{85}foo"), None);
+        assert_eq!(parse_heading("# a\r# b"), Some((1, "a\r# b".to_string())));
     }
 
     #[test]

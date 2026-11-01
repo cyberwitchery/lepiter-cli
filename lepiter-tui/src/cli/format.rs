@@ -1,6 +1,8 @@
 use crate::highlight::{CodeToken, tokenize_code_block};
 use crate::inline;
-use lepiter_core::{Page, closes_fence, open_fence, render_page_to_text};
+use lepiter_core::{
+    Node, Page, closes_fence, normalize_line_ends, open_fence, render_nodes_to_text,
+};
 
 pub use crate::util::truncate_chars;
 
@@ -40,7 +42,7 @@ pub fn render_page_pretty(page: &Page, colored: bool) -> String {
         out.push_str("---\n\n");
     }
 
-    let body = render_page_to_text(page);
+    let body = render_nodes_to_text(&with_line_ends_normalized(&page.content));
     if colored {
         let styled = render_markdown_with_ansi(body.trim());
         out.push_str(styled.strip_suffix('\n').unwrap_or(&styled));
@@ -49,6 +51,34 @@ pub fn render_page_pretty(page: &Page, colored: bool) -> String {
     }
     out.push('\n');
     out
+}
+
+fn with_line_ends_normalized(nodes: &[Node]) -> Vec<Node> {
+    nodes
+        .iter()
+        .map(|node| match node {
+            Node::Heading { level, text } => Node::Heading {
+                level: *level,
+                text: normalize_line_ends(text),
+            },
+            Node::Paragraph { text } => Node::Paragraph {
+                text: normalize_line_ends(text),
+            },
+            Node::Text { text } => Node::Text {
+                text: normalize_line_ends(text),
+            },
+            Node::Quote { text } => Node::Quote {
+                text: normalize_line_ends(text),
+            },
+            Node::List { items } => Node::List {
+                items: items
+                    .iter()
+                    .map(|item| with_line_ends_normalized(item))
+                    .collect(),
+            },
+            other => other.clone(),
+        })
+        .collect()
 }
 
 /// a fenced block being read, with the indent its lines carry in a list item.
@@ -395,6 +425,44 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn show_ends_text_lines_at_a_lone_cr_and_nel() {
+        let page = Page {
+            id: "id".into(),
+            title: "t".into(),
+            updated_at: None,
+            tags: Vec::new(),
+            content: vec![
+                Node::Heading {
+                    level: 1,
+                    text: "a\r# b".into(),
+                },
+                Node::Text {
+                    text: "c\u{85}d".into(),
+                },
+                Node::Quote {
+                    text: "e\rf".into(),
+                },
+                Node::List {
+                    items: vec![vec![Node::Paragraph {
+                        text: "g\rh".into(),
+                    }]],
+                },
+            ],
+        };
+        let plain = render_page_pretty(&page, false);
+        assert!(
+            plain.ends_with("---\n\n# a\n# b\n\nc\nd\n\n> e\n> f\n\n- g\n  h\n"),
+            "{plain:?}"
+        );
+        let coloured = render_page_pretty(&page, true);
+        assert_eq!(strip_ansi(&coloured), plain);
+        assert!(
+            coloured.contains("\n\x1b[1;36m# b\x1b[0m\n"),
+            "{coloured:?}"
+        );
     }
 
     #[test]

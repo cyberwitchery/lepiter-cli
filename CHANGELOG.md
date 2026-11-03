@@ -2,7 +2,7 @@
 
 all notable changes to this project are documented in this file.
 
-## Unreleased
+## 0.12.3 - 2026-11-04
 
 ### changed
 - re-importing a markdown export written by 0.12.2 or earlier turns a carriage

@@ -2,6 +2,13 @@
 
 all notable changes to this project are documented in this file.
 
+## unreleased
+
+### changed
+- `lepiter-core`: `PageMeta::updated_at` and `Page::updated_at` are a
+  `lepiter_core::Timestamp` instead of a chrono `DateTime<FixedOffset>`; chrono
+  is unmaintained (RUSTSEC-2026-0543) and no longer a dependency
+
 ## 0.12.3 - 2026-11-04
 
 ### changed

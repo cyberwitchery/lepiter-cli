@@ -4,11 +4,11 @@ use std::io::BufReader;
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use chrono::DateTime;
 use serde::Deserialize;
 use serde_json::Value;
 
 use crate::model::{Node, PageMeta};
+use crate::time::Timestamp;
 
 /// maximum number of lines kept in a word-snippet paragraph
 const MAX_WORD_SNIPPET_LINES: usize = 8;
@@ -90,7 +90,7 @@ pub(crate) fn parse_page_meta(path: &Path) -> Result<PageMeta> {
         .edit_time
         .and_then(|e| e.time)
         .and_then(|t| t.date_and_time_string)
-        .and_then(|s| DateTime::parse_from_rfc3339(&s).ok());
+        .and_then(|s| Timestamp::parse_rfc3339(&s));
     let tags = parse_tags(raw.tags.as_ref());
 
     let id_lower = id.to_lowercase();
@@ -993,10 +993,8 @@ mod tests {
         assert_eq!(meta.title, "Title");
         assert_eq!(meta.tags, vec!["t1", "t2"]);
         assert_eq!(
-            meta.updated_at,
-            Some(chrono::DateTime::parse_from_rfc3339(
-                "2024-01-01T00:00:00+00:00"
-            )?)
+            meta.updated_at.map(|t| t.to_rfc3339()).as_deref(),
+            Some("2024-01-01T00:00:00+00:00")
         );
         Ok(())
     }

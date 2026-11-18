@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use chrono::{DateTime, FixedOffset};
+use crate::time::Timestamp;
 use serde::Serialize;
 use serde_json::Value;
 use thiserror::Error;
@@ -26,7 +26,7 @@ pub struct PageMeta {
     /// Absolute or relative path to the source page file.
     pub path: PathBuf,
     /// Last edit timestamp, if present in source metadata.
-    pub updated_at: Option<DateTime<FixedOffset>>,
+    pub updated_at: Option<Timestamp>,
     /// Optional page tags extracted from metadata.
     pub tags: Vec<String>,
     /// Pre-computed lowercased tags for case-insensitive comparisons.
@@ -42,7 +42,7 @@ pub struct Page {
     /// Page title.
     pub title: String,
     /// Last edit timestamp, if present.
-    pub updated_at: Option<DateTime<FixedOffset>>,
+    pub updated_at: Option<Timestamp>,
     /// Page tags.
     pub tags: Vec<String>,
     /// Parsed block-level content.

@@ -92,7 +92,7 @@ jobs:
           components: llvm-tools-preview
 
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        uses: taiki-e/install-action@4a76afe23f9e08d2d9550fb56e556444e8611d21 # v2.90.4
         with:
           tool: cargo-llvm-cov
 
@@ -118,7 +118,7 @@ jobs:
           toolchain: stable
 
       - name: Install cargo-deny
-        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        uses: taiki-e/install-action@4a76afe23f9e08d2d9550fb56e556444e8611d21 # v2.90.4
         with:
           tool: cargo-deny
 
@@ -141,7 +141,7 @@ jobs:
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Check unsafe budget
-        uses: cyberwitchery/unsafe-budget@1b02eea5f921a703c510f790236c07b26e4aee8a # v0.5.5
+        uses: cyberwitchery/unsafe-budget@cae2a755e7dbfa48f96f887b6012bf60d1446f2e # v0.6.0
         with:
           mode: check
           args: --workspace-only

@@ -40,6 +40,7 @@ mod inline_link;
 mod model;
 mod parse;
 mod render;
+mod time;
 mod util;
 
 pub mod plugin;
@@ -65,6 +66,7 @@ pub use render::{
     normalize_text, open_fence, page_content_contains, parse_standalone_link, render_nodes_to_text,
     render_nodes_to_text_with, render_page_to_text, unescape_block_start,
 };
+pub use time::Timestamp;
 pub use util::extract_link_targets;
 
 #[macro_export]

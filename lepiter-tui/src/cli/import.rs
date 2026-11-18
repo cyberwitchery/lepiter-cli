@@ -3,7 +3,6 @@ use std::fs;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
-use chrono::DateTime;
 use lepiter_core::{
     LinkKind, closes_fence, language_to_snippet_type, open_fence, parse_standalone_link,
     rewrite_inline_links, unescape_block_start,
@@ -1049,13 +1048,13 @@ fn build_page_json(fm: &Frontmatter, snippets: &[Snippet]) -> serde_json::Value 
     }
 
     if let Some(updated) = &fm.updated_at {
-        match DateTime::parse_from_rfc3339(updated) {
-            Ok(_) => {
+        match lepiter_core::Timestamp::parse_rfc3339(updated) {
+            Some(_) => {
                 page["editTime"] = json!({
                     "time": { "dateAndTimeString": updated }
                 });
             }
-            Err(_) => {
+            None => {
                 eprintln!(
                     "warning: ignoring unparseable updated_at {updated:?} for page {} (expected RFC 3339)",
                     fm.id

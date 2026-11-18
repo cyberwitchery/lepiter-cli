@@ -317,7 +317,7 @@ impl App {
 
     fn create_page(&mut self, title: &str) {
         let page_uuid = uuid::Uuid::new_v4().to_string();
-        let now = chrono::Utc::now().to_rfc3339();
+        let now = lepiter_core::Timestamp::now().to_rfc3339();
         let raw = serde_json::json!({
             "uid": { "uuid": &page_uuid },
             "pageType": { "title": title },
@@ -364,7 +364,7 @@ impl App {
             title: title.to_string(),
             title_lower,
             path: file_path,
-            updated_at: chrono::DateTime::parse_from_rfc3339(&now).ok(),
+            updated_at: lepiter_core::Timestamp::parse_rfc3339(&now),
             tags: Vec::new(),
             tags_lower: Vec::new(),
         };

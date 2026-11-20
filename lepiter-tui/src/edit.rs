@@ -226,6 +226,7 @@ impl EditState {
     }
 
     pub fn save_to_disk(&mut self) -> Result<()> {
+        self.touch_edit_time();
         let bytes = serde_json::to_vec_pretty(&self.raw)?;
 
         serde_json::from_slice::<Value>(&bytes)
@@ -251,6 +252,29 @@ impl EditState {
         self.dirty = false;
         Ok(())
     }
+
+    /// sets the page's `editTime` to now, keeping the rest of its structure.
+    fn touch_edit_time(&mut self) {
+        let Some(page) = self.raw.as_object_mut() else {
+            return;
+        };
+        let now = Value::String(lepiter_core::Timestamp::now().to_rfc3339());
+        let time = page
+            .get_mut("editTime")
+            .and_then(|e| e.get_mut("time"))
+            .and_then(Value::as_object_mut);
+        match time {
+            Some(time) => {
+                time.insert("dateAndTimeString".into(), now);
+            }
+            None => {
+                page.insert(
+                    "editTime".into(),
+                    serde_json::json!({ "time": { "dateAndTimeString": now } }),
+                );
+            }
+        }
+    }
 }
 
 pub fn load_raw_page(path: &PathBuf) -> Result<Value> {
@@ -274,11 +298,7 @@ pub fn collect_snippets(raw: &Value, path: Vec<usize>, out: &mut Vec<SnippetEntr
     for (idx, item) in items.iter().enumerate() {
         let mut current_path = path.clone();
         current_path.push(idx);
-        let typ = item
-            .get("__type")
-            .and_then(Value::as_str)
-            .unwrap_or("<missing-type>")
-            .to_string();
+        let typ = extract_type(item).unwrap_or("<missing-type>").to_string();
         let (editable, field) = editable_field(&typ, item);
         let text = if let Some(field) = field.as_ref() {
             item.get(field)
@@ -701,10 +721,7 @@ fn render_raw_item_with_highlight(
         .unwrap_or(false);
     let start = ctx.out.len();
     let mut cursor_offset = 0usize;
-    let typ = item
-        .get("__type")
-        .and_then(Value::as_str)
-        .unwrap_or("<missing-type>");
+    let typ = extract_type(item).unwrap_or("<missing-type>");
     let (editable, _) = editable_field(typ, item);
 
     if is_highlight && ctx.highlight_start.is_none() {
@@ -1051,6 +1068,62 @@ mod tests {
         assert_eq!(out[1].typ, "pictureSnippet");
         assert!(!out[1].editable);
         assert_eq!(out[1].path, vec![1]);
+    }
+
+    #[test]
+    fn collect_snippets_reads_the_type_as_core_does() {
+        let raw = json!({
+            "children": {
+                "items": [
+                    {"type": "textSnippet", "string": "hello"},
+                    {"type": "pythonSnippet", "code": "print(1)"}
+                ]
+            }
+        });
+        let mut out = Vec::new();
+        collect_snippets(&raw, Vec::new(), &mut out);
+        assert_eq!(out[0].typ, "textSnippet");
+        assert!(out[0].editable);
+        assert_eq!(out[0].text, "hello");
+        assert_eq!(out[1].typ, "pythonSnippet");
+        assert!(out[1].editable);
+    }
+
+    #[test]
+    fn saving_sets_the_edit_time() {
+        let dir = tempfile::tempdir().unwrap();
+        for (page, keeps) in [
+            (
+                json!({
+                    "editTime": {
+                        "__type": "time",
+                        "time": {"__type": "dateAndTime", "dateAndTimeString": "2020-01-01T00:00:00+00:00"}
+                    },
+                    "children": {"items": [{"__type": "textSnippet", "string": "a"}]}
+                }),
+                true,
+            ),
+            (
+                json!({"children": {"items": [{"__type": "textSnippet", "string": "a"}]}}),
+                false,
+            ),
+        ] {
+            let mut edit = make_edit("a");
+            edit.raw = page;
+            edit.path = dir.path().join("p.lepiter");
+            let before = lepiter_core::Timestamp::now();
+            edit.save_to_disk().unwrap();
+            let saved: Value = serde_json::from_slice(&std::fs::read(&edit.path).unwrap()).unwrap();
+            let stamp = saved["editTime"]["time"]["dateAndTimeString"]
+                .as_str()
+                .unwrap();
+            let stamp = lepiter_core::Timestamp::parse_rfc3339(stamp).unwrap();
+            assert!(stamp >= before, "{saved}");
+            if keeps {
+                assert_eq!(saved["editTime"]["__type"], "time");
+                assert_eq!(saved["editTime"]["time"]["__type"], "dateAndTime");
+            }
+        }
     }
 
     #[test]

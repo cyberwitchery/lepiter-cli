@@ -9,6 +9,12 @@ all notable changes to this project are documented in this file.
   `lepiter_core::Timestamp` instead of a chrono `DateTime<FixedOffset>`; chrono
   is unmaintained (RUSTSEC-2026-0543) and no longer a dependency
 
+### fixed
+- the editor reads a snippet's type from `type` as well as `__type`, as the
+  reader does, so a snippet with only `type` is editable
+- saving from the editor sets the page's `editTime`
+- an escaped `\{{` in a heading no longer pulls the following lines into it
+
 ## 0.12.3 - 2026-11-04
 
 ### changed

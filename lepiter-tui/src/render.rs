@@ -339,6 +339,9 @@ fn render_text_lines(text: &str, out: &mut Vec<Line<'static>>, links: &mut Vec<L
     let mut scanned = scan_inline_links(text).peekable();
     let mut annotations = true;
     let mut past = |i: usize| {
+        if bytes[i] == b'\\' && bytes.get(i + 1).is_some_and(u8::is_ascii_punctuation) {
+            return i + 2;
+        }
         if annotations && bytes[i..].starts_with(b"{{") {
             match text[i + 2..].find("}}") {
                 Some(len) => return i + len + 4,
@@ -1156,6 +1159,7 @@ mod tests {
                 1,
                 vec![("# bar}}", Some(Color::LightMagenta)), (" tail", None)],
             ),
+            ("# h \\{{a\nb}}", 1, vec![("b}}", None)]),
             (
                 "# Title ```\n# inner\n```\nafter",
                 1,

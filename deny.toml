@@ -1,9 +1,5 @@
 [advisories]
-ignore = [
-    # paste is unmaintained but pulled in transitively by ratatui's dependency
-    # tree. No security impact and no drop-in replacement available yet.
-    "RUSTSEC-2024-0436",
-]
+ignore = []
 
 [licenses]
 allow = [

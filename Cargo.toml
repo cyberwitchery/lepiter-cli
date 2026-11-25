@@ -12,7 +12,7 @@ homepage = "https://github.com/cyberwitchery/lepiter-cli"
 [workspace.dependencies]
 anyhow = "1"
 indexmap = "2"
-jiff = { version = "0.2", default-features = false, features = ["std"] }
+jiff = { version = "1.0", default-features = false, features = ["std"] }
 crossterm = "0.29"
 lepiter-core = { version = "0.12.3", path = "lepiter-core" }
 open = "5"
